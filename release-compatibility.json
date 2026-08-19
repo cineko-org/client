@@ -1,0 +1,6 @@
+{
+  "minimumLauncherVersion": "1.1.9",
+  "minimumBrowserRevision": "1228",
+  "playwrightVersion": "1.62.1",
+  "protocol": 3
+}
