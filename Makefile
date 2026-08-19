@@ -1,0 +1,65 @@
+.PHONY: check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security test workflow-check
+
+WAILS ?= $(shell go env GOPATH)/bin/wails
+WAILS_DEV_SERVER ?= 127.0.0.1:34116
+GOLANGCI_LINT_VERSION ?= v2.12.2
+GOVULNCHECK_VERSION ?= v1.6.0
+ACTIONLINT_VERSION ?= v1.7.10
+NPM ?= npx --yes npm@12.0.2
+VERSION ?= $(shell cat VERSION)
+GO_FILES := $(shell find . -maxdepth 1 -name '*.go' -type f) $(shell find internal -name '*.go' -type f)
+
+install-wails:
+	@test -x "$(WAILS)" && "$(WAILS)" version | grep -q 'v2.14.0' || \
+		go install github.com/wailsapp/wails/v2/cmd/wails@v2.14.0
+
+install-playwright:
+	go run github.com/mxschmitt/playwright-go/cmd/playwright@$$(bash scripts/playwright-version.sh go) install chromium
+
+desktop: install-wails
+	$(WAILS) build -clean -trimpath -m -nosyncgomod -ldflags "-s -w -X main.desktopVersion=$(VERSION)"
+
+dev: install-wails install-playwright
+	mkdir -p .cineko/dev
+	CINEKO_DATA_DIR="$${CINEKO_DATA_DIR:-$(CURDIR)/.cineko/dev}" \
+		$(WAILS) dev -m -nosyncgomod -devserver "$(WAILS_DEV_SERVER)" \
+		-assetdir internal/interfaces/webui/assets \
+		-reloaddirs internal/interfaces/webui/assets
+
+format-check:
+	@test -z "$$(gofmt -l $(GO_FILES))" || (gofmt -l $(GO_FILES) && exit 1)
+
+lint: format-check
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
+
+security:
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	$(NPM) --prefix frontend audit --audit-level=moderate
+
+coverage:
+	bash scripts/unit-coverage.sh
+
+test: install-playwright
+	go test -mod=vendor -race ./...
+
+frontend-check:
+	$(NPM) --prefix frontend run check
+
+workflow-check:
+	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
+	bash -n scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh
+	shellcheck scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh
+	node --test scripts/release-metadata.test.mjs
+
+contract-check:
+	grep -Eq '^# github.com/cineko-org/contracts/v3 v3.2.1( => ../contracts)?$$' vendor/modules.txt
+
+contract-release-check:
+	@! grep -Eq '^[[:space:]]*replace([[:space:]]|\()' go.mod
+	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3.2.1$$' go.mod
+	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3.2.1$$' vendor/modules.txt
+	@grep -Eq '^github.com/cineko-org/contracts/v3 v3.2.1 h1:' go.sum
+
+check: lint security coverage test frontend-check workflow-check contract-check
+	node --check internal/interfaces/webui/assets/app.js
+	grep -Eq '^# github.com/cineko-org/probe/v2 v2.1.3( => ../probe)?$$' vendor/modules.txt
