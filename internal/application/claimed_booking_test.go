@@ -41,6 +41,27 @@ type exactShowtimeGateway struct {
 	findCalled bool
 	opened     domain.Showtime
 	openErr    error
+	openCalls  int
+}
+
+type refreshingShowtimeGateway struct {
+	*exactShowtimeGateway
+	selections   []domain.SeatSelection
+	refreshErr   error
+	refreshCalls int
+}
+
+func (gateway *refreshingShowtimeGateway) RefreshSeatSelection(
+	_ context.Context,
+	showtime domain.Showtime,
+) (domain.SeatSelection, error) {
+	gateway.refreshCalls++
+	gateway.opened = showtime
+	if gateway.refreshErr != nil {
+		return domain.SeatSelection{}, gateway.refreshErr
+	}
+	index := min(gateway.refreshCalls-1, len(gateway.selections)-1)
+	return gateway.selections[index], nil
 }
 
 func (gateway *exactShowtimeGateway) FindShowtimes(
@@ -56,6 +77,7 @@ func (gateway *exactShowtimeGateway) OpenSeatSelection(
 	showtime domain.Showtime,
 	_ int,
 ) (domain.SeatSelection, error) {
+	gateway.openCalls++
 	gateway.opened = showtime
 	return domain.SeatSelection{SeatMap: gatewaySeatMap(), LiveSeats: gateway.live}, gateway.openErr
 }
@@ -111,6 +133,96 @@ func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 	}
 	if reservation.Status != "prepared" || base.job.Status != domain.MonitorTriggered {
 		t.Fatalf("reservation/monitor = %+v / %+v", reservation, base.job)
+	}
+}
+
+func TestRunClaimedShowtimeRefreshesTheSameSeatPage(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	base := claimedSeatWatchRepository()
+	seatMap := gatewaySeatMap()
+	gateway := &refreshingShowtimeGateway{
+		exactShowtimeGateway: &exactShowtimeGateway{workerGateway: &workerGateway{
+			live: []domain.LiveSeat{{Label: "H10", Available: false}},
+		}},
+		selections: []domain.SeatSelection{
+			{SeatMap: seatMap, LiveSeats: []domain.LiveSeat{{Label: "H10", Available: false}}},
+			{SeatMap: seatMap, LiveSeats: []domain.LiveSeat{{Label: "H10", Available: true}}},
+		},
+	}
+	worker := claimedSeatWatchWorker(base, gateway, now)
+	reservation, err := worker.RunClaimedShowtime(t.Context(), claimedSeatWatchBooking(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gateway.openCalls != 1 || gateway.refreshCalls != 2 {
+		t.Fatalf("seat-page open/refresh calls = %d/%d, want 1/2", gateway.openCalls, gateway.refreshCalls)
+	}
+	if reservation.Status != "prepared" {
+		t.Fatalf("reservation = %+v", reservation)
+	}
+}
+
+func TestRunClaimedShowtimeStopsOnRefreshError(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	base := claimedSeatWatchRepository()
+	protectionErr := errors.New("provider protection stopped the refresh")
+	gateway := &refreshingShowtimeGateway{
+		exactShowtimeGateway: &exactShowtimeGateway{workerGateway: &workerGateway{
+			live: []domain.LiveSeat{{Label: "H10", Available: false}},
+		}},
+		refreshErr: protectionErr,
+	}
+	worker := claimedSeatWatchWorker(base, gateway, now)
+	_, err := worker.RunClaimedShowtime(t.Context(), claimedSeatWatchBooking(base))
+	if !errors.Is(err, protectionErr) || gateway.refreshCalls != 1 {
+		t.Fatalf("refresh error/calls = %v/%d", err, gateway.refreshCalls)
+	}
+}
+
+func claimedSeatWatchRepository() *workerRepository {
+	return &workerRepository{
+		job: domain.MonitorJob{
+			ID: "monitor", UserID: "user", PresetID: "preset", MovieID: "movie_1", Movie: "영화",
+			TargetDates: []string{"2026-08-20"}, Status: domain.MonitorPending,
+		},
+		preset: domain.Preset{
+			ID: "preset", TheaterID: "theater", AuditoriumID: "auditorium", SeatCount: 1,
+			SeatPreference: domain.SeatPreference{
+				CandidateSeats: []string{"H10"}, Adjacency: domain.SeatAdjacencyRequired,
+			},
+		},
+		theater: domain.Theater{ID: "theater"}, auditorium: domain.Auditorium{ID: "auditorium"},
+	}
+}
+
+func claimedSeatWatchWorker(
+	repository *workerRepository,
+	gateway claimedSeatWatchGateway,
+	now time.Time,
+) *BookingWorker {
+	return NewBookingWorker(BookingWorkerDependencies{
+		Monitors: repository, Presets: repository, Theaters: repository,
+		Auditoriums: repository, Reservations: repository,
+		Showtimes: gateway, Booking: gateway, IDs: &sequenceIDs{},
+		Clock: fixedClock{now: now}, Waiter: noWaiter{},
+		Jitter: func(time.Duration) time.Duration { return 0 },
+		ClaimedWatch: ClaimedSeatWatchPolicy{
+			Window: time.Second, RefreshLimit: 3,
+			MinInterval: time.Millisecond, MaxInterval: time.Millisecond,
+		},
+	})
+}
+
+func claimedSeatWatchBooking(repository *workerRepository) ClaimedBooking {
+	return ClaimedBooking{
+		Monitor: repository.job, Preset: repository.preset,
+		Theater: repository.theater, Auditorium: repository.auditorium,
+		Showtime: domain.Showtime{
+			ID: "source", ProviderID: "cgv", SourceKey: "0056/2026-08-20/0007/0003",
+			MovieID: "movie_1", Movie: "영화", TheaterID: "theater", AuditoriumID: "auditorium",
+			Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00",
+			AvailableSeats: 1, Capacity: 100,
+		},
 	}
 }
 

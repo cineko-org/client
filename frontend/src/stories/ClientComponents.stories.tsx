@@ -31,7 +31,7 @@ export const StatusAndMetrics: Story = {
 };
 
 export const Fields: Story = {
-  render: () => <Canvas><Stack maw={760} gap="md"><TextField label="이름" value="용산 IMAX 중앙 2석" onChange={noop} /><SelectField label="연결 방식" data={['사용 안 함', 'HTTP(S) / SOCKS5', 'Soxy 관리형']} value="Soxy 관리형" onChange={noop} /><NumberField label="최소 확인 간격" value={3} suffix="분" onChange={noop} /><TextAreaField label="프록시 주소" value={'socks5://127.0.0.1:1080\nhttps://proxy.example:8443'} onChange={noop} /></Stack></Canvas>,
+  render: () => <Canvas><Stack maw={760} gap="md"><TextField label="이름" value="용산 IMAX 중앙 2석" onChange={noop} /><SelectField label="연결 방식" data={['사용 안 함', 'HTTP(S) / SOCKS5']} value="HTTP(S) / SOCKS5" onChange={noop} /><NumberField label="최소 확인 간격" value={3} suffix="분" onChange={noop} /><TextAreaField label="프록시 주소" value={'socks5://127.0.0.1:1080\nhttps://proxy.example:8443'} onChange={noop} /></Stack></Canvas>,
 };
 
 export const Sections: Story = {
@@ -58,8 +58,8 @@ export const CancellationSchedule: Story = {
   render: () => <Canvas><Box maw={900}><ScheduleView form={{ ...initialMonitorForm, monitorMode: 'cancellation', dates: ['2026-08-20'], earliestTime: '19:00' }} onChange={noop} /></Box></Canvas>,
 };
 
-export const AccountAndSoxy: Story = {
-  render: () => <Canvas><Stack maw={760} gap="xl"><AccountSettingsView account={{ status: 'authenticated', authenticated: true, credentialsSaved: true, accountId: 'cineko-user' }} onAuthenticate={noop} onSave={noop} onRestore={noop} onDelete={noop} /><Divider /><ProxySettingsView available settings={{ mode: 'soxy', soxyUrl: 'https://proxy.example.com', hasApiToken: true }} form={{ mode: 'soxy', proxyUrls: '', proxyUsername: '', proxyPassword: '', soxyUrl: 'https://proxy.example.com', soxyToken: '', sessionTtl: '30m' }} loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} /></Stack></Canvas>,
+export const AccountAndProxy: Story = {
+  render: () => <Canvas><Stack maw={760} gap="xl"><AccountSettingsView account={{ status: 'authenticated', authenticated: true, credentialsSaved: true, accountId: 'cineko-user' }} onAuthenticate={noop} onSave={noop} onRestore={noop} onDelete={noop} /><Divider /><ProxySettingsView available settings={{ mode: 'proxy', proxyUrls: ['socks5://127.0.0.1:1080'] }} form={{ mode: 'proxy', proxyUrls: 'socks5://127.0.0.1:1080', proxyUsername: '', proxyPassword: '' }} loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} /></Stack></Canvas>,
 };
 
 export const ExternalNotifications: Story = {

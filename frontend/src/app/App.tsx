@@ -54,8 +54,6 @@ function CinekoApplication() {
         unreadNotices={unreadNoticeCount(notifications.notices)}
         feedback={notifications.feedback}
         onNavigate={navigateSection}
-        onImport={application.importData}
-        onExport={application.exportData}
         onExit={application.exit}
         onOpenNotifications={showNotifications}
         onOpenSettings={openSettings}

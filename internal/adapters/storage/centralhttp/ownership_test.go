@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
@@ -57,25 +56,5 @@ func TestPutRejectsForeignEmbeddedOwnerBeforeNetworkUse(t *testing.T) {
 	})
 	if !errors.Is(err, application.ErrNotFound) {
 		t.Fatalf("PutPreset(foreign owner) = %v", err)
-	}
-}
-
-func TestReplaceConfigurationValidatesEveryOwnerBeforeDeleting(t *testing.T) {
-	t.Parallel()
-	store := &Store{
-		userID: "user-one",
-		client: &http.Client{Transport: ownershipRoundTripFunc(func(*http.Request) (*http.Response, error) {
-			t.Fatal("invalid replacement performed a network mutation")
-			return nil, errors.New("unexpected request")
-		})},
-	}
-	err := store.ReplaceConfiguration(context.Background(), domain.Configuration{
-		Presets: []domain.Preset{{
-			ID: "preset", UserID: "user-two", Name: "foreign", TheaterID: "theater",
-			AuditoriumID: "auditorium", SeatCount: 1, CreatedAt: time.Now(),
-		}},
-	})
-	if !errors.Is(err, application.ErrNotFound) {
-		t.Fatalf("ReplaceConfiguration(foreign owner) = %v", err)
 	}
 }

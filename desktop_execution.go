@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
 	central "github.com/cineko-org/contracts/v3"
 )
@@ -17,6 +18,11 @@ type desktopExecutionWorker struct {
 	userID         string
 	retryDelay     func(int) time.Duration
 }
+
+const (
+	executionReasonPreferredSeatsUnavailable = "preferred_seats_unavailable"
+	executionReasonShowtimeUnavailable       = "showtime_unavailable"
+)
 
 type executionStore interface {
 	ClaimExecution(context.Context, string) (*central.ExecutionCommand, error)
@@ -274,6 +280,12 @@ func executionHeartbeatInterval(expiresAt, now time.Time) time.Duration {
 }
 
 func executionFailureCode(err error) string {
+	if errors.Is(err, application.ErrSeatUnavailable) {
+		return executionReasonPreferredSeatsUnavailable
+	}
+	if errors.Is(err, application.ErrBookingNotOpen) {
+		return executionReasonShowtimeUnavailable
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "client_interrupted"
 	}

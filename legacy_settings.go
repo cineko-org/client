@@ -165,6 +165,17 @@ func mergeLegacyDesktopSettings(current desktopSettings, legacy legacyDesktopSet
 }
 
 func mergeLegacyNetwork(merged *desktopSettings, legacy *desktopNetworkSettings) error {
+	if merged.Network != nil {
+		clean := clientOwnedNetwork(*merged.Network)
+		merged.Network = &clean
+	}
+	if legacy != nil {
+		clean := clientOwnedNetwork(*legacy)
+		legacy = &clean
+		if clean.Mode == "direct" && len(clean.ProxyURLs) == 0 && clean.ProxyUsername == "" && clean.ProxyPassword == "" {
+			return nil
+		}
+	}
 	switch {
 	case legacy == nil:
 	case merged.Network == nil:
@@ -178,18 +189,25 @@ func mergeLegacyNetwork(merged *desktopSettings, legacy *desktopNetworkSettings)
 			merged.Network.ProxyPassword != legacy.ProxyPassword {
 			return errors.New("local and Central proxy password conflict")
 		}
-		if merged.Network.SoxyAPIToken != "" && legacy.SoxyAPIToken != "" &&
-			merged.Network.SoxyAPIToken != legacy.SoxyAPIToken {
-			return errors.New("local and Central Soxy token conflict")
-		}
 		if merged.Network.ProxyPassword == "" {
 			merged.Network.ProxyPassword = legacy.ProxyPassword
 		}
-		if merged.Network.SoxyAPIToken == "" {
-			merged.Network.SoxyAPIToken = legacy.SoxyAPIToken
-		}
 	}
 	return nil
+}
+
+func clientOwnedNetwork(network desktopNetworkSettings) desktopNetworkSettings {
+	network.SoxyURL = ""
+	network.SoxyAPIToken = ""
+	network.SoxySessionTTL = ""
+	network.ProxyURLs = cleanStrings(network.ProxyURLs)
+	network.ProxyUsername = strings.TrimSpace(network.ProxyUsername)
+	if len(network.ProxyURLs) > 0 {
+		network.Mode = "proxy"
+	} else {
+		network.Mode = "direct"
+	}
+	return network
 }
 
 func mergeLegacyHooks(merged *desktopSettings, legacyHooks []desktopHookSettings) error {
@@ -237,10 +255,7 @@ func sameNetworkWithoutSecrets(left, right desktopNetworkSettings) bool {
 	left.Mode, right.Mode = desktopNetworkMode(left), desktopNetworkMode(right)
 	left.ProxyURLs, right.ProxyURLs = cleanStrings(left.ProxyURLs), cleanStrings(right.ProxyURLs)
 	left.ProxyUsername, right.ProxyUsername = strings.TrimSpace(left.ProxyUsername), strings.TrimSpace(right.ProxyUsername)
-	left.SoxyURL, right.SoxyURL = strings.TrimSpace(left.SoxyURL), strings.TrimSpace(right.SoxyURL)
-	left.SoxySessionTTL, right.SoxySessionTTL = strings.TrimSpace(left.SoxySessionTTL), strings.TrimSpace(right.SoxySessionTTL)
 	left.ProxyPassword, right.ProxyPassword = "", ""
-	left.SoxyAPIToken, right.SoxyAPIToken = "", ""
 	return reflect.DeepEqual(left, right)
 }
 

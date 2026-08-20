@@ -85,6 +85,39 @@ func (adapter *Adapter) OpenSeatSelection(
 	}, nil
 }
 
+// RefreshSeatSelection reuses the exact seat page opened by
+// OpenSeatSelection. It avoids repeating the more expensive cinema, date, and
+// showtime navigation while still validating that the page has not drifted.
+func (adapter *Adapter) RefreshSeatSelection(
+	ctx context.Context,
+	showtime domain.Showtime,
+) (domain.SeatSelection, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return domain.SeatSelection{}, err
+	}
+	if err := adapter.verifySeatPageShowtime(showtime); err != nil {
+		return domain.SeatSelection{}, err
+	}
+	snapshot, err := adapter.refreshSeatSnapshot(ctx, showtime.AuditoriumID)
+	if err != nil {
+		return domain.SeatSelection{}, err
+	}
+	raw, err := adapter.validatedSeatNodes(snapshot)
+	if err != nil {
+		return domain.SeatSelection{}, err
+	}
+	return domain.SeatSelection{
+		SeatMap: domain.SeatMap{
+			AuditoriumID: showtime.AuditoriumID,
+			Seats:        snapshot.Seats, Zones: snapshot.Zones, Blocks: snapshot.Blocks,
+			ObservedAt: snapshot.Captured,
+		},
+		LiveSeats: intersectAvailability(snapshot.Live, raw),
+	}, nil
+}
+
 type seatSelection struct {
 	live         []domain.LiveSeat
 	snapshot     parsedSeatSnapshot
@@ -298,6 +331,13 @@ func (adapter *Adapter) refreshSeatSnapshot(
 	}
 
 drained:
+	captchaVisible, err := adapter.captchaVisible()
+	if err != nil {
+		return parsedSeatSnapshot{}, err
+	}
+	if captchaVisible {
+		return parsedSeatSnapshot{}, ErrCaptchaRequired
+	}
 	clicked, err := adapter.clickRefresh()
 	if err != nil {
 		return parsedSeatSnapshot{}, err
@@ -311,6 +351,13 @@ drained:
 	case <-ctx.Done():
 		return parsedSeatSnapshot{}, ctx.Err()
 	case <-timer.C:
+		captchaVisible, captchaErr := adapter.captchaVisible()
+		if captchaErr != nil {
+			return parsedSeatSnapshot{}, captchaErr
+		}
+		if captchaVisible {
+			return parsedSeatSnapshot{}, ErrCaptchaRequired
+		}
 		return parsedSeatSnapshot{}, errors.New("timed out waiting for refreshed CGV seat data")
 	case response := <-adapter.seatResponses:
 		if response.err != nil {

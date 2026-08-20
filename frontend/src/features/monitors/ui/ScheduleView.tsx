@@ -1,9 +1,9 @@
-import { Chip, Group, SegmentedControl, Stack, Text } from '@mantine/core';
+import { Chip, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput, TimePicker } from '@mantine/dates';
 import { Columns } from '../../../components/core/Columns';
 import { NumberField } from '../../../components/core/Fields';
 import {
-  normalizeHorizon, scheduleBounds, scheduleDescription, weekdayOptions, type MonitorForm,
+  maximumSearchHorizonDays, normalizeHorizon, scheduleBounds, scheduleDescription, weekdayOptions, type MonitorForm,
 } from '../model';
 
 export interface ScheduleViewProps {
@@ -17,26 +17,7 @@ export function ScheduleView({ form, onChange }: ScheduleViewProps) {
 
   return (
     <Stack gap="lg">
-      <Stack gap="xs">
-        <Group justify="space-between" align="flex-end" wrap="wrap">
-          <Text fw={600}>예매 전략</Text>
-          <SegmentedControl
-            radius={0}
-            aria-label="예매 전략"
-            data={[{ label: '예매 오픈 대기', value: 'opening' }, { label: '취소표 대기', value: 'cancellation' }]}
-            value={form.monitorMode}
-            onChange={(value) => set({
-              monitorMode: value as MonitorForm['monitorMode'],
-              weekdays: value === 'cancellation' ? [] : form.weekdays,
-            })}
-          />
-        </Group>
-        <Text size="sm" c="dimmed">
-          {form.monitorMode === 'opening'
-            ? '상영 일정이 열리면 좌석 선택을 시작합니다.'
-            : '열린 회차에서 선호 좌석이 풀릴 때까지 확인합니다.'}
-        </Text>
-      </Stack>
+      <Text size="sm" c="dimmed">예매 오픈부터 취소표까지 계속 확인합니다.</Text>
 
       <Stack gap="sm">
         <Stack gap={2}>
@@ -55,29 +36,27 @@ export function ScheduleView({ form, onChange }: ScheduleViewProps) {
           valueFormat="YYYY년 M월 D일"
           clearable
         />
-        {form.monitorMode === 'opening' ? (
-          <Columns>
-            <Stack gap="xs">
-              <Text size="sm" fw={500}>반복 요일</Text>
-              <Chip.Group multiple value={form.weekdays} onChange={(weekdays) => set({ weekdays })}>
-                <Group gap={6} wrap="wrap">
-                  {weekdayOptions.map((weekday) => <Chip key={weekday.value} value={weekday.value}>{weekday.label}</Chip>)}
-                </Group>
-              </Chip.Group>
-            </Stack>
-            <NumberField
-              label="한 번에 확인할 기간"
-              value={form.horizonDays}
-              onChange={(value) => set({ horizonDays: normalizeHorizon(value) })}
-              min={1}
-              max={14}
-              step={1}
-              suffix="일"
-              allowDecimal={false}
-              allowNegative={false}
-            />
-          </Columns>
-        ) : null}
+        <Columns>
+          <Stack gap="xs">
+            <Text size="sm" fw={500}>반복 요일</Text>
+            <Chip.Group multiple value={form.weekdays} onChange={(weekdays) => set({ weekdays })}>
+              <Group gap={6} wrap="wrap">
+                {weekdayOptions.map((weekday) => <Chip key={weekday.value} value={weekday.value}>{weekday.label}</Chip>)}
+              </Group>
+            </Chip.Group>
+          </Stack>
+          <NumberField
+            label="한 번에 확인할 기간"
+            value={form.horizonDays}
+            onChange={(value) => set({ horizonDays: normalizeHorizon(value) })}
+            min={1}
+            max={maximumSearchHorizonDays}
+            step={1}
+            suffix="일"
+            allowDecimal={false}
+            allowNegative={false}
+          />
+        </Columns>
         <Text size="sm" c="dimmed">{scheduleDescription(form)}</Text>
       </Stack>
 
@@ -85,8 +64,7 @@ export function ScheduleView({ form, onChange }: ScheduleViewProps) {
         <Stack gap={2}>
           <Text fw={600}>선호 시간대</Text>
           <Text size="xs" c="dimmed">
-            실제 상영 시작 시각 기준입니다. 시작은 포함하고 마감은 제외합니다. 비워두면 모든 회차를 확인합니다.
-            시작이 마감보다 늦으면 자정을 넘어 확인합니다. 예: 21:00–06:00은 21:00 이상 또는 06:00 미만입니다.
+            비우면 모든 시간을 확인합니다. 21:00–06:00처럼 자정을 넘기는 시간대도 설정할 수 있습니다.
           </Text>
         </Stack>
         <Columns>

@@ -1,29 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { emptyAppState, transferSummary } from '../src/features/application/model';
+import { emptyAppState } from '../src/features/application/model';
 import {
   formFromMonitor, initialMonitorForm, localDateString, monitorFormError, monitorIntervalLabel, monitorScheduleLabel, monitorTimeLabel,
   monitorSaveRequest, monitorStatusLabel, normalizeHorizon, scheduleBounds, scheduleDescription, weekdayOptions,
+  orderedCatalogMovies,
 } from '../src/features/monitors/model';
 import {
   markNoticesRead, monitorTransitionMessage, prependNotice, reservationTransitionMessage,
   unreadNoticeCount, type Notice,
 } from '../src/features/notifications/model';
-import { candidateSelectionError, csv, formFromPreset, initialPresetForm, presetSaveRequest, presetSummary } from '../src/features/presets/model';
+import {
+  candidateSelectionError, catalogRegions, catalogTheaters, csv, formFromPreset, initialPresetForm, presetSaveRequest,
+  presetSummary,
+} from '../src/features/presets/model';
 import { networkForm, networkSettingsInput, networkUsageDescription } from '../src/features/settings/model';
 import {
   hookForms, hookSettingsInput, selectAllHookEvents, toggleHookEvent,
 } from '../src/features/settings/hookModel';
 import { reservationReference, reservationStatusLabel } from '../src/features/reservations/model';
-import type { Monitor, Preset, Reservation, Seat } from '../src/api/types';
+import type { CatalogMovie, Monitor, Preset, Reservation, Seat, Theater } from '../src/api/types';
 
 const monitorWithStatus = (status: Monitor['status'], movie = '오디세이') => ({ status, movie } as Monitor);
 const reservationWithStatus = (status: string, movie?: string) => ({ status, draft: { showtime: { movie } } } as Reservation);
 
 describe('application view model', () => {
-  it('provides empty state, account labels, and transfer summary', () => {
+  it('provides empty state', () => {
     expect(emptyAppState).toMatchObject({ userId: 'local-user', presets: [], monitors: [] });
-    expect(transferSummary({ presets: 2, monitors: 3 })).toBe('2개 프리셋 · 3개 예매 모니터');
-    expect(transferSummary({})).toBe('0개 프리셋 · 0개 예매 모니터');
   });
 });
 
@@ -33,7 +35,8 @@ describe('monitor model', () => {
     expect(localDateString(today)).toBe('2026-08-09');
     expect(scheduleBounds(today)).toEqual({ today: '2026-08-09', last: '2027-08-09' });
     expect(normalizeHorizon(14)).toBe(14);
-    expect(normalizeHorizon('')).toBe(28);
+    expect(normalizeHorizon('')).toBe(14);
+    expect(normalizeHorizon(28)).toBe(14);
     expect(weekdayOptions).toHaveLength(7);
   });
 
@@ -69,7 +72,7 @@ describe('monitor model', () => {
     expect(monitorScheduleLabel({})).toBe('대상 일정 없음');
     expect(monitorScheduleLabel({ targetDates: ['2026-08-10'] })).toBe('2026-08-10');
     expect(monitorScheduleLabel({ targetWeekdays: [1, 6], searchHorizonDays: 14 })).toBe('매주 월 · 토요일 · 앞으로 14일');
-    expect(monitorScheduleLabel({ targetDates: ['2026-08-10'], targetWeekdays: [8] })).toBe('2026-08-10 / 매주 요일 · 앞으로 28일');
+    expect(monitorScheduleLabel({ targetDates: ['2026-08-10'], targetWeekdays: [8] })).toBe('2026-08-10 / 매주 요일 · 앞으로 14일');
     expect(monitorTimeLabel({ earliestTime: '18:00', latestTime: '22:00' })).toBe('18:00–22:00');
     expect(monitorTimeLabel({ earliestTime: '18:00' })).toBe('18:00 이후');
     expect(monitorTimeLabel({ latestTime: '22:00' })).toBe('22:00 이전');
@@ -85,8 +88,18 @@ describe('monitor model', () => {
     } as Monitor;
     expect(formFromMonitor(stored)).toMatchObject({ id: 'monitor', movieId: 'movie', pollMinMinutes: 3, pollMaxMinutes: 8, weekdays: ['1'], horizonDays: 14 });
     expect(monitorIntervalLabel(stored)).toBe('3–8분');
-    expect(formFromMonitor({ ...stored, pollInterval: 0, pollIntervalMax: 0, searchHorizonDays: 0 })).toMatchObject({ pollMinMinutes: 3, pollMaxMinutes: 8, horizonDays: 28 });
+    expect(formFromMonitor({ ...stored, pollInterval: 0, pollIntervalMax: 0, searchHorizonDays: 0 })).toMatchObject({ pollMinMinutes: 3, pollMaxMinutes: 8, horizonDays: 14 });
     expect(monitorIntervalLabel({ pollInterval: 0, pollIntervalMax: 0 })).toBe('3–8분');
+  });
+
+  it('keeps the provider movie order', () => {
+    const movies = [
+      { id: 'first', title: '가' },
+      { id: 'second', title: '나' },
+    ] as CatalogMovie[];
+    const ordered = orderedCatalogMovies(movies);
+    expect(ordered.map((movie) => movie.id)).toEqual(['first', 'second']);
+    expect(ordered).not.toBe(movies);
   });
 });
 
@@ -128,6 +141,19 @@ describe('preset model', () => {
     expect(initialPresetForm.seatCount).toBe(1);
   });
 
+  it('builds selectable regions and theaters from normalized catalog names', () => {
+    const theaters = [
+      { region: ' 부산 ', name: ' 센텀시티 ' },
+      { region: '서울', name: '여의도' },
+      { region: '서울', name: '용산아이파크몰' },
+      { region: '서울', name: '여의도' },
+      { region: ' ', name: '무시' },
+    ] as Theater[];
+    expect(catalogRegions(theaters)).toEqual(['부산', '서울']);
+    expect(catalogTheaters(theaters, '서울')).toEqual(['여의도', '용산아이파크몰']);
+    expect(catalogTheaters(theaters, '')).toEqual([]);
+  });
+
   it('summarizes candidate and scored seat preferences', () => {
     expect(presetSummary(preset)).toBe('2석 연석 필수 · H10 · H11');
     expect(presetSummary({ ...preset, seatCount: 1 })).toBe('선택 후보 중 1석 · H10 · H11');
@@ -161,20 +187,21 @@ describe('preset model', () => {
 
 describe('network settings model', () => {
   it('maps settings and trims desktop input', () => {
-    expect(networkForm()).toMatchObject({ mode: 'direct', proxyUrls: '', soxyUrl: '', sessionTtl: '30m' });
-    expect(networkForm({ mode: 'soxy', soxyUrl: 'https://soxy', soxySessionTtl: '1h' })).toMatchObject({ mode: 'soxy', soxyUrl: 'https://soxy', soxyToken: '', sessionTtl: '1h' });
+    expect(networkForm()).toEqual({ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '' });
+    expect(networkForm({
+      mode: 'proxy', proxyUrls: ['socks5://one:1'], proxyUsername: 'user', hasProxyPassword: true,
+    })).toEqual({
+      mode: 'proxy', proxyUrls: 'socks5://one:1', proxyUsername: 'user', proxyPassword: '',
+    });
     expect(networkSettingsInput({
       mode: 'proxy', proxyUrls: ' socks5://one:1\nhttps://two:2 ', proxyUsername: ' user ', proxyPassword: ' pass ',
-      soxyUrl: ' https://soxy ', soxyToken: ' secret ', sessionTtl: ' ',
     })).toEqual({
       mode: 'proxy', proxyUrls: ['socks5://one:1', 'https://two:2'], proxyUsername: 'user', proxyPassword: ' pass ',
-      soxyUrl: 'https://soxy', soxyApiToken: 'secret', soxySessionTtl: '30m',
     });
 	expect(networkUsageDescription()).toBe('사용 안 함');
 	expect(networkUsageDescription({ mode: 'direct' })).toBe('사용 안 함');
 	expect(networkUsageDescription({ mode: 'proxy' })).toBe('0개 표준 프록시');
 	expect(networkUsageDescription({ mode: 'proxy', proxyUrls: ['http://one:1'] })).toBe('1개 표준 프록시');
-	expect(networkUsageDescription({ mode: 'soxy' })).toBe('Soxy');
   });
 
   it('maps hook secrets and filters without exposing stored values', () => {

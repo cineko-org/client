@@ -53,7 +53,7 @@ export function MonitorListView({ monitors, deleteId, mutationId, onRetry, onDel
                   <StatusIndicator label={monitorStatusLabel(monitor.status)} color={monitorColor(monitor)} processing={active} />
                 </Group>
                 <Stack gap={2}>
-                  <Text size="sm" c="dimmed">{monitor.mode === 'cancellation' ? '취소표 대기' : '예매 오픈 대기'} · {monitorScheduleLabel(monitor)}</Text>
+                  <Text size="sm" c="dimmed">{monitor.mode === 'cancellation' ? '취소표 감시' : '오픈 · 취소표 감시'} · {monitorScheduleLabel(monitor)}</Text>
                   <Text size="sm" c="dimmed">{executionDescription(monitor)}</Text>
                 </Stack>
                 <Group gap="xs">

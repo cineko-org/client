@@ -30,6 +30,7 @@ type BookingWorker struct {
 	waiter       Waiter
 	jitter       func(time.Duration) time.Duration
 	workerID     string
+	claimedWatch ClaimedSeatWatchPolicy
 }
 
 type BookingWorkerDependencies struct {
@@ -45,6 +46,7 @@ type BookingWorkerDependencies struct {
 	Waiter       Waiter
 	Jitter       func(time.Duration) time.Duration
 	WorkerID     string
+	ClaimedWatch ClaimedSeatWatchPolicy
 }
 
 // ClaimedBooking is the complete, immutable input selected by a Central
@@ -70,6 +72,7 @@ func NewBookingWorker(dependencies BookingWorkerDependencies) *BookingWorker {
 		showtimes:    dependencies.Showtimes, booking: dependencies.Booking,
 		ids: dependencies.IDs, clock: dependencies.Clock, waiter: dependencies.Waiter,
 		jitter: jitter, workerID: dependencies.WorkerID,
+		claimedWatch: dependencies.ClaimedWatch.normalized(),
 	}
 }
 
@@ -191,7 +194,7 @@ func (worker *BookingWorker) RunClaimedShowtime(
 	if err := worker.monitors.PutMonitor(ctx, job); err != nil {
 		return domain.Reservation{}, err
 	}
-	reservation, attemptErr := worker.attemptShowtime(
+	reservation, attemptErr := worker.attemptClaimedShowtime(
 		ctx, job, claimed.Preset, claimed.Showtime,
 	)
 	if err := ctx.Err(); err != nil {
@@ -379,6 +382,59 @@ func (worker *BookingWorker) attemptShowtime(
 	if err != nil {
 		return domain.Reservation{}, err
 	}
+	return worker.prepareSeatSelection(ctx, job, preset, showtime, selection)
+}
+
+func (worker *BookingWorker) attemptClaimedShowtime(
+	ctx context.Context,
+	job domain.MonitorJob,
+	preset domain.Preset,
+	showtime domain.Showtime,
+) (domain.Reservation, error) {
+	reservation, err := worker.attemptShowtime(ctx, job, preset, showtime)
+	if !errors.Is(err, ErrSeatUnavailable) {
+		return reservation, err
+	}
+	refresher, ok := worker.booking.(LiveSeatSelectionRefresher)
+	policy := worker.claimedWatch
+	if !ok || policy.Window <= 0 {
+		return domain.Reservation{}, ErrSeatUnavailable
+	}
+
+	startedAt := worker.clock.Now()
+	deadline := startedAt.Add(policy.Window)
+	for refresh := 0; refresh < policy.RefreshLimit; refresh++ {
+		now := worker.clock.Now()
+		if !now.Before(deadline) {
+			break
+		}
+		delay := policy.MinInterval + worker.jitter(policy.MaxInterval-policy.MinInterval)
+		remaining := deadline.Sub(now)
+		if delay > remaining {
+			delay = remaining
+		}
+		if waitErr := worker.waiter.Wait(ctx, delay); waitErr != nil {
+			return domain.Reservation{}, waitErr
+		}
+		selection, refreshErr := refresher.RefreshSeatSelection(ctx, showtime)
+		if refreshErr != nil {
+			return domain.Reservation{}, refreshErr
+		}
+		reservation, refreshErr = worker.prepareSeatSelection(ctx, job, preset, showtime, selection)
+		if !errors.Is(refreshErr, ErrSeatUnavailable) {
+			return reservation, refreshErr
+		}
+	}
+	return domain.Reservation{}, ErrSeatUnavailable
+}
+
+func (worker *BookingWorker) prepareSeatSelection(
+	ctx context.Context,
+	job domain.MonitorJob,
+	preset domain.Preset,
+	showtime domain.Showtime,
+	selection domain.SeatSelection,
+) (domain.Reservation, error) {
 	ranked, err := worker.ranker.Rank(
 		selection.SeatMap, selection.LiveSeats, preset.SeatCount, preset.SeatPreference,
 	)

@@ -2,7 +2,6 @@ package egress
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,10 +11,10 @@ import (
 
 var defaultProbeURL = "https://cgv.co.kr/cnm/movieBook/movie"
 
-// ValidateConfig verifies both the control plane (for Soxy) and the resulting
-// data-plane proxy before settings become durable.
+// ValidateConfig verifies every configured user-owned proxy before settings
+// become durable.
 func ValidateConfig(ctx context.Context, config Config) error {
-	manager, err := New(config)
+	_, err := New(config)
 	if err != nil {
 		return err
 	}
@@ -25,18 +24,6 @@ func ValidateConfig(ctx context.Context, config Config) error {
 	}
 	proxies := append([]Proxy(nil), config.Proxies...)
 	proxies = append(proxies, config.ScanProxies...)
-	if manager.client != nil {
-		lease, acquireErr := manager.Acquire(ctx, PurposeScan)
-		if acquireErr != nil {
-			return fmt.Errorf("validate Soxy lease: %w", acquireErr)
-		}
-		probeErr := probe(lease.Context(), *lease.Proxy())
-		closeErr := lease.Close()
-		if probeErr != nil || closeErr != nil {
-			return fmt.Errorf("validate Soxy proxy: %w", errors.Join(probeErr, closeErr))
-		}
-		return nil
-	}
 	for index, proxy := range proxies {
 		if err := probe(ctx, proxy); err != nil {
 			// The configured URL may have originated with embedded userinfo. Keep

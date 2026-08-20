@@ -29,8 +29,7 @@ func TestLegacySettingsMigrationPersistsSecretsBeforeRemovingLocalFile(t *testin
 	if err := migrateLegacyDesktopSettings(t.Context(), repository, directory); err != nil {
 		t.Fatal(err)
 	}
-	if repository.settings == nil || repository.settings.Network == nil ||
-		repository.settings.Network.SoxyAPIToken != "soxy-secret" ||
+	if repository.settings == nil || repository.settings.Network != nil ||
 		len(repository.settings.Hooks) != 1 || repository.settings.Hooks[0].Secret != "hook-secret" {
 		t.Fatalf("migrated settings = %+v", repository.settings)
 	}
@@ -73,15 +72,14 @@ func TestLegacySettingsMigrationRetainsSourceOnFailureOrConflict(t *testing.T) {
 	for name, repository := range map[string]*memoryDesktopSettings{
 		"write failure": {putErr: errors.New("central unavailable")},
 		"conflicting settings": {settings: &desktopSettings{Network: &desktopNetworkSettings{
-			Mode: "soxy", SoxyURL: "https://other.example.test", SoxyAPIToken: "other", SoxySessionTTL: "30m",
+			Mode: "proxy", ProxyURLs: []string{"http://other.example.test:8080"},
 		}}, revision: 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			directory := t.TempDir()
 			path := filepath.Join(directory, "settings.json")
 			writeLegacySettings(t, path, legacyDesktopSettings{Network: &desktopNetworkSettings{
-				Mode: "soxy", SoxyURL: "https://soxy.example.test",
-				SoxyAPIToken: "secret", SoxySessionTTL: "30m",
+				Mode: "proxy", ProxyURLs: []string{"http://proxy.example.test:8080"},
 			}})
 			if err := migrateLegacyDesktopSettings(t.Context(), repository, directory); err == nil {
 				t.Fatal("failed migration returned nil")
@@ -165,13 +163,13 @@ func TestMergeLegacySettingsFillsOnlyMatchingSecretSlots(t *testing.T) {
 func TestMergeLegacySettingsRejectsDifferentExistingSecrets(t *testing.T) {
 	t.Parallel()
 	current := desktopSettings{Network: &desktopNetworkSettings{
-		Mode: "soxy", SoxyURL: "https://soxy.example.test", SoxySessionTTL: "30m", SoxyAPIToken: "central",
+		Mode: "proxy", ProxyURLs: []string{"http://proxy.example.test:8080"}, ProxyPassword: "central",
 	}}
 	legacy := legacyDesktopSettings{Network: &desktopNetworkSettings{
-		Mode: "soxy", SoxyURL: "https://soxy.example.test", SoxySessionTTL: "30m", SoxyAPIToken: "local",
+		Mode: "proxy", ProxyURLs: []string{"http://proxy.example.test:8080"}, ProxyPassword: "local",
 	}}
 	if _, err := mergeLegacyDesktopSettings(current, legacy); err == nil {
-		t.Fatal("different Soxy credentials were silently discarded")
+		t.Fatal("different proxy credentials were silently discarded")
 	}
 	current = desktopSettings{Hooks: []desktopHookSettings{{
 		ID: "custom", Name: "Custom", Kind: eventhook.KindWebhook,

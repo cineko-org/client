@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, desktopBridge, errorMessage } from '../../api/client';
-import type { AccountState, AppState, ApplicationConnection, TaskState, TransferReport } from '../../api/types';
+import type { AccountState, AppState, ApplicationConnection, TaskState } from '../../api/types';
 import type { Notify } from '../../components/core/feedback';
-import {
-  emptyAppState, initialApplicationConnection, transferSummary,
-} from './model';
+import { emptyAppState, initialApplicationConnection } from './model';
 
 const checkingAccount: AccountState = { status: 'checking', authenticated: false };
 
@@ -55,7 +53,7 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
     }
   }, [markConnectionFailure, markConnectionReady]);
 
-  const pollStatus = useCallback(async (activeUserId = userIdRef.current) => {
+  const pollStatus = useCallback(async function pollStatusForUser(activeUserId = userIdRef.current) {
     const request = ++statusRequest.current;
     window.clearTimeout(pollTimer.current);
     try {
@@ -76,12 +74,12 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
       }
       await Promise.all([loadState(activeUserId), loadNotices(activeUserId)]);
       if (running > 0 || accountState.status === 'checking') {
-        pollTimer.current = window.setTimeout(() => void pollStatus(activeUserId), 2500);
+        pollTimer.current = window.setTimeout(() => void pollStatusForUser(activeUserId), 2500);
       }
     } catch (error) {
       if (request === statusRequest.current) {
         markConnectionFailure(error);
-        pollTimer.current = window.setTimeout(() => void pollStatus(activeUserId), 5000);
+        pollTimer.current = window.setTimeout(() => void pollStatusForUser(activeUserId), 5000);
       }
     }
   }, [loadNotices, loadState, markConnectionFailure, notify]);
@@ -110,19 +108,17 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
     const eventsOn = window.runtime?.EventsOn;
     if (eventsOn) {
       const unsubscribeData = eventsOn('data:changed', () => void initialize());
-      const unsubscribeError = eventsOn('transfer:error', (message) => notify(String(message), { tone: 'error', important: true }));
       return () => {
         window.clearTimeout(pollTimer.current);
         invalidateRequests();
         unsubscribeData?.();
-        unsubscribeError?.();
       };
     }
     return () => {
       window.clearTimeout(pollTimer.current);
       invalidateRequests();
     };
-  }, [initialize, invalidateRequests, notify]);
+  }, [initialize, invalidateRequests]);
 
   const openAuthentication = useCallback(async () => {
     try {
@@ -164,23 +160,6 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
     }
   }, [notify, pollStatus]);
 
-  const runTransfer = useCallback(async (kind: 'import' | 'export') => {
-    if (!bridge) return;
-    try {
-      const report: TransferReport = kind === 'import'
-        ? await bridge.ImportConfiguration()
-        : await bridge.ExportConfiguration(userId);
-      if (report.path) {
-        notify(`${kind === 'import' ? '가져오기' : '내보내기'} 완료 · ${transferSummary(report)}`, {
-          tone: 'success', important: true,
-        });
-      }
-      if (kind === 'import') await initialize();
-    } catch (error) {
-      notify(errorMessage(error), { tone: 'error', important: true });
-    }
-  }, [bridge, initialize, notify, userId]);
-
   const exit = useCallback(async () => {
     if (!bridge) return;
     try {
@@ -194,7 +173,6 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
     state, userId, account, loading, connection, desktopAvailable: Boolean(bridge),
     retryConnection: initialize,
     reload: loadState, openAuthentication, saveAccountCredentials, restoreAuthentication,
-    deleteAccountCredentials, importData: () => runTransfer('import'),
-    exportData: () => runTransfer('export'), exit, pollStatus,
+    deleteAccountCredentials, exit, pollStatus,
   };
 }

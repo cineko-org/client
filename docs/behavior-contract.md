@@ -27,7 +27,6 @@ This inventory records the externally observable Client contract. It omits hosts
 | Reservations | `POST /v1/reservations`, `GET /v1/reservations`, `PUT /v1/reservations/{id}`, `GET /v1/reservations/{id}`, `DELETE /v1/reservations/{id}` | Owner/revision checks apply | Delete is idempotent when already absent; conflicts require reload |
 | External operations | `POST /v1/external-operations`, `GET /v1/external-operations`, `PUT /v1/external-operations/{id}`, `GET /v1/external-operations/{id}`, `DELETE /v1/external-operations/{id}` | Owner/revision checks apply | Delete is idempotent when already absent; conflicts require reload |
 | App events | `POST /v1/app-events`, `GET /v1/app-events`, `PUT /v1/app-events/{id}`, `GET /v1/app-events/{id}`, `DELETE /v1/app-events/{id}` | Owner/revision checks apply | Delete is idempotent when already absent; conflicts require reload |
-| Configuration | `GET /v1/configuration`, `PUT /v1/configuration` | Portable non-secret snapshot contains presets and monitors only; whole replacement is revision fenced | Conflict preserves both current Central state and imported file |
 | Change stream | `GET /v1/events/stream` | Bearer session, Last-Event-ID cursor, contracts v3 control events | Transport and 5xx reconnect with jittered backoff; protocol/4xx failure is surfaced and terminates Client instead of running stale |
 
 ## Domain state machines
@@ -35,7 +34,7 @@ This inventory records the externally observable Client contract. It omits hosts
 ### Monitor and booking
 
 - `pending` is eligible. Execution or a local retry moves it to `running`.
-- No matching showtime or seat keeps an opening monitor eligible; transient failures back off. Cancellation mode with no open booking is terminal `failed`.
+- A normal monitor covers opening detection and later cancellation-seat availability without creating duplicate theater scans. A legacy cancellation-only monitor requires an exact date. Transient execution failures retry immediately within the lease budget; unavailable preferred seats wait for a later availability observation instead of spinning the browser.
 - A prepared payment handoff stores reservation status `prepared` and moves the monitor to `triggered`.
 - User abandonment, the 15-minute handoff deadline, or Client shutdown moves the reservation to `unknown` and monitor to `payment_unknown`. This is terminal until the user explicitly retries.
 - A confirmed reservation would be `booked`, but the current manual payment handoff does not claim confirmation without an authoritative receipt.
@@ -58,7 +57,7 @@ This inventory records the externally observable Client contract. It omits hosts
 
 ### Account, task, and notification
 
-- Account state is `checking`, then `authenticated`, `unauthenticated`, or `error`. CGV credentials stay in the OS credential vault and never enter Central resources or `.cnk` files.
+- Account state is `checking`, then `authenticated`, `unauthenticated`, or `error`. CGV credentials stay in the OS credential vault and never enter Central resources.
 - Background UI task state is `running`, then `completed`, `stopped`, or `failed`; duplicate task IDs return conflict.
 - The Client connection is `loading` during startup, `ready` after a successful refresh, `stale` while retaining previously loaded data after a transient failure, and `unavailable` when no usable state exists. A requested catalog backfill can return `waiting` without claiming completion.
 - App events are Central-owned, can be marked read or cleared, and records older than six months are eligible for cleanup.
@@ -78,14 +77,13 @@ The loopback API is same-process only and enforces host/origin and security head
 | Notifications | `POST /api/events`, `POST /api/events/read`, `DELETE /api/events` | UI updates read/clear immediately and Central persists | Persistence failure is non-blocking for transient feedback and recovers on reload |
 | Network settings | Desktop `SaveNetworkSettings` | Load required; 15-second connectivity check precedes live switch and Central save | Invalid/unreachable settings are not saved; persistence failure restores previous live egress |
 | Hook settings | Desktop `SaveHookSettings` | Load required; validated adapters replace the active set | Failure keeps editable form and previous active settings |
-| Import/export | Desktop `ImportConfiguration` / `ExportConfiguration` | User-selected `.cnk`; import is revision-fenced and reloads on success | Cancel is a no-op; conflict leaves Central and file unchanged |
 
 Read-only loopback points are `GET /api/state`, `GET /api/status`, `GET /api/account`, `GET /api/auditoriums`, `GET /api/seat-map`, and `GET /api/events`.
 
 ## Browser, proxy, and payment boundaries
 
 - CGV schedule discovery captures successful browser responses from `/api/v1/booking/searchMovScnInfo` and the legacy `/cnm/atkt/searchMovScnInfo`; incomplete or malformed provider rows fail closed instead of creating display-derived identities.
-- Direct networking is valid. Standard HTTP, HTTPS, and SOCKS5 proxies and Soxy are optional, mutually validated choices.
+- Direct networking is valid. A user may optionally configure standard HTTP, HTTPS, or SOCKS5 proxies. Managed Soxy inventory belongs only to Central's dedicated Probe infrastructure and is never configured by Client.
 - Scan work uses a fresh randomized identity/proxy selection. Account and booking work reuse one user session identity. One browser process owns one page, and lifecycle limits rotate disposable browser processes.
 - Booking demand is Client-local and demand-driven: active authenticated monitors request a warm target of two disposable per-slot Playwright drivers, capped at three; no active demand requests zero. Each slot has a distinct profile and is consumed after one logical booking task, while a prepared-payment slot remains exclusively retained until release.
 - Warm readiness requires an explicit authenticated-state check in the isolated slot profile. Driver shutdown is bounded and reaped; a browser/context crash fails its lease closed before a replacement is started.

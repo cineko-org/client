@@ -39,8 +39,12 @@ export function usePresets(
       notify('프리셋 이름을 입력하세요.', { tone: 'error' });
       return;
     }
+    if (!seatMap || seatMap.seats.length === 0) {
+      notify('좌석 배치 분석이 끝난 뒤 프리셋을 저장할 수 있습니다.', { tone: 'error' });
+      return;
+    }
     const selectionError = candidateSelectionError(
-      seatMap?.seats ?? [], pickedSeats, form.seatCount,
+      seatMap.seats, pickedSeats, form.seatCount,
     );
     if (selectionError) {
       notify(selectionError, { tone: 'error' });
@@ -68,7 +72,7 @@ export function usePresets(
     } finally {
       setSaving(false);
     }
-  }, [activeTheaterId, auditoriumId, form, notify, onSaved, pickedSeats, reload, reset, seatMap?.seats, userId]);
+  }, [activeTheaterId, auditoriumId, form, notify, onSaved, pickedSeats, reload, reset, seatMap, userId]);
 
   const edit = useCallback((id: string) => {
     const preset = state.presets.find((item) => item.id === id);

@@ -32,7 +32,6 @@ type Repository interface {
 	application.ReservationRepository
 	application.ExternalOperationRepository
 	application.GlobalCatalogRepository
-	application.ConfigurationRepository
 }
 
 type seatMapBackfillRequester interface {
@@ -320,8 +319,7 @@ func (server *Server) refreshBookingDemand(ctx context.Context) {
 				server.recordMaintenanceFailure("booking-demand", monitorErr)
 			} else {
 				for _, monitor := range monitors {
-					if (monitor.Status == domain.MonitorPending || monitor.Status == domain.MonitorRunning) &&
-						monitor.EffectiveMode() == domain.MonitorModeOpening {
+					if monitor.Status == domain.MonitorPending || monitor.Status == domain.MonitorRunning {
 						active = true
 						break
 					}

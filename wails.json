@@ -15,15 +15,6 @@
     "productName": "Cineko",
     "productVersion": "2.4.0",
     "copyright": "Copyright 2026 Cineko",
-    "comments": "CGV booking control room",
-    "fileAssociations": [
-      {
-        "ext": "cnk",
-        "name": "Cineko Configuration",
-        "description": "Cineko portable configuration",
-        "iconName": "iconfile",
-        "role": "Editor"
-      }
-    ]
+    "comments": "CGV booking control room"
   }
 }

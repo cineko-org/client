@@ -36,7 +36,6 @@ export function ProxySettingsView({
           data={[
             { value: 'direct', label: '사용 안 함' },
             { value: 'proxy', label: 'HTTP(S) / SOCKS5' },
-            { value: 'soxy', label: 'Soxy 관리형' },
           ]}
           value={form.mode}
           onChange={(value) => onChange({ ...form, mode: (value || 'direct') as NetworkForm['mode'] })}
@@ -58,17 +57,6 @@ export function ProxySettingsView({
             placeholder={settings.hasProxyPassword ? '저장된 비밀번호 유지' : undefined}
             value={form.proxyPassword}
             onChange={(event) => onChange({ ...form, proxyPassword: event.currentTarget.value })} disabled={!editable} />
-        </> : null}
-        {form.mode === 'soxy' ? <>
-          <TextField label="Soxy 주소" placeholder="https://proxy.example.com"
-            value={form.soxyUrl} onChange={(event) => onChange({ ...form, soxyUrl: event.currentTarget.value })} disabled={!editable} />
-          <PasswordField label="Soxy API 토큰" placeholder={settings.hasApiToken ? '저장된 토큰 유지' : 'Soxy API 토큰'}
-            value={form.soxyToken} onChange={(event) => onChange({ ...form, soxyToken: event.currentTarget.value })} disabled={!editable} />
-          <SelectField label="세션 유지 시간" data={[
-              { value: '15m', label: '15분' }, { value: '30m', label: '30분' },
-              { value: '1h', label: '1시간' }, { value: '2h', label: '2시간' },
-            ]} value={form.sessionTtl} onChange={(value) => onChange({ ...form, sessionTtl: value || '30m' })}
-            allowDeselect={false} disabled={!editable} />
         </> : null}
         <Group justify="flex-end">
           <PrimaryButton onClick={onSave} loading={saving} disabled={!editable}>프록시 설정 저장</PrimaryButton>

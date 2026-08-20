@@ -5,6 +5,7 @@ import type { Preview } from '@storybook/react-vite';
 import { MantineProvider } from '@mantine/core';
 import { DatesProvider } from '@mantine/dates';
 import { cinekoTheme } from '../src/app/theme';
+import { cinekoViewports } from './viewports';
 
 const preview: Preview = {
   parameters: {
@@ -12,6 +13,7 @@ const preview: Preview = {
     backgrounds: { disable: true },
     controls: { expanded: true },
     options: { showPanel: true, storySort: { order: ['Client', ['Application', 'Pages', 'States', 'Overlays', 'Components']] } },
+    viewport: { options: cinekoViewports },
   },
   decorators: [(Story) => (
     <MantineProvider forceColorScheme="dark" theme={cinekoTheme}>

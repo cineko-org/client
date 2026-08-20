@@ -11,7 +11,6 @@ import (
 
 	"github.com/cineko-org/client/internal/adapters/browserfactory"
 	"github.com/cineko-org/client/internal/adapters/cgv"
-	"github.com/cineko-org/client/internal/adapters/configbundle"
 	"github.com/cineko-org/client/internal/adapters/credentialvault"
 	"github.com/cineko-org/client/internal/adapters/egress"
 	"github.com/cineko-org/client/internal/adapters/eventhook"
@@ -107,11 +106,7 @@ func runDesktop() (runErr error) {
 		server.RecordLocalSystemEvent(store.UserID(), "hook.delivery_failed", domain.EventError,
 			fmt.Sprintf("%s 알림을 보내지 못했습니다. 외부 알림 설정을 확인하세요.", failure.Target.Name))
 	})
-	bundles, err := configbundle.New(store, platform.Clock{})
-	if err != nil {
-		return err
-	}
-	app := newDesktopApp(server, bundles, store, browsers, os.Args[1:], hooks)
+	app := newDesktopApp(server, store, browsers, hooks)
 	app.setUserID(store.UserID())
 	app.execution = &desktopExecutionWorker{
 		store: store, server: server, installationID: identity.InstallationID, userID: store.UserID(),

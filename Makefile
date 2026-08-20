@@ -1,4 +1,4 @@
-.PHONY: behavior-contract-check check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security test workflow-check
+.PHONY: behavior-contract-check check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security storybook storybook-build test workflow-check
 
 WAILS ?= $(shell go env GOPATH)/bin/wails
 WAILS_DEV_SERVER ?= 127.0.0.1:34116
@@ -45,6 +45,12 @@ test: install-playwright
 frontend-check:
 	$(NPM) --prefix frontend run check
 
+storybook:
+	$(NPM) --prefix frontend run storybook
+
+storybook-build:
+	$(NPM) --prefix frontend run storybook:build
+
 workflow-check:
 	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
 	bash -n scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-browser-version.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh scripts/publish-playwright-assets.sh scripts/register-browser-release.sh scripts/register-client-release.sh scripts/register-playwright-release.sh scripts/test-browser-release.sh scripts/test-publish-playwright-assets.sh scripts/test-register-client-release.sh scripts/test-register-playwright-release.sh
@@ -69,4 +75,4 @@ behavior-contract-check:
 
 check: lint security coverage test frontend-check workflow-check contract-check behavior-contract-check
 	node --check internal/interfaces/webui/assets/app.js
-	grep -Eq '^# github.com/cineko-org/probe/v2 v2.3.0( => ../probe)?$$' vendor/modules.txt
+	grep -Eq '^# github.com/cineko-org/probe/v2 v2.3.1( => ../probe)?$$' vendor/modules.txt

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
 	central "github.com/cineko-org/contracts/v3"
 )
@@ -268,6 +269,26 @@ func TestExecutionRejectsInvalidCommandPayloadBeforeBrowser(t *testing.T) {
 	}
 	if result := <-store.completed; result.Status != "failed" || result.ReasonCode != "invalid_execution_payload" {
 		t.Fatalf("completion = %+v", result)
+	}
+}
+
+func TestExecutionFailureCodeSeparatesAvailabilityFromTransientFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "preferred seats", err: application.ErrSeatUnavailable, want: executionReasonPreferredSeatsUnavailable},
+		{name: "showtime", err: application.ErrBookingNotOpen, want: executionReasonShowtimeUnavailable},
+		{name: "interrupted", err: context.Canceled, want: "client_interrupted"},
+		{name: "transient", err: errors.New("browser failed"), want: "booking_preparation_failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := executionFailureCode(test.err); got != test.want {
+				t.Fatalf("executionFailureCode() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

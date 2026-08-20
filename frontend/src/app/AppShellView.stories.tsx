@@ -12,13 +12,11 @@ const meta = {
     loading: false,
     connection: { status: 'ready', message: '', lastSuccessfulAt: '2026-08-12T08:00:00Z', retrying: false },
     account: { status: 'authenticated', authenticated: true },
-    network: { mode: 'soxy', soxyUrl: 'https://proxy.example.com' },
+    network: { mode: 'direct' },
     desktopAvailable: true,
     unreadNotices: 2,
     feedback: null,
     onNavigate: noop,
-    onImport: noop,
-    onExport: noop,
     onExit: noop,
     onOpenNotifications: noop,
     onOpenSettings: noop,
@@ -42,4 +40,7 @@ export const CentralStale: Story = {
 };
 export const CentralRetrying: Story = {
   args: { connection: { status: 'unavailable', message: 'connection refused', lastSuccessfulAt: '', retrying: true } },
+};
+export const MobileHome: Story = {
+  globals: { viewport: { value: 'phone', isRotated: false } },
 };

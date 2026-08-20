@@ -157,24 +157,18 @@ export interface AccountState {
 }
 
 export interface NetworkSettings {
-  mode: 'direct' | 'proxy' | 'soxy';
+  mode: 'direct' | 'proxy';
   proxyUrls?: string[];
   proxyUsername?: string;
   hasProxyPassword?: boolean;
-  soxyUrl?: string;
-  soxySessionTtl?: string;
-  hasApiToken?: boolean;
   source?: string;
 }
 
 export interface NetworkSettingsInput {
-  mode: 'direct' | 'proxy' | 'soxy';
+  mode: 'direct' | 'proxy';
   proxyUrls: string[];
   proxyUsername: string;
   proxyPassword: string;
-  soxyUrl: string;
-  soxyApiToken: string;
-  soxySessionTtl: string;
 }
 
 export interface HookTargetSettings {
@@ -199,21 +193,12 @@ export interface HookSettingsInput {
   targets: HookTargetInput[];
 }
 
-export interface TransferReport {
-  path?: string;
-  userId?: string;
-  presets?: number;
-  monitors?: number;
-}
-
 export interface DesktopBridge {
   GetNetworkSettings(): Promise<NetworkSettings>;
   SaveNetworkSettings(input: NetworkSettingsInput): Promise<NetworkSettings>;
   GetHookSettings(): Promise<HookSettings>;
   SaveHookSettings(input: HookSettingsInput): Promise<HookSettings>;
   GetUserID(): Promise<string>;
-  ExportConfiguration(userId: string): Promise<TransferReport>;
-  ImportConfiguration(): Promise<TransferReport>;
   Exit(): Promise<void>;
 }
 

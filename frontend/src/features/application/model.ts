@@ -1,4 +1,4 @@
-import type { AppState, ApplicationConnection, TransferReport } from '../../api/types';
+import type { AppState, ApplicationConnection } from '../../api/types';
 
 export const initialApplicationConnection: ApplicationConnection = {
   status: 'loading',
@@ -14,7 +14,3 @@ export const emptyAppState: AppState = {
   monitors: [],
   reservations: [],
 };
-
-export function transferSummary(report: TransferReport): string {
-  return `${report.presets || 0}개 프리셋 · ${report.monitors || 0}개 예매 모니터`;
-}

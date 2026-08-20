@@ -54,7 +54,7 @@ func desktopWindowOptions(
 	startupFailure chan<- error,
 ) *options.App {
 	return &options.App{
-		Title: "Cineko", Width: 1440, Height: 980, MinWidth: 1120, MinHeight: 760,
+		Title: "Cineko", Width: 1440, Height: 980, MinWidth: 360, MinHeight: 600,
 		BackgroundColour: options.NewRGB(10, 11, 14),
 		AssetServer: &assetserver.Options{
 			Assets: webui.Assets(), Handler: server.DesktopHandler(),
@@ -63,16 +63,13 @@ func desktopWindowOptions(
 		OnStartup: func(ctx context.Context) {
 			startDesktopWindow(ctx, app, server, store, embeddedProbe, dataDir, identity, eventFailure, startupFailure)
 		},
-		OnDomReady: app.domReady,
-		Bind:       []interface{}{app},
+		Bind: []interface{}{app},
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "io.cineko.desktop",
-			OnSecondInstanceLaunch: app.secondInstance,
+			UniqueId: "io.cineko.desktop",
 		},
 		Mac: &mac.Options{
 			Appearance: mac.NSAppearanceNameDarkAqua,
 			About:      &mac.AboutInfo{Title: "Cineko", Message: "CGV booking control room"},
-			OnFileOpen: app.openFile,
 		},
 	}
 }

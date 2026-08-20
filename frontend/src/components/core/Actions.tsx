@@ -22,7 +22,7 @@ export type IconActionProps = ActionIconProps & Omit<ComponentPropsWithoutRef<'b
 
 export function IconAction({ label, icon, ...props }: IconActionProps) {
   return (
-    <Tooltip label={label}>
+    <Tooltip label={label} events={{ hover: true, focus: true, touch: false }}>
       <ActionIcon aria-label={label} radius={0} variant="subtle" color="gray" size="lg" {...props}>{icon}</ActionIcon>
     </Tooltip>
   );

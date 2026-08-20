@@ -1,4 +1,8 @@
-import type { Monitor, MonitorMode, MonitorStatus } from '../../api/types';
+import type { CatalogMovie, Monitor, MonitorMode, MonitorStatus } from '../../api/types';
+
+export function orderedCatalogMovies(movies: CatalogMovie[]): CatalogMovie[] {
+  return [...movies];
+}
 
 export interface MonitorForm {
 	revision: number;
@@ -33,6 +37,9 @@ export interface MonitorSaveRequest {
   pollIntervalMax: number;
 }
 
+export const defaultSearchHorizonDays = 14;
+export const maximumSearchHorizonDays = 14;
+
 export const weekdayOptions = [
   { value: '0', label: '일' },
   { value: '1', label: '월' },
@@ -46,7 +53,7 @@ export const weekdayOptions = [
 export const initialMonitorForm: MonitorForm = {
 	id: '', revision: 0, movieId: '', movie: '', presetId: '', pollMinMinutes: 3, pollMaxMinutes: 8,
   monitorMode: 'opening', dates: [], weekdays: [],
-  horizonDays: 28, earliestTime: '', latestTime: '',
+  horizonDays: defaultSearchHorizonDays, earliestTime: '', latestTime: '',
 };
 
 const durationMinutes = (value: number | undefined, fallback: number) => value ? Math.round(value / 60_000_000_000) : fallback;
@@ -58,7 +65,7 @@ export function formFromMonitor(monitor: Monitor): MonitorForm {
     pollMaxMinutes: durationMinutes(monitor.pollIntervalMax, 8),
     monitorMode: monitor.mode,
     dates: [...monitor.targetDates], weekdays: monitor.targetWeekdays.map(String),
-    horizonDays: monitor.searchHorizonDays || 28, earliestTime: monitor.earliestTime, latestTime: monitor.latestTime,
+    horizonDays: normalizeHorizon(monitor.searchHorizonDays), earliestTime: monitor.earliestTime, latestTime: monitor.latestTime,
   };
 }
 
@@ -80,7 +87,8 @@ export function scheduleBounds(today: Date): { today: string; last: string } {
 }
 
 export function normalizeHorizon(value: number | string): number {
-  return typeof value === 'number' ? value : 28;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return defaultSearchHorizonDays;
+  return Math.max(1, Math.min(maximumSearchHorizonDays, Math.round(value)));
 }
 
 export function scheduleDescription(form: Pick<MonitorForm, 'dates' | 'weekdays' | 'horizonDays'>): string {
@@ -123,7 +131,7 @@ export function monitorScheduleLabel(monitor: Partial<Monitor>): string {
   if (monitor.targetDates?.length) parts.push(monitor.targetDates.join(' · '));
   if (monitor.targetWeekdays?.length) {
     const names = monitor.targetWeekdays.map((day) => weekdayOptions[day]?.label).filter(Boolean).join(' · ');
-    parts.push(`매주 ${names}요일 · 앞으로 ${monitor.searchHorizonDays || 28}일`);
+    parts.push(`매주 ${names}요일 · 앞으로 ${monitor.searchHorizonDays || defaultSearchHorizonDays}일`);
   }
   return parts.join(' / ') || '대상 일정 없음';
 }

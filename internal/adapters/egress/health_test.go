@@ -1,7 +1,6 @@
 package egress
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -39,51 +38,6 @@ func TestValidateConfigStandardProxies(t *testing.T) {
 	}
 }
 
-func TestValidateConfigManagedSoxy(t *testing.T) {
-	t.Parallel()
-	var releaseStatus atomic.Int32
-	releaseStatus.Store(http.StatusNoContent)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.Method + " " + request.URL.Path {
-		case "GET /v1/slots":
-			writeTestJSON(writer, http.StatusOK, map[string]any{"slots": []map[string]any{{"id": "slot", "status": "available", "current_ip": "192.0.2.1"}}})
-		case "POST /v1/sessions":
-			writeTestJSON(writer, http.StatusCreated, readySession("health"))
-		case "DELETE /v1/sessions/health":
-			writer.WriteHeader(int(releaseStatus.Load()))
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
-	defer server.Close()
-	config := Config{
-		SoxyURL: server.URL, SoxyToken: "token", Random: bytes.NewReader(make([]byte, 32)),
-		Probe: func(_ context.Context, proxy Proxy) error {
-			if proxy.Server != "http://127.0.0.1:11001" {
-				t.Fatalf("proxy = %+v", proxy)
-			}
-			return nil
-		},
-	}
-	if err := ValidateConfig(context.Background(), config); err != nil {
-		t.Fatalf("ValidateConfig() error = %v", err)
-	}
-	releaseStatus.Store(http.StatusInternalServerError)
-	if err := ValidateConfig(context.Background(), config); err == nil || !strings.Contains(err.Error(), "validate Soxy proxy") {
-		t.Fatalf("ValidateConfig(release failure) error = %v", err)
-	}
-	config.Probe = func(context.Context, Proxy) error { return errors.New("blocked") }
-	if err := ValidateConfig(context.Background(), config); err == nil || !strings.Contains(err.Error(), "blocked") {
-		t.Fatalf("ValidateConfig(probe failure) error = %v", err)
-	}
-	config.HTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("control offline")
-	})}
-	if err := ValidateConfig(context.Background(), config); err == nil || !strings.Contains(err.Error(), "validate Soxy lease") {
-		t.Fatalf("ValidateConfig(acquire failure) error = %v", err)
-	}
-}
-
 func TestProbeProxy(t *testing.T) {
 	oldURL := defaultProbeURL
 	t.Cleanup(func() { defaultProbeURL = oldURL })
@@ -118,10 +72,15 @@ func TestProbeProxy(t *testing.T) {
 	if err := probeProxy(context.Background(), Proxy{Server: "://invalid"}); err == nil {
 		t.Fatal("probeProxy(invalid proxy) error = nil")
 	}
+	closedProxy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := closedProxy.URL
+	closedProxy.Close()
 	defaultProbeURL = "http://health.example.test/status"
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := probeProxy(cancelled, parsed); !errors.Is(err, context.Canceled) {
-		t.Fatalf("probeProxy(cancelled) error = %v", err)
+	closed, err := ParseProxy(closedURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probeProxy(context.Background(), closed); err == nil {
+		t.Fatal("probeProxy(connection failure) error = nil")
 	}
 }
