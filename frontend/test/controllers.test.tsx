@@ -35,7 +35,7 @@ describe('monitor editor controller', () => {
 		));
 		act(() => result.current.setForm({
 			...result.current.form,
-			movie: 'Movie', presetId: 'preset', dates: ['2026-08-20'],
+			movieId: 'movie', movie: 'Movie', presetId: 'preset', dates: ['2026-08-20'],
 		}));
 
 		await act(async () => result.current.requestCreate());

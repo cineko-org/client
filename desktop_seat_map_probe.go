@@ -156,8 +156,12 @@ func seatMapShowtime(task central.AssignmentTask, auditorium domain.Auditorium) 
 	if showtime.StartsAt.IsZero() || showtime.EndsAt.IsZero() || !showtime.EndsAt.After(showtime.StartsAt) {
 		return domain.Showtime{}, errors.New("seat-map assignment showtime range is invalid")
 	}
+	if showtime.ProviderID == "" || showtime.SourceKey == "" || showtime.Movie.ID == "" || showtime.Movie.Title == "" {
+		return domain.Showtime{}, errors.New("seat-map assignment movie identity is incomplete")
+	}
 	return domain.Showtime{
-		ID: showtime.ID, Movie: showtime.Movie.Title, PosterURL: showtime.Movie.PosterURL,
+		ID: showtime.ID, ProviderID: showtime.ProviderID, SourceKey: showtime.SourceKey,
+		MovieID: showtime.Movie.ID, Movie: showtime.Movie.Title, PosterURL: showtime.Movie.PosterURL,
 		TheaterID: task.Theater.ID, TheaterRegion: task.Theater.Region, TheaterName: task.Theater.Name,
 		AuditoriumID: auditorium.ID, AuditoriumName: auditorium.Name,
 		ScreenTypes: append([]string(nil), auditorium.ScreenTypes...),

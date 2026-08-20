@@ -75,29 +75,47 @@ func DefaultBrowserConfig() BrowserConfig {
 }
 
 type Adapter struct {
-	ctx               context.Context
-	cancelContext     context.CancelFunc
-	browserContext    playwright.BrowserContext
-	page              playwright.Page
-	identitySession   playwright.CDPSession
-	stopPlaywright    func() error
-	closeOnce         sync.Once
-	lifecycleMu       sync.Mutex
-	closeHooks        []func()
-	closed            bool
-	artifactsDir      string
-	mu                sync.Mutex
-	selectedRegion    string
-	selectedTheater   string
-	preparedPayment   bool
-	preparedCancel    bool
-	blockedRequests   atomic.Uint64
-	continuedRequests atomic.Uint64
-	blockResources    bool
-	seatResponses     chan seatNetworkResponse
-	userAgent         browserUserAgent
-	userAgentMetadata userAgentBootstrapIdentity
-	webGLIdentity     webGLIdentity
+	ctx                context.Context
+	cancelContext      context.CancelFunc
+	browserContext     playwright.BrowserContext
+	page               playwright.Page
+	identitySession    playwright.CDPSession
+	stopPlaywright     func() error
+	processPID         int
+	profileDir         string
+	processCrashed     chan error
+	processDone        chan struct{}
+	processDoneOnce    sync.Once
+	processCrashOnce   sync.Once
+	closeAttemptDone   chan struct{}
+	closeAttemptOnce   sync.Once
+	forceWait          chan struct{}
+	forceWaitOnce      sync.Once
+	processWaitOnce    sync.Once
+	processWaitDone    chan struct{}
+	processWaitErr     error
+	fallbackWait       bool
+	closing            atomic.Bool
+	closeOnce          sync.Once
+	lifecycleMu        sync.Mutex
+	closeHooks         []func()
+	closed             bool
+	closeErr           error
+	artifactsDir       string
+	mu                 sync.Mutex
+	selectedRegion     string
+	selectedTheater    string
+	preparedPayment    bool
+	preparedCancel     bool
+	blockedRequests    atomic.Uint64
+	continuedRequests  atomic.Uint64
+	blockResources     bool
+	seatResponses      chan seatNetworkResponse
+	scheduleResponseMu sync.Mutex
+	providerResponses  []capturedProviderResponse
+	userAgent          browserUserAgent
+	userAgentMetadata  userAgentBootstrapIdentity
+	webGLIdentity      webGLIdentity
 }
 
 type BrowserPool struct {
@@ -316,7 +334,12 @@ func newAdapter(
 		ctx: adapterContext, cancelContext: cancelContext, browserContext: browserContext, page: page,
 		identitySession: identity.session,
 		stopPlaywright:  stopPlaywright, artifactsDir: config.ArtifactsDir,
-		seatResponses: make(chan seatNetworkResponse, 8), userAgent: selectedUserAgent,
+		processPID: pw.Pid(), profileDir: config.ProfileDir,
+		processCrashed: make(chan error, 1), processDone: make(chan struct{}),
+		closeAttemptDone: make(chan struct{}), forceWait: make(chan struct{}),
+		processWaitDone:   make(chan struct{}),
+		seatResponses:     make(chan seatNetworkResponse, 8),
+		userAgent:         selectedUserAgent,
 		userAgentMetadata: identity.metadata, webGLIdentity: identity.webGL,
 		blockResources: config.BlockResources,
 	}
@@ -427,6 +450,15 @@ func (adapter *Adapter) installBrowserHooks(scripts []string) error {
 		return fmt.Errorf("install browser resource routing: %w", err)
 	}
 	adapter.browserContext.OnResponse(adapter.handleResponse)
+	adapter.page.OnResponse(adapter.captureProviderResponse)
+	adapter.browserContext.OnClose(func(playwright.BrowserContext) {
+		if adapter.closing.Load() {
+			return
+		}
+		adapter.processCrashOnce.Do(func() {
+			adapter.processCrashed <- errors.New("CGV browser context closed unexpectedly")
+		})
+	})
 	adapter.browserContext.OnPage(func(page playwright.Page) {
 		if page != adapter.page {
 			_ = page.Close()
@@ -616,7 +648,10 @@ func (adapter *Adapter) routeRequest(route playwright.Route) {
 }
 
 func (adapter *Adapter) handleResponse(response playwright.Response) {
-	if response.Status() != 200 || !strings.Contains(response.URL(), seatDataPath) {
+	if response.Status() != 200 {
+		return
+	}
+	if !strings.Contains(response.URL(), seatDataPath) {
 		return
 	}
 	go func() {
@@ -632,27 +667,83 @@ func (adapter *Adapter) publishSeatResponse(response seatNetworkResponse) {
 	}
 }
 
+// Close stops the adapter and keeps the existing fire-and-forget automation
+// contract. Process owners that must preserve lifecycle errors should call
+// CloseWithError instead.
 func (adapter *Adapter) Close() {
+	_ = adapter.CloseWithError()
+}
+
+// CloseWithError stops the adapter and returns browser-context or Playwright
+// transport errors to the owning process lifecycle.
+func (adapter *Adapter) CloseWithError() error {
+	if adapter == nil {
+		return nil
+	}
 	adapter.closeOnce.Do(func() {
-		adapter.cancelContext()
+		adapter.closing.Store(true)
+		if adapter.cancelContext != nil {
+			adapter.cancelContext()
+		}
+		var closeErr error
 		if adapter.identitySession != nil {
-			_ = adapter.identitySession.Detach()
+			closeErr = errors.Join(closeErr, adapter.identitySession.Detach())
 		}
 		if adapter.browserContext != nil {
-			_ = adapter.browserContext.Close()
+			closeErr = errors.Join(closeErr, adapter.browserContext.Close())
 		}
+		var stopErr error
 		if adapter.stopPlaywright != nil {
-			_ = adapter.stopPlaywright()
+			stopErr = adapter.stopPlaywright()
+			closeErr = errors.Join(closeErr, stopErr)
+		}
+		fallbackWait := false
+		if stopErr != nil && adapter.processPID > 0 {
+			state, stateErr := rootProcessState(adapter.processPID)
+			closeErr = errors.Join(closeErr, stateErr)
+			// A transport error is not proof that cmd.Wait was skipped: Playwright
+			// can report a driver's exit after it has already reaped the child.
+			// Only a known-reaped child may skip forced cleanup; an unknown state
+			// must fail closed through the bounded kill-and-wait path.
+			fallbackWait = state != rootProcessReaped
 		}
 		adapter.lifecycleMu.Lock()
+		adapter.closeErr = closeErr
+		adapter.fallbackWait = fallbackWait
 		adapter.closed = true
-		hooks := append([]func(){}, adapter.closeHooks...)
-		adapter.closeHooks = nil
 		adapter.lifecycleMu.Unlock()
-		for _, hook := range hooks {
-			hook()
+		if adapter.closeAttemptDone != nil {
+			adapter.closeAttemptOnce.Do(func() { close(adapter.closeAttemptDone) })
+		}
+		if !fallbackWait {
+			adapter.markProcessReaped(nil)
 		}
 	})
+	adapter.lifecycleMu.Lock()
+	defer adapter.lifecycleMu.Unlock()
+	return adapter.closeErr
+}
+
+// markProcessReaped records that the driver has been reaped and runs deferred
+// profile/resource hooks exactly once. It is called by the Playwright stop
+// owner or by the explicit fallback wait after a forced tree kill.
+func (adapter *Adapter) markProcessReaped(waitErr error) {
+	if adapter == nil {
+		return
+	}
+	if adapter.processDone != nil {
+		adapter.processDoneOnce.Do(func() { close(adapter.processDone) })
+	}
+	adapter.lifecycleMu.Lock()
+	if waitErr != nil && adapter.processWaitErr == nil {
+		adapter.processWaitErr = waitErr
+	}
+	hooks := append([]func(){}, adapter.closeHooks...)
+	adapter.closeHooks = nil
+	adapter.lifecycleMu.Unlock()
+	for _, hook := range hooks {
+		hook()
+	}
 }
 
 // AddCloseHook registers resource cleanup after Chrome has stopped. If Close
@@ -662,13 +753,25 @@ func (adapter *Adapter) AddCloseHook(hook func()) {
 		return
 	}
 	adapter.lifecycleMu.Lock()
-	if !adapter.closed {
+	if !adapter.closed || adapter.processDoneOpenLocked() {
 		adapter.closeHooks = append(adapter.closeHooks, hook)
 		adapter.lifecycleMu.Unlock()
 		return
 	}
 	adapter.lifecycleMu.Unlock()
 	hook()
+}
+
+func (adapter *Adapter) processDoneOpenLocked() bool {
+	if adapter.processDone == nil {
+		return false
+	}
+	select {
+	case <-adapter.processDone:
+		return false
+	default:
+		return true
+	}
 }
 
 func (adapter *Adapter) Capture(label string) (string, error) {

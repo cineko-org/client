@@ -324,9 +324,10 @@ func (dispatcher *Dispatcher) clientForTarget(ctx context.Context, rawURL string
 		return dispatcher.dial(ctx, network, net.JoinHostPort(pinnedIP, port))
 	}
 	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	} else {
 		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+		transport.TLSClientConfig.MinVersion = max(transport.TLSClientConfig.MinVersion, tls.VersionTLS12)
 	}
 	transport.TLSClientConfig.ServerName = parsed.Hostname()
 	client.Transport = transport

@@ -7,13 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"time"
 
 	"github.com/cineko-org/client/internal/adapters/browserfactory"
+	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/adapters/configbundle"
 	"github.com/cineko-org/client/internal/adapters/credentialvault"
 	"github.com/cineko-org/client/internal/adapters/egress"
 	"github.com/cineko-org/client/internal/adapters/eventhook"
 	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
+	"github.com/cineko-org/client/internal/booking"
 	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/interfaces/webui"
 	"github.com/cineko-org/client/internal/platform"
@@ -21,9 +24,6 @@ import (
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const updateRequiredExitCode = 75
@@ -59,15 +59,6 @@ func runDesktop() (runErr error) {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, store.Close()) }()
-	eventContext, stopEvents := context.WithCancel(context.Background())
-	eventDone := make(chan error, 1)
-	go func() { eventDone <- store.WatchEvents(eventContext) }()
-	defer func() {
-		stopEvents()
-		if eventErr := <-eventDone; !errors.Is(eventErr, context.Canceled) {
-			runErr = errors.Join(runErr, eventErr)
-		}
-	}()
 	if err := prepareDesktopState(context.Background(), store, identity, dataDir); err != nil {
 		return err
 	}
@@ -76,6 +67,12 @@ func runDesktop() (runErr error) {
 		return err
 	}
 	defer browsers.Close()
+	credentials := credentialvault.New()
+	warmPool, err := newWarmBookingPool(context.Background(), browsers, credentials, store.UserID())
+	if err != nil {
+		return err
+	}
+	defer func() { runErr = errors.Join(runErr, warmPool.Close()) }()
 	seatMapCapabilities := &seatMapCapabilityState{}
 	embeddedProbe, err := startEmbeddedProbe(
 		context.Background(), store, dataDir, identity, browsers, seatMapCapabilities,
@@ -89,25 +86,26 @@ func runDesktop() (runErr error) {
 
 	server, err := webui.New(webui.Dependencies{
 		Repository: store,
-		Factory: func(ctx context.Context, background bool, purpose webui.AutomationPurpose, sessionKey string) (webui.Automation, error) {
-			open := func() (webui.Automation, error) {
-				return browsers.Open(ctx, browserTaskForUser(store.UserID(), background, purpose))
-			}
-			if purpose == webui.AutomationSession && sessionKey != "account" {
-				return embeddedProbe.OpenBooking(open)
-			}
-			return open()
-		},
-		IDs: platform.IDGenerator{}, Clock: platform.Clock{}, Waiter: platform.Waiter{}, Events: hooks,
+		Factory:    newAutomationFactory(browsers, warmPool, embeddedProbe, store.UserID()),
+		IDs:        platform.IDGenerator{}, Clock: platform.Clock{}, Waiter: platform.Waiter{}, Events: hooks,
 		AccountStateChanged: seatMapCapabilities.SetAuthenticated,
-		Credentials:         credentialvault.New(), UserID: store.UserID(),
+		Credentials:         credentials, UserID: store.UserID(),
+		BookingDemandChanged: func(active bool) {
+			if active {
+				warmPool.SetDesired(booking.DefaultWarmBrowserCapacity)
+				return
+			}
+			warmPool.SetDesired(0)
+		},
+		BookingCapacityAvailable: func() bool { return warmPool.Stats().Ready > 0 },
 	})
 	if err != nil {
 		return err
 	}
+	warmPool.SetReadyNotifier(server.NotifyBookingCapacityChanged)
 	hooks.SetFailureHandler(func(failure eventhook.Failure) {
 		server.RecordLocalSystemEvent(store.UserID(), "hook.delivery_failed", domain.EventError,
-			fmt.Sprintf("%s 알림 전송에 실패했습니다: %v", failure.Target.Name, failure.Err))
+			fmt.Sprintf("%s 알림을 보내지 못했습니다. 외부 알림 설정을 확인하세요.", failure.Target.Name))
 	})
 	bundles, err := configbundle.New(store, platform.Clock{})
 	if err != nil {
@@ -118,38 +116,23 @@ func runDesktop() (runErr error) {
 	app.execution = &desktopExecutionWorker{
 		store: store, server: server, installationID: identity.InstallationID, userID: store.UserID(),
 	}
-
-	err = wails.Run(&options.App{
-		Title: "Cineko", Width: 1440, Height: 980, MinWidth: 1120, MinHeight: 760,
-		BackgroundColour: options.NewRGB(10, 11, 14),
-		AssetServer: &assetserver.Options{
-			Assets: webui.Assets(), Handler: server.DesktopHandler(),
-			Middleware: webui.SecurityHeaders,
-		},
-		OnStartup: func(ctx context.Context) {
-			app.startup(ctx)
-			go superviseEmbeddedProbe(ctx, embeddedProbe, func(probeErr error) {
-				server.RecordLocalSystemEvent(store.UserID(), "probe.runtime_failed", domain.EventError,
-					"분산 좌석 탐색 런타임이 중지되었습니다: "+probeErr.Error())
-				wailsruntime.Quit(ctx)
-			})
-		},
-		OnDomReady: app.domReady,
-		Bind:       []interface{}{app},
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "io.cineko.desktop",
-			OnSecondInstanceLaunch: app.secondInstance,
-		},
-		Mac: &mac.Options{
-			Appearance: mac.NSAppearanceNameDarkAqua,
-			About:      &mac.AboutInfo{Title: "Cineko", Message: "CGV booking control room"},
-			OnFileOpen: app.openFile,
-		},
-	})
+	err = runDesktopWindow(app, server, store, embeddedProbe, dataDir, identity)
 	if app.updateNeeded.Load() {
 		return errors.Join(err, errUpdateRequired)
 	}
 	return err
+}
+
+type centralEventWatcher interface {
+	WatchEvents(context.Context) error
+}
+
+func superviseCentralEvents(ctx context.Context, watcher centralEventWatcher, onFailure func(error)) {
+	err := watcher.WatchEvents(ctx)
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return
+	}
+	onFailure(err)
 }
 
 func prepareDesktopState(
@@ -185,6 +168,64 @@ func browserTaskForUser(userID string, background bool, purpose webui.Automation
 		task.SessionKey = ""
 	}
 	return task
+}
+
+func newWarmBookingPool(
+	ctx context.Context,
+	factory *browserfactory.Factory,
+	credentials *credentialvault.Vault,
+	userID string,
+) (*booking.Pool, error) {
+	if factory == nil || credentials == nil || userID == "" {
+		return nil, errors.New("warm booking pool dependencies are incomplete")
+	}
+	return factory.NewWarmBookingPool(
+		ctx,
+		browserfactory.Task{Purpose: egress.PurposeSession, SessionKey: userID},
+		func(ctx context.Context, adapter *cgv.Adapter) error {
+			authenticated, err := adapter.IsAuthenticated(ctx)
+			if err != nil || authenticated {
+				return err
+			}
+			account, err := credentials.Load(ctx, userID)
+			if errors.Is(err, domain.ErrAccountCredentialsNotFound) {
+				return fmt.Errorf("%w: saved CGV credentials are required", booking.ErrPermanent)
+			}
+			if err != nil {
+				return err
+			}
+			return adapter.AuthenticateSavedUntil(ctx, account, 5*time.Minute)
+		},
+	)
+}
+
+func newAutomationFactory(
+	factory *browserfactory.Factory,
+	warmPool *booking.Pool,
+	probe *embeddedProbe,
+	userID string,
+) webui.AutomationFactory {
+	return func(ctx context.Context, background bool, purpose webui.AutomationPurpose, sessionKey string) (webui.Automation, error) {
+		open := func() (webui.Automation, error) {
+			return factory.Open(ctx, browserTaskForUser(userID, background, purpose))
+		}
+		if purpose == webui.AutomationCancellation {
+			return probe.OpenBooking(open)
+		}
+		if purpose != webui.AutomationSession || sessionKey == "account" {
+			return open()
+		}
+		lease, err := warmPool.Acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
+		automation, err := browserfactory.WarmAutomationFromLease(lease)
+		if err != nil {
+			lease.Release()
+			return nil, err
+		}
+		return probe.OpenBooking(func() (webui.Automation, error) { return automation, nil })
+	}
 }
 
 func discardLegacyLocalDomainState(dataDir string) error {

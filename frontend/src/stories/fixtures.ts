@@ -23,7 +23,7 @@ export const presets: Preset[] = [
   },
 ];
 
-const monitorBase: Omit<Monitor, 'id' | 'movie' | 'status'> = {
+const monitorBase: Omit<Monitor, 'id' | 'movieId' | 'movie' | 'status'> = {
   userId: 'user', presetId: 'preset-imax', mode: 'opening', targetDates: ['2026-08-20'],
   targetWeekdays: [], searchHorizonDays: 28, earliestTime: '18:00', latestTime: '23:30',
   pollInterval: 180_000_000_000, pollIntervalMax: 480_000_000_000, lastError: '',
@@ -31,16 +31,16 @@ const monitorBase: Omit<Monitor, 'id' | 'movie' | 'status'> = {
 };
 
 export const monitors: Monitor[] = [
-  { ...monitorBase, id: 'monitor-running', movie: '어벤져스: 시크릿 워즈', status: 'running' },
+  { ...monitorBase, id: 'monitor-running', movieId: 'movie-avengers', movie: '어벤져스: 시크릿 워즈', status: 'running' },
   {
-    ...monitorBase, id: 'monitor-triggered', movie: '듄: 메시아', status: 'triggered',
+    ...monitorBase, id: 'monitor-triggered', movieId: 'movie-dune', movie: '듄: 메시아', status: 'triggered',
     targetDates: ['2026-08-20'], earliestTime: '19:00', latestTime: '',
   },
   {
-    ...monitorBase, id: 'monitor-payment-unknown', movie: '프로젝트 헤일메리', status: 'payment_unknown',
+    ...monitorBase, id: 'monitor-payment-unknown', movieId: 'movie-hail-mary', movie: '프로젝트 헤일메리', status: 'payment_unknown',
     targetDates: ['2026-08-21'], earliestTime: '20:00', latestTime: '',
   },
-  { ...monitorBase, id: 'monitor-failed', movie: '위키드: 포 굿', status: 'failed', lastError: 'probe unavailable' },
+  { ...monitorBase, id: 'monitor-failed', movieId: 'movie-avengers', movie: '위키드: 포 굿', status: 'failed', lastError: 'probe unavailable' },
 ];
 
 export const reservations: Reservation[] = [

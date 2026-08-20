@@ -9,19 +9,28 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
 	central "github.com/cineko-org/contracts/v3"
+	"github.com/cineko-org/probe/v2/internal/telemetry"
 
+	"golang.org/x/mod/semver"
 	"golang.org/x/sync/errgroup"
 )
 
 const (
-	DefaultClaimMinimum     = 2 * time.Second
-	DefaultClaimMaximum     = 5 * time.Second
-	DefaultReconnectMinimum = time.Second
-	DefaultReconnectMaximum = 30 * time.Second
+	DefaultClaimMinimum      = 2 * time.Second
+	DefaultClaimMaximum      = 5 * time.Second
+	DefaultReconnectMinimum  = time.Second
+	DefaultReconnectMaximum  = 30 * time.Second
+	DefaultHeartbeatFailures = 3
+)
+
+var (
+	ErrHeartbeatUnavailable = errors.New("central heartbeat is unavailable")
+	ErrIncompatibleRuntime  = errors.New("probe runtime does not meet Central minimum policy")
 )
 
 type Executor interface {
@@ -53,6 +62,7 @@ type Config struct {
 	ClaimMaximum          time.Duration
 	ReconnectMinimum      time.Duration
 	ReconnectMaximum      time.Duration
+	HeartbeatFailureLimit int
 	AvailableCapabilities func() []string
 	Logger                *slog.Logger
 }
@@ -87,8 +97,12 @@ func NewRuntime(api API, credentials CredentialSource, executor Executor, config
 	defaultDuration(&config.ClaimMaximum, DefaultClaimMaximum)
 	defaultDuration(&config.ReconnectMinimum, DefaultReconnectMinimum)
 	defaultDuration(&config.ReconnectMaximum, DefaultReconnectMaximum)
+	if config.HeartbeatFailureLimit == 0 {
+		config.HeartbeatFailureLimit = DefaultHeartbeatFailures
+	}
 	if config.ClaimMinimum <= 0 || config.ClaimMaximum < config.ClaimMinimum ||
-		config.ReconnectMinimum <= 0 || config.ReconnectMaximum < config.ReconnectMinimum {
+		config.ReconnectMinimum <= 0 || config.ReconnectMaximum < config.ReconnectMinimum ||
+		config.HeartbeatFailureLimit < 1 {
 		return nil, errors.New("probe retry intervals are invalid")
 	}
 	if config.Logger == nil {
@@ -142,7 +156,9 @@ func (runtime *Runtime) run(ctx context.Context, ready chan<- error) error {
 			default:
 			}
 			if errors.Is(err, ErrUnauthorized) {
-				runtime.config.Logger.Warn("Probe session expired before readiness; requesting a new bootstrap credential")
+				runtime.config.Logger.WarnContext(ctx, "Probe session expired before readiness",
+					"domain", "probe", "event", "probe.session.expired", "outcome", "requeued",
+					"reason", "session_expired_before_ready")
 				continue
 			}
 			notifyReady(ready, err)
@@ -160,7 +176,9 @@ func (runtime *Runtime) run(ctx context.Context, ready chan<- error) error {
 		if !errors.Is(err, ErrUnauthorized) {
 			return err
 		}
-		runtime.config.Logger.Warn("Probe session expired; requesting a new bootstrap credential")
+		runtime.config.Logger.WarnContext(ctx, "Probe session expired",
+			"domain", "probe", "event", "probe.session.expired", "outcome", "requeued",
+			"reason", "session_expired")
 	}
 }
 
@@ -232,17 +250,27 @@ func (runtime *Runtime) heartbeatLoop(
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	consecutiveFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 			if err := runtime.sendProbeHeartbeat(ctx, session); err != nil {
-				if errors.Is(err, ErrUnauthorized) {
+				if !retryable(err) {
 					return err
 				}
-				runtime.config.Logger.Warn("Probe heartbeat failed", "error", err)
+				consecutiveFailures++
+				runtime.config.Logger.WarnContext(ctx, "Probe heartbeat failed",
+					"domain", "probe", "event", "probe.heartbeat.completed", "outcome", "failed",
+					"reason", "central_request_failed", "error_type", telemetry.ErrorType(err))
+				if consecutiveFailures >= runtime.config.HeartbeatFailureLimit {
+					return fmt.Errorf("%w after %d consecutive failures: %w",
+						ErrHeartbeatUnavailable, consecutiveFailures, err)
+				}
+				continue
 			}
+			consecutiveFailures = 0
 		}
 	}
 }
@@ -253,10 +281,79 @@ func (runtime *Runtime) sendProbeHeartbeat(ctx context.Context, session Session)
 	if err != nil {
 		return err
 	}
+	if err := runtime.validateMinimumPolicy(response); err != nil {
+		runtime.mu.Lock()
+		runtime.remoteDrain = true
+		runtime.mu.Unlock()
+		return err
+	}
 	runtime.mu.Lock()
 	runtime.remoteDrain = response.Drain
 	runtime.mu.Unlock()
 	return nil
+}
+
+func (runtime *Runtime) validateMinimumPolicy(response central.ProbeHeartbeatResponse) error {
+	runtimeVersion := runtime.config.Registration.Runtime.Version
+	browserRevision := runtime.config.Registration.Runtime.BrowserRevision
+	if ok, err := semanticVersionAtLeast(runtimeVersion, response.MinimumRuntimeVersion); err != nil || !ok {
+		return fmt.Errorf("%w: runtime %q, minimum %q", ErrIncompatibleRuntime, runtimeVersion, response.MinimumRuntimeVersion)
+	}
+	if ok, err := browserRevisionAtLeast(browserRevision, response.MinimumBrowserRevision); err != nil || !ok {
+		return fmt.Errorf("%w: browser %q, minimum %q", ErrIncompatibleRuntime, browserRevision, response.MinimumBrowserRevision)
+	}
+	return nil
+}
+
+func semanticVersionAtLeast(current, minimum string) (bool, error) {
+	minimum = canonicalSemanticVersion(minimum)
+	if minimum == "" {
+		return true, nil
+	}
+	current = canonicalSemanticVersion(current)
+	if !semver.IsValid(current) || !semver.IsValid(minimum) {
+		return false, errors.New("runtime versions must use semantic versioning")
+	}
+	return semver.Compare(current, minimum) >= 0, nil
+}
+
+func canonicalSemanticVersion(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "v") {
+		return value
+	}
+	return "v" + value
+}
+
+func browserRevisionAtLeast(current, minimum string) (bool, error) {
+	minimum = strings.TrimSpace(minimum)
+	if minimum == "" {
+		return true, nil
+	}
+	currentValue, err := parseBrowserRevision(current)
+	if err != nil {
+		return false, err
+	}
+	minimumValue, err := parseBrowserRevision(minimum)
+	if err != nil {
+		return false, err
+	}
+	return currentValue.Cmp(minimumValue) >= 0, nil
+}
+
+func parseBrowserRevision(value string) (*big.Int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, errors.New("browser revision is empty")
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return nil, errors.New("browser revision must be a nonnegative integer")
+		}
+	}
+	// Every rune is an ASCII digit, so base-10 parsing cannot fail.
+	revision, _ := new(big.Int).SetString(value, 10)
+	return revision, nil
 }
 
 func (runtime *Runtime) workLoop(ctx context.Context, session Session) error {
@@ -271,6 +368,7 @@ func (runtime *Runtime) workLoop(ctx context.Context, session Session) error {
 			continue
 		}
 		assignment, err := runtime.api.ClaimAssignment(ctx, session)
+		claimWaitsForAvailability := assignmentClaimWaitsForAvailability(runtime.api)
 		if err != nil {
 			if errors.Is(err, ErrUnauthorized) {
 				return err
@@ -278,11 +376,16 @@ func (runtime *Runtime) workLoop(ctx context.Context, session Session) error {
 			if !retryable(err) {
 				return err
 			}
-			runtime.config.Logger.Warn("Probe assignment claim failed", "error", err)
+			runtime.config.Logger.WarnContext(ctx, "Probe assignment claim failed",
+				"domain", "observation", "event", "observation.assignment.claim.completed", "outcome", "failed",
+				"reason", "central_request_failed", "error_type", telemetry.ErrorType(err))
 		} else if assignment != nil {
 			if err := runtime.handleClaimedAssignment(ctx, session, *assignment); err != nil {
 				return err
 			}
+		}
+		if err == nil && claimWaitsForAvailability {
+			continue
 		}
 		delay, delayErr := runtime.randomDuration(runtime.config.ClaimMinimum, runtime.config.ClaimMaximum)
 		if delayErr != nil {
@@ -294,11 +397,19 @@ func (runtime *Runtime) workLoop(ctx context.Context, session Session) error {
 	}
 }
 
+func assignmentClaimWaitsForAvailability(api API) bool {
+	waiter, ok := api.(interface{ AssignmentClaimWaitsForAvailability() bool })
+	return ok && waiter.AssignmentClaimWaitsForAvailability()
+}
+
 func (runtime *Runtime) handleClaimedAssignment(
 	ctx context.Context,
 	session Session,
 	assignment central.ClaimAssignmentResponse,
 ) error {
+	runtime.config.Logger.InfoContext(ctx, "Observation assignment claimed",
+		"domain", "observation", "event", "observation.assignment.claimed", "outcome", "succeeded",
+		"assignment_id", assignment.AssignmentID, "task_kind", assignment.Task.Kind)
 	runtime.setActive(assignment.AssignmentID)
 	defer runtime.setActive("")
 	var err error
@@ -311,9 +422,10 @@ func (runtime *Runtime) handleClaimedAssignment(
 		return err
 	}
 	if err != nil && !errors.Is(err, ErrLeaseExpired) && ctx.Err() == nil {
-		runtime.config.Logger.Error(
-			"Probe assignment failed", "assignment_id", assignment.AssignmentID, "error", err,
-		)
+		runtime.config.Logger.ErrorContext(ctx, "Observation assignment failed",
+			"domain", "observation", "event", "observation.assignment.completed", "outcome", "failed",
+			"assignment_id", assignment.AssignmentID, "task_kind", assignment.Task.Kind,
+			"reason", "execution_failed", "error_type", telemetry.ErrorType(err))
 	}
 	return nil
 }
@@ -357,12 +469,7 @@ func (runtime *Runtime) executeAssignment(
 		case <-ctx.Done():
 			return ctx.Err()
 		case capture := <-resultChannel:
-			finishedAt := runtime.clock().UTC()
-			result, err := runtime.assignmentResult(capture.output, capture.err, startedAt, finishedAt)
-			if err != nil {
-				return err
-			}
-			return runtime.commitResult(ctx, session, assignment, result)
+			return runtime.commitCapturedResult(ctx, session, assignment, capture, startedAt)
 		case <-ticker.C:
 			if !assignment.LeaseExpiresAt.After(runtime.clock()) {
 				cancel()
@@ -375,9 +482,10 @@ func (runtime *Runtime) executeAssignment(
 					cancel()
 					return err
 				}
-				runtime.config.Logger.Warn(
-					"Probe assignment heartbeat failed", "assignment_id", assignment.AssignmentID, "error", err,
-				)
+				runtime.config.Logger.WarnContext(ctx, "Observation assignment heartbeat failed",
+					"domain", "observation", "event", "observation.assignment.heartbeat.completed",
+					"outcome", "failed", "assignment_id", assignment.AssignmentID,
+					"reason", "central_request_failed", "error_type", telemetry.ErrorType(err))
 			case !response.LeaseExpiresAt.After(runtime.clock()):
 				cancel()
 				return errors.New("central returned an invalid assignment lease extension")
@@ -386,6 +494,36 @@ func (runtime *Runtime) executeAssignment(
 			}
 		}
 	}
+}
+
+func (runtime *Runtime) commitCapturedResult(
+	ctx context.Context,
+	session Session,
+	assignment central.ClaimAssignmentResponse,
+	capture captureResult,
+	startedAt time.Time,
+) error {
+	finishedAt := runtime.clock().UTC()
+	result, err := runtime.assignmentResult(capture.output, capture.err, startedAt, finishedAt)
+	if err != nil {
+		return err
+	}
+	if err := runtime.commitResult(ctx, session, assignment, result); err != nil {
+		return err
+	}
+	outcome := "succeeded"
+	switch result.Status {
+	case "failed":
+		outcome = "failed"
+	case "partial":
+		outcome = "degraded"
+	}
+	runtime.config.Logger.InfoContext(ctx, "Observation assignment completed",
+		"domain", "observation", "event", "observation.assignment.completed", "outcome", outcome,
+		"assignment_id", assignment.AssignmentID, "run_id", result.RunID,
+		"task_kind", assignment.Task.Kind, "result_status", result.Status,
+		"duration_ms", finishedAt.Sub(startedAt).Milliseconds())
+	return nil
 }
 
 func (runtime *Runtime) captureAssignment(ctx context.Context, task central.AssignmentTask) captureResult {
@@ -538,7 +676,10 @@ func (runtime *Runtime) randomDuration(minimum, maximum time.Duration) (time.Dur
 }
 
 func (runtime *Runtime) logRetry(operation string, err error, delay time.Duration) {
-	runtime.config.Logger.Warn("Central request will be retried", "operation", operation, "delay", delay, "error", err)
+	runtime.config.Logger.Warn("Central request will be retried",
+		"domain", "probe", "event", "probe.central_request.retry_scheduled", "outcome", "requeued",
+		"operation", operation, "retry_delay_ms", delay.Milliseconds(),
+		"reason", "central_request_failed", "error_type", telemetry.ErrorType(err))
 }
 
 func resultStatus(output executionOutput, captureErr error) string {
@@ -571,7 +712,8 @@ func retryable(err error) bool {
 	if errors.As(err, &apiError) {
 		return apiError.Retryable || apiError.StatusCode >= 500
 	}
-	return !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrLeaseExpired)
+	return !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrLeaseExpired) &&
+		!errors.Is(err, ErrIncompatibleRuntime)
 }
 
 func defaultDuration(value *time.Duration, fallback time.Duration) {

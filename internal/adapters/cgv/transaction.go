@@ -167,9 +167,9 @@ func (adapter *Adapter) clickSeat(label string) (bool, error) {
 		const target = %s;
 		const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
 		const pattern = new RegExp('(?:^|\\s)' + target.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&') + '(?:\\s|$)', 'i');
-		const element = window.__cinekoQueryAll('button,[role="button"],[data-seat]')
+		const element = window.__cinekoQueryAll('button,[role="button"],[data-seatlocno]')
 			.find(item => !item.disabled && item.getAttribute('aria-disabled') !== 'true' && pattern.test(normalize(
-				item.getAttribute('aria-label') || item.getAttribute('title') || item.getAttribute('data-seat') || item.innerText || item.textContent
+				item.getAttribute('aria-label') || item.getAttribute('title') || item.getAttribute('data-seatlocno') || item.innerText || item.textContent
 			)));
 		if (!element) return false;
 		element.click();

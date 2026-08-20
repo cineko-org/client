@@ -2,6 +2,7 @@ package cgv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -167,6 +168,28 @@ func TestAdapterCloseHooksSurviveCloseRaces(t *testing.T) {
 		if racedCalls.Load() != 1 {
 			t.Fatalf("race iteration %d hook calls = %d", iteration, racedCalls.Load())
 		}
+	}
+}
+
+func TestAdapterCloseWithErrorPreservesPlaywrightFailure(t *testing.T) {
+	t.Parallel()
+	stopErr := errors.New("playwright transport close failed")
+	var stopCalls atomic.Int64
+	adapter := &Adapter{
+		cancelContext: func() {},
+		processDone:   make(chan struct{}),
+		stopPlaywright: func() error {
+			stopCalls.Add(1)
+			return stopErr
+		},
+	}
+
+	adapter.Close()
+	if got := adapter.CloseWithError(); !errors.Is(got, stopErr) {
+		t.Fatalf("CloseWithError() = %v, want %v", got, stopErr)
+	}
+	if stopCalls.Load() != 1 {
+		t.Fatalf("Playwright stop calls = %d, want 1", stopCalls.Load())
 	}
 }
 

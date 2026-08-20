@@ -17,11 +17,26 @@ type paymentSession struct {
 	timer         *time.Timer
 }
 
+type paymentRetention interface {
+	RetainPayment() error
+}
+
+type paymentFailureNotifier interface {
+	PaymentFailure() <-chan struct{}
+}
+
 func (server *Server) retainPaymentSession(
 	monitorID string,
 	reservation domain.Reservation,
 	automation Automation,
-) {
+) bool {
+	if retention, ok := automation.(paymentRetention); ok {
+		if err := retention.RetainPayment(); err != nil {
+			automation.Close()
+			server.recordMaintenanceFailure("payment-retention:"+monitorID, err)
+			return false
+		}
+	}
 	session := &paymentSession{
 		automation: automation, reservationID: reservation.ID, userID: reservation.UserID,
 	}
@@ -36,6 +51,39 @@ func (server *Server) retainPaymentSession(
 	})
 	server.paymentMu.Unlock()
 	closePaymentSession(previous)
+	server.watchPaymentFailure(monitorID, session)
+	return true
+}
+
+func (server *Server) watchPaymentFailure(monitorID string, expected *paymentSession) {
+	notifier, ok := expected.automation.(paymentFailureNotifier)
+	if !ok {
+		return
+	}
+	failure := notifier.PaymentFailure()
+	if failure == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-failure:
+			session := server.removePaymentSession(monitorID, expected)
+			if session == nil {
+				return
+			}
+			closePaymentSession(session)
+			ctx := server.lifetimeContext()
+			if err := server.finishPaymentAttempt(ctx, monitorID, session, "unknown", domain.MonitorPaymentUnknown); err != nil {
+				server.recordMaintenanceFailure("payment-crash:"+monitorID, err)
+				server.refreshBookingDemand(ctx)
+				return
+			}
+			server.refreshBookingDemand(ctx)
+			server.addEvent(session.userID, "payment.browser_failed", domain.EventError,
+				"결제 화면이 종료되었습니다. CGV 예매 내역을 확인한 뒤 다시 시도하세요.")
+		case <-server.lifetimeContext().Done():
+		}
+	}()
 }
 
 func (server *Server) hasPaymentSession(monitorID string) bool {
@@ -54,7 +102,10 @@ func (server *Server) abandonPaymentSession(ctx context.Context, monitorID strin
 		session = &paymentSession{reservationID: job.ReservationID, userID: job.UserID}
 	}
 	closePaymentSession(session)
-	return true, server.finishPaymentAttempt(ctx, monitorID, session, "abandoned", domain.MonitorPending)
+	server.signalExecutionAvailable()
+	err := server.finishPaymentAttempt(ctx, monitorID, session, "abandoned", domain.MonitorPending)
+	server.refreshBookingDemand(ctx)
+	return true, err
 }
 
 func (server *Server) expirePaymentSession(monitorID string, expected *paymentSession) {
@@ -63,14 +114,17 @@ func (server *Server) expirePaymentSession(monitorID string, expected *paymentSe
 		return
 	}
 	closePaymentSession(session)
+	server.signalExecutionAvailable()
 	ctx := server.rootContext
 	if ctx == nil || ctx.Err() != nil {
 		ctx = context.Background()
 	}
 	if err := server.finishPaymentAttempt(ctx, monitorID, session, "unknown", domain.MonitorPaymentUnknown); err != nil {
 		server.recordMaintenanceFailure("payment-session:"+monitorID, err)
+		server.refreshBookingDemand(ctx)
 		return
 	}
+	server.refreshBookingDemand(ctx)
 	server.addEvent(
 		session.userID, "payment.expired", domain.EventWarning,
 		"결제 대기 시간이 끝났습니다. CGV 예매 내역을 확인한 뒤 다시 실행하세요.",
@@ -119,6 +173,7 @@ func (server *Server) removePaymentSession(monitorID string, expected *paymentSe
 		return nil
 	}
 	delete(server.paymentSessions, monitorID)
+	server.signalExecutionAvailable()
 	return session
 }
 
@@ -144,6 +199,7 @@ func (server *Server) closePaymentSessions() {
 			server.recordMaintenanceFailure("payment-shutdown:"+retained.monitorID, err)
 		}
 	}
+	server.signalExecutionAvailable()
 }
 
 func closePaymentSession(session *paymentSession) {

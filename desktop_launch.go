@@ -32,6 +32,7 @@ type desktopLaunchPayload struct {
 	BrowserArtifactSHA256    string `json:"browserArtifactSha256"`
 	PlaywrightVersion        string `json:"playwrightVersion"`
 	PlaywrightArtifactSHA256 string `json:"playwrightArtifactSha256"`
+	StartupReadyNonce        string `json:"startupReadyNonce"`
 }
 
 type desktopRuntimeIdentity struct {
@@ -39,6 +40,7 @@ type desktopRuntimeIdentity struct {
 	ReleaseGeneration int64
 	ClientVersion     string
 	BrowserRevision   string
+	StartupReadyNonce string
 }
 
 func openDesktopStore(
@@ -47,16 +49,15 @@ func openDesktopStore(
 	input io.Reader,
 ) (*centralstore.Store, desktopRuntimeIdentity, error) {
 	if desktopVersion == "dev" && os.Getenv("CINEKO_DEV_DIRECT") == "1" {
-		store, err := centralstore.Open(ctx, centralstore.Config{
-			BaseURL: os.Getenv("CINEKO_CENTRAL_URL"), UserID: os.Getenv("CINEKO_CENTRAL_USER_ID"),
-			AccessToken: os.Getenv("CINEKO_CENTRAL_ACCESS_TOKEN"),
-		})
+		identity, err := loadOrCreateDesktopIdentity(dataDir)
 		if err != nil {
 			return nil, desktopRuntimeIdentity{}, err
 		}
-		identity, err := loadOrCreateDesktopIdentity(dataDir)
+		store, err := centralstore.Open(ctx, centralstore.Config{
+			BaseURL: os.Getenv("CINEKO_CENTRAL_URL"), UserID: os.Getenv("CINEKO_CENTRAL_USER_ID"),
+			AccessToken: os.Getenv("CINEKO_CENTRAL_ACCESS_TOKEN"), InstallationID: identity.InstallationID,
+		})
 		if err != nil {
-			_ = store.Close()
 			return nil, desktopRuntimeIdentity{}, err
 		}
 		return store, desktopRuntimeIdentity{
@@ -95,6 +96,7 @@ func openDesktopStore(
 		},
 		ReleaseGeneration: payload.ReleaseGeneration,
 		ClientVersion:     payload.ClientVersion, BrowserRevision: payload.BrowserRevision,
+		StartupReadyNonce: payload.StartupReadyNonce,
 	}, nil
 }
 
@@ -136,13 +138,14 @@ func normalizeDesktopLaunchPayload(payload desktopLaunchPayload) desktopLaunchPa
 	payload.BrowserArtifactSHA256 = strings.ToLower(strings.TrimSpace(payload.BrowserArtifactSHA256))
 	payload.PlaywrightVersion = strings.TrimSpace(payload.PlaywrightVersion)
 	payload.PlaywrightArtifactSHA256 = strings.ToLower(strings.TrimSpace(payload.PlaywrightArtifactSHA256))
+	payload.StartupReadyNonce = strings.TrimSpace(payload.StartupReadyNonce)
 	return payload
 }
 
 func validateDesktopLaunchPayload(payload desktopLaunchPayload) error {
 	required := []string{
 		payload.LaunchTicket, payload.InstallationID, payload.DeviceID, payload.ClientVersion,
-		payload.BrowserRevision, payload.PlaywrightVersion,
+		payload.BrowserRevision, payload.PlaywrightVersion, payload.StartupReadyNonce,
 	}
 	for _, value := range required {
 		if value == "" {

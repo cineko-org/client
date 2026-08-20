@@ -3,6 +3,7 @@ import type { Monitor, MonitorMode, MonitorStatus } from '../../api/types';
 export interface MonitorForm {
 	revision: number;
 	id: string;
+  movieId: string;
   movie: string;
   presetId: string;
   pollMinMinutes: number;
@@ -20,6 +21,7 @@ export interface MonitorSaveRequest {
 	id: string;
   userId: string;
   presetId: string;
+  movieId: string;
   movie: string;
   targetDates: string[];
   targetWeekdays: number[];
@@ -42,7 +44,7 @@ export const weekdayOptions = [
 ];
 
 export const initialMonitorForm: MonitorForm = {
-	id: '', revision: 0, movie: '', presetId: '', pollMinMinutes: 3, pollMaxMinutes: 8,
+	id: '', revision: 0, movieId: '', movie: '', presetId: '', pollMinMinutes: 3, pollMaxMinutes: 8,
   monitorMode: 'opening', dates: [], weekdays: [],
   horizonDays: 28, earliestTime: '', latestTime: '',
 };
@@ -51,7 +53,7 @@ const durationMinutes = (value: number | undefined, fallback: number) => value ?
 
 export function formFromMonitor(monitor: Monitor): MonitorForm {
 	return {
-		id: monitor.id, revision: monitor.revision ?? 0, movie: monitor.movie, presetId: monitor.presetId,
+		id: monitor.id, revision: monitor.revision ?? 0, movieId: monitor.movieId, movie: monitor.movie, presetId: monitor.presetId,
     pollMinMinutes: durationMinutes(monitor.pollInterval, 3),
     pollMaxMinutes: durationMinutes(monitor.pollIntervalMax, 8),
     monitorMode: monitor.mode,
@@ -91,7 +93,7 @@ export function scheduleDescription(form: Pick<MonitorForm, 'dates' | 'weekdays'
 }
 
 export function monitorFormError(form: MonitorForm): string {
-  if (!form.movie || !form.presetId) return '영화와 좌석 프리셋을 선택하세요.';
+	if (!form.movieId || !form.presetId) return '영화와 좌석 프리셋을 선택하세요.';
   if (form.dates.length + form.weekdays.length === 0) return '관람 날짜나 반복 요일을 하나 이상 추가하세요.';
   if (form.pollMinMinutes >= form.pollMaxMinutes) return '최대 확인 간격은 최소 간격보다 커야 합니다.';
   return '';
@@ -103,6 +105,7 @@ export function monitorSaveRequest(form: MonitorForm, userId: string): MonitorSa
 		revision: form.revision,
     userId,
     presetId: form.presetId,
+    movieId: form.movieId,
     movie: form.movie,
     targetDates: [...form.dates],
     targetWeekdays: form.weekdays.map(Number),

@@ -10,6 +10,8 @@ import (
 	central "github.com/cineko-org/contracts/v3"
 )
 
+const executionReadyEventType = "execution.ready.v1"
+
 type sseEvent struct {
 	id    int64
 	type_ string
@@ -97,6 +99,9 @@ func (store *Store) applySSEControl(control central.EventStreamControl) error {
 		if control.Reason != "" || control.Cursor != store.eventCursor.Load() {
 			return errors.New("central event stream control cursor is inconsistent")
 		}
+		if control.Action == central.EventStreamActionReady {
+			store.signalExecutionReady()
+		}
 	case central.EventStreamActionFullResync:
 		if control.Reason != central.EventStreamResetRetentionGap &&
 			control.Reason != central.EventStreamResetInvalidCursor {
@@ -121,6 +126,9 @@ func (store *Store) consumeSSEResource(event sseEvent) error {
 	}
 	store.eventCursor.Store(event.id)
 	store.signalResourceChanged()
+	if payload.Type == executionReadyEventType {
+		store.signalExecutionReady()
+	}
 	return nil
 }
 
@@ -133,6 +141,16 @@ func validSSEPayload(payload central.ClientEvent, event sseEvent) bool {
 func (store *Store) signalResourceChanged() {
 	select {
 	case store.resourceChanged <- struct{}{}:
+	default:
+	}
+}
+
+func (store *Store) signalExecutionReady() {
+	if store.executionReady == nil {
+		return
+	}
+	select {
+	case store.executionReady <- struct{}{}:
 	default:
 	}
 }

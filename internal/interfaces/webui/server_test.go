@@ -80,6 +80,41 @@ type webCredentialVault struct {
 	credentials domain.AccountCredentials
 }
 
+func TestRefreshBookingDemandRequiresSavedCredentialsAndOpeningMonitor(t *testing.T) {
+	ctx := t.Context()
+	store := memoryrepo.New()
+	vault := &webCredentialVault{}
+	demands := make(chan bool, 4)
+	server := &Server{
+		repository: store, credentials: vault, userID: "user",
+		bookingDemandChanged: func(active bool) { demands <- active },
+	}
+	server.refreshBookingDemand(ctx)
+	if active := <-demands; active {
+		t.Fatal("missing credentials created warm demand")
+	}
+	vault.credentials = domain.AccountCredentials{ID: "member", Password: "secret"}
+	monitor := domain.MonitorJob{
+		ID: "monitor", UserID: "user", PresetID: "preset", Mode: domain.MonitorModeOpening,
+		MovieID: "movie_1", Movie: "영화", TargetDates: []string{"2026-08-20"}, Status: domain.MonitorPending,
+	}
+	if err := store.PutMonitor(ctx, monitor); err != nil {
+		t.Fatal(err)
+	}
+	server.refreshBookingDemand(ctx)
+	if active := <-demands; !active {
+		t.Fatal("active opening monitor did not create warm demand")
+	}
+	monitor.Mode = domain.MonitorModeCancellation
+	if err := store.PutMonitor(ctx, monitor); err != nil {
+		t.Fatal(err)
+	}
+	server.refreshBookingDemand(ctx)
+	if active := <-demands; active {
+		t.Fatal("cancellation monitor created booking warm demand")
+	}
+}
+
 func (vault *webCredentialVault) Load(context.Context, string) (domain.AccountCredentials, error) {
 	vault.mu.Lock()
 	defer vault.mu.Unlock()
@@ -344,7 +379,7 @@ func TestCreateMonitorIsIdempotent(t *testing.T) {
 	server := &Server{
 		repository: store, ids: &webAtomicIDs{}, clock: webTestClock{now},
 	}
-	body := `{"idempotencyKey":"command","userId":"user","presetId":"preset","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":180000000000,"pollIntervalMax":480000000000}`
+	body := `{"idempotencyKey":"command","userId":"user","presetId":"preset","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":180000000000,"pollIntervalMax":480000000000}`
 	for range 2 {
 		request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/monitors", strings.NewReader(body))
 		response := httptest.NewRecorder()
