@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.4](https://github.com/cineko-org/client/compare/v2.5.3...v2.5.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **auth:** preserve manual CGV sessions ([#15](https://github.com/cineko-org/client/issues/15)) ([f569a72](https://github.com/cineko-org/client/commit/f569a72a0741934844ef91fd4de10caa6200e15c))
+* **ci:** validate release metadata without rebuilds ([#17](https://github.com/cineko-org/client/issues/17)) ([0de3b51](https://github.com/cineko-org/client/commit/0de3b51243327d7680e5b3dedca4de5274439724))
+
 ## [2.5.3](https://github.com/cineko-org/client/compare/v2.5.2...v2.5.3) (2026-08-20)
 
 
