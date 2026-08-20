@@ -93,13 +93,21 @@ jobs:
             -platform "${{ matrix.wails_platform }}" \
             "${tags[@]}" \
             -ldflags "-s -w -X main.desktopVersion=$VERSION"
-      - name: Package macOS Client
+      - name: Sign, notarize, and package macOS Client
         if: matrix.platform == 'darwin-arm64'
         shell: bash
+        env:
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARY_TIMEOUT: 10m
         run: |
-          mkdir -p build/release
-          tar -czf "build/release/cineko-client-v${VERSION}-darwin-arm64.tar.gz" \
-            -C build/bin Cineko.app
+          scripts/sign-notarize-macos-client.sh \
+            'build/bin/Cineko.app' \
+            "build/release/cineko-client-v${VERSION}-darwin-arm64.zip"
       - name: Package Windows Client
         if: matrix.platform == 'windows-amd64'
         shell: pwsh
@@ -142,6 +150,14 @@ jobs:
           pattern: client-*
           path: release-assets
           merge-multiple: true
+      - name: Require an unpublished draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh release view '${{ needs.release.outputs.tag }}' \
+            --repo '${{ github.repository }}' \
+            --json isDraft \
+            --jq .isDraft)" = true
       - name: Create checksums
         working-directory: release-assets
         run: sha256sum cineko-client-* > SHA256SUMS
@@ -154,6 +170,15 @@ jobs:
           release-assets/cineko-client-*
           release-assets/SHA256SUMS
           --repo "${{ github.repository }}"
+      - name: Publish the complete Client release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release edit
+          "${{ needs.release.outputs.tag }}"
+          --repo "${{ github.repository }}"
+          --draft=false
+          --latest
       - name: Register the stable Client set
         env:
           CINEKO_CLIENT_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ needs.release.outputs.tag }}

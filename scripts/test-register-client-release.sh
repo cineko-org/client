@@ -9,7 +9,7 @@ readonly payloads="$test_root/payloads.jsonl"
 readonly compatibility="$test_root/compatibility.json"
 mkdir -p "$assets" "$test_root/bin"
 
-printf 'darwin\n' >"$assets/cineko-client-v2.3.0-darwin-arm64.tar.gz"
+printf 'darwin\n' >"$assets/cineko-client-v2.3.0-darwin-arm64.zip"
 printf 'windows\n' >"$assets/cineko-client-v2.3.0-windows-amd64.zip"
 printf 'linux\n' >"$assets/cineko-client-v2.3.0-linux-amd64.tar.gz"
 cat >"$compatibility" <<'JSON'
