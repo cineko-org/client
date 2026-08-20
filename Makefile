@@ -75,4 +75,4 @@ behavior-contract-check:
 
 check: lint security coverage test frontend-check workflow-check contract-check behavior-contract-check
 	node --check internal/interfaces/webui/assets/app.js
-	grep -Eq '^# github.com/cineko-org/probe/v2 v2.3.0( => ../probe)?$$' vendor/modules.txt
+	grep -Eq '^# github.com/cineko-org/probe/v2 v2.3.1( => ../probe)?$$' vendor/modules.txt
