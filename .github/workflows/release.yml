@@ -27,7 +27,7 @@ jobs:
     if: needs.release.outputs.created == 'true'
     needs:
       - release
-      - playwright
+      - browser
     name: Build ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -167,6 +167,16 @@ jobs:
     if: needs.release.outputs.created == 'true'
     needs: release
     uses: ./.github/workflows/playwright-release.yml
+    with:
+      source_ref: ${{ needs.release.outputs.tag }}
+    secrets: inherit
+
+  browser:
+    if: needs.release.outputs.created == 'true'
+    needs:
+      - release
+      - playwright
+    uses: ./.github/workflows/browser-release.yml
     with:
       source_ref: ${{ needs.release.outputs.tag }}
     secrets: inherit

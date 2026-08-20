@@ -1,0 +1,146 @@
+name: Browser Runtime Release
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Git ref containing the Client runtime targets
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref containing the Client runtime targets
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-runtime-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      revision: ${{ steps.browser.outputs.revision }}
+      chrome_version: ${{ steps.browser.outputs.chrome_version }}
+      playwright_version: ${{ steps.browser.outputs.playwright_version }}
+      tag: ${{ steps.browser.outputs.tag }}
+      exists: ${{ steps.browser.outputs.exists }}
+      published_at: ${{ steps.browser.outputs.published_at }}
+      source_sha: ${{ steps.browser.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - id: browser
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          playwright_version="$(bash scripts/playwright-version.sh driver)"
+          playwright_tag="playwright-v${playwright_version}"
+          mkdir -p playwright-runtime
+          gh release download "$playwright_tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern "cineko-playwright-${playwright_version}-linux-amd64.tar.gz" \
+            --dir playwright-runtime
+          tar -xzf "playwright-runtime/cineko-playwright-${playwright_version}-linux-amd64.tar.gz" \
+            -C playwright-runtime
+          browsers_json=playwright-runtime/package/browsers.json
+          revision="$(scripts/playwright-browser-version.sh "$browsers_json" revision)"
+          chrome_version="$(scripts/playwright-browser-version.sh "$browsers_json" version)"
+          jq -e --arg revision "$revision" --arg playwright "$playwright_version" \
+            '.minimumBrowserRevision == $revision and .playwrightVersion == $playwright' \
+            release-compatibility.json >/dev/null || {
+              printf 'release compatibility does not match the locked Playwright browser\n' >&2
+              exit 1
+            }
+          tag="browser-r${revision}"
+          {
+            printf 'revision=%s\n' "$revision"
+            printf 'chrome_version=%s\n' "$chrome_version"
+            printf 'playwright_version=%s\n' "$playwright_version"
+            printf 'tag=%s\n' "$tag"
+            printf 'source_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'published_at=%s\n' \
+              "$(node -e 'console.log(new Date(Number(process.argv[1]) * 1000).toISOString())' "$(git show -s --format=%ct HEAD)")"
+          } >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            printf 'exists=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'exists=false\n' >> "$GITHUB_OUTPUT"
+          fi
+
+  generate:
+    if: needs.prepare.outputs.exists != 'true'
+    needs: prepare
+    runs-on: ubuntu-24.04
+    env:
+      CINEKO_RELEASE_PUBLISHED_AT: ${{ needs.prepare.outputs.published_at }}
+      CINEKO_BROWSER_RELEASE_PAYLOAD_OUT: build/release/browser-release-set.json
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+      - name: Build the official browser release manifest
+        run: |
+          mkdir -p build/release
+          scripts/publish-official-browser-release.sh \
+            "${{ needs.prepare.outputs.revision }}" \
+            "${{ needs.prepare.outputs.chrome_version }}" \
+            "${{ needs.prepare.outputs.playwright_version }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: browser-release-set
+          path: build/release/browser-release-set.json
+          if-no-files-found: error
+
+  publish:
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.generate.result == 'success' || needs.generate.result == 'skipped')
+    needs:
+      - prepare
+      - generate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CINEKO_CENTRAL_URL: ${{ secrets.CINEKO_CENTRAL_URL }}
+      CINEKO_RELEASE_PUBLISH_TOKEN: ${{ secrets.CINEKO_RELEASE_PUBLISH_TOKEN }}
+      BROWSER_TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/download-artifact@v8
+        if: needs.prepare.outputs.exists != 'true'
+        with:
+          name: browser-release-set
+          path: release-assets
+      - name: Publish the immutable browser manifest
+        if: needs.prepare.outputs.exists != 'true'
+        run: |
+          gh release create "$BROWSER_TAG" release-assets/browser-release-set.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "${{ needs.prepare.outputs.source_sha }}" \
+            --title "Browser Runtime r${{ needs.prepare.outputs.revision }}" \
+            --notes "Official Chrome for Testing runtime metadata used by Cineko Client." \
+            --latest=false
+      - name: Download the existing immutable browser manifest
+        if: needs.prepare.outputs.exists == 'true'
+        run: |
+          mkdir -p release-assets
+          gh release download "$BROWSER_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern browser-release-set.json --dir release-assets
+      - name: Register the stable browser set
+        run: scripts/register-browser-release.sh release-assets/browser-release-set.json

@@ -6,8 +6,6 @@ if [[ $# -ne 3 ]]; then
   exit 2
 fi
 : "${CINEKO_RELEASE_PUBLISHED_AT:?required}"
-: "${CINEKO_CENTRAL_URL:?required}"
-: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
 
 readonly revision="$1"
 readonly chrome_version="$2"
@@ -91,6 +89,12 @@ publish_platform windows amd64 win64 'chrome-win64/chrome.exe'
 
 readonly payload="$work_dir/payload.json"
 jq -s '{schemaVersion: 2, payload: {releases: sort_by(.platform, .arch)}}' "$releases" > "$payload"
+if [[ -n "${CINEKO_BROWSER_RELEASE_PAYLOAD_OUT:-}" ]]; then
+  cp "$payload" "$CINEKO_BROWSER_RELEASE_PAYLOAD_OUT"
+  exit 0
+fi
+: "${CINEKO_CENTRAL_URL:?required}"
+: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
 curl --fail-with-body --retry 3 --retry-all-errors \
   -H "Authorization: Bearer $CINEKO_RELEASE_PUBLISH_TOKEN" \
   -H 'Content-Type: application/json' \
