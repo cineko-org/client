@@ -105,5 +105,5 @@ adapter dependency.
 
 - Go dependencies are selected by `go.mod`/`go.sum` and reproduced from committed `vendor/` metadata. Vendored stealth assets retain their upstream license.
 - Frontend dependencies are selected by `frontend/package-lock.json`; generated embedded assets are rebuilt from `frontend/src` during checks/releases.
-- Client, browser, and Playwright metadata are separate compatible release components. `release-compatibility.json` names the exact Playwright target and must match the driver locked by the Client source. A Client release first publishes and registers that runtime under the canonical `playwright-v{version}` GitHub release, then builds and registers the Client. Existing runtime assets must match byte-for-byte and are never overwritten.
+- Client, browser, and Playwright metadata are separate compatible release components. `release-compatibility.json` names the exact Playwright target and browser revision and must match the locked driver's `browsers.json`. A Client release first ensures the immutable Playwright runtime and its official Chrome for Testing manifest are registered, then builds and registers the Client. Existing runtime assets and manifests are reused and never overwritten.
 - `scripts/verify-behavior-contract.sh` fails when a Central/local service point or domain state literal appears in source without this inventory.

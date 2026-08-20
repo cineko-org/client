@@ -103,6 +103,7 @@ test('official browser publisher registers verified Chrome for Testing archives 
   const tools = join(root, 'bin');
   const fixtures = join(root, 'fixtures');
   const registration = join(root, 'registration.json');
+  const manifest = join(root, 'browser-release-set.json');
   const argumentsFile = join(root, 'registration-arguments');
   const targets = [
     ['mac-arm64', 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'],
@@ -162,6 +163,20 @@ cp "$FAKE_BROWSER_FIXTURES/chrome-$platform.zip" "$output"
     )), true);
     assert.equal(envelope.payload.releases.every(({ artifact }) => /^[0-9a-f]{64}$/.test(artifact.sha256)), true);
     assert.match(await readFile(argumentsFile, 'utf8'), /X-Cineko-Protocol: 3/);
+
+    execFileSync('bash', ['scripts/publish-official-browser-release.sh', '1228', '149.0.7827.55', '1.61.1'], {
+      env: {
+        ...env,
+        CINEKO_BROWSER_RELEASE_PAYLOAD_OUT: manifest,
+        CINEKO_CENTRAL_URL: '',
+        CINEKO_RELEASE_PUBLISH_TOKEN: '',
+      },
+    });
+    assert.deepEqual(
+      JSON.parse(await readFile(manifest, 'utf8')),
+      envelope,
+      'manifest-only mode must preserve the exact verified release envelope',
+    );
 
     for (const args of [
       ['0', '149.0.7827.55', '1.61.1'],
