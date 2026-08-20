@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.2](https://github.com/cineko-org/client/compare/v2.5.1...v2.5.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* restore responsive Client shell styles ([#11](https://github.com/cineko-org/client/issues/11)) ([6851ce0](https://github.com/cineko-org/client/commit/6851ce03a12890d8683d9e9bf6cfde98a34c92d7))
+
 ## [2.5.1](https://github.com/cineko-org/client/compare/v2.5.0...v2.5.1) (2026-08-20)
 
 
