@@ -66,17 +66,17 @@ run_publisher() {
 }
 
 run_publisher
-[[ "$(rg -c '^release create ' "$calls")" == 1 ]]
-[[ "$(rg -c '^release upload ' "$calls")" == 3 ]]
+[[ "$(grep -c '^release create ' "$calls")" == 1 ]]
+[[ "$(grep -c '^release upload ' "$calls")" == 3 ]]
 
 run_publisher
-[[ "$(rg -c '^release create ' "$calls")" == 1 ]]
-[[ "$(rg -c '^release upload ' "$calls")" == 3 ]]
+[[ "$(grep -c '^release create ' "$calls")" == 1 ]]
+[[ "$(grep -c '^release upload ' "$calls")" == 3 ]]
 
 printf 'changed\n' >"$assets/cineko-playwright-1.62.1-linux-amd64.tar.gz"
 if run_publisher >/dev/null 2>&1; then
   printf 'publisher replaced or accepted a changed immutable asset\n' >&2
   exit 1
 fi
-[[ "$(rg -c '^release upload ' "$calls")" == 3 ]]
+[[ "$(grep -c '^release upload ' "$calls")" == 3 ]]
 printf 'Playwright immutable asset publishing checks passed\n'
