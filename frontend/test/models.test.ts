@@ -188,6 +188,11 @@ describe('preset model', () => {
 describe('network settings model', () => {
   it('maps settings and trims desktop input', () => {
     expect(networkForm()).toEqual({ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '' });
+    expect(networkForm({
+      mode: 'proxy', proxyUrls: ['socks5://one:1'], proxyUsername: 'user', hasProxyPassword: true,
+    })).toEqual({
+      mode: 'proxy', proxyUrls: 'socks5://one:1', proxyUsername: 'user', proxyPassword: '',
+    });
     expect(networkSettingsInput({
       mode: 'proxy', proxyUrls: ' socks5://one:1\nhttps://two:2 ', proxyUsername: ' user ', proxyPassword: ' pass ',
     })).toEqual({
