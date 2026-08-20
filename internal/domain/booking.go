@@ -41,7 +41,7 @@ type Showtime struct {
 	TheaterName    string   `json:"theaterName"`
 	AuditoriumID   string   `json:"auditoriumId"`
 	AuditoriumName string   `json:"auditoriumName"`
-	ScreenTypes []string `json:"screenTypes"`
+	ScreenTypes    []string `json:"screenTypes"`
 	// Date is the provider service date used to select the schedule page.
 	Date string `json:"date"`
 	// CivilDate is the local calendar date of the start instant. It differs

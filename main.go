@@ -62,15 +62,6 @@ func runDesktop() (runErr error) {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, store.Close()) }()
-	eventContext, stopEvents := context.WithCancel(context.Background())
-	eventDone := make(chan error, 1)
-	go func() { eventDone <- store.WatchEvents(eventContext) }()
-	defer func() {
-		stopEvents()
-		if eventErr := <-eventDone; !errors.Is(eventErr, context.Canceled) {
-			runErr = errors.Join(runErr, eventErr)
-		}
-	}()
 	if err := prepareDesktopState(context.Background(), store, identity, dataDir); err != nil {
 		return err
 	}
@@ -128,6 +119,7 @@ func runDesktop() (runErr error) {
 	app.execution = &desktopExecutionWorker{
 		store: store, server: server, installationID: identity.InstallationID, userID: store.UserID(),
 	}
+	eventFailure := make(chan error, 1)
 	startupFailure := make(chan error, 1)
 
 	err = wails.Run(&options.App{
@@ -139,6 +131,15 @@ func runDesktop() (runErr error) {
 		},
 		OnStartup: func(ctx context.Context) {
 			app.startup(ctx)
+			go superviseCentralEvents(ctx, store, func(eventErr error) {
+				server.RecordLocalSystemEvent(store.UserID(), "central.event_stream_failed", domain.EventError,
+					"Cineko 변경 알림 연결이 중지되었습니다. 앱을 다시 시작하세요.")
+				select {
+				case eventFailure <- eventErr:
+				default:
+				}
+				wailsruntime.Quit(ctx)
+			})
 			go superviseEmbeddedProbe(ctx, embeddedProbe, func(probeErr error) {
 				server.RecordLocalSystemEvent(store.UserID(), "probe.runtime_failed", domain.EventError,
 					"분산 좌석 탐색이 중지되었습니다. 앱을 다시 시작하세요.")
@@ -169,10 +170,27 @@ func runDesktop() (runErr error) {
 		err = errors.Join(err, fmt.Errorf("signal Launcher startup readiness: %w", startupErr))
 	default:
 	}
+	select {
+	case eventErr := <-eventFailure:
+		err = errors.Join(err, eventErr)
+	default:
+	}
 	if app.updateNeeded.Load() {
 		return errors.Join(err, errUpdateRequired)
 	}
 	return err
+}
+
+type centralEventWatcher interface {
+	WatchEvents(context.Context) error
+}
+
+func superviseCentralEvents(ctx context.Context, watcher centralEventWatcher, onFailure func(error)) {
+	err := watcher.WatchEvents(ctx)
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return
+	}
+	onFailure(err)
 }
 
 func prepareDesktopState(

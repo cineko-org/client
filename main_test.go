@@ -1,11 +1,36 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+type centralEventWatcherFake struct{ err error }
+
+func (watcher centralEventWatcherFake) WatchEvents(context.Context) error { return watcher.err }
+
+func TestCentralEventSupervisorSurfacesUnexpectedTermination(t *testing.T) {
+	failure := make(chan error, 1)
+	expected := errors.New("protocol mismatch")
+	superviseCentralEvents(t.Context(), centralEventWatcherFake{err: expected}, func(err error) { failure <- err })
+	select {
+	case err := <-failure:
+		if !errors.Is(err, expected) {
+			t.Fatalf("failure = %v", err)
+		}
+	default:
+		t.Fatal("event stream failure was not surfaced")
+	}
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	superviseCentralEvents(cancelled, centralEventWatcherFake{err: context.Canceled}, func(error) {
+		t.Fatal("normal cancellation was reported as a failure")
+	})
+}
 
 func TestDesktopExitCodeDocumentsLauncherUpdateSignal(t *testing.T) {
 	if updateRequiredExitCode != 75 {

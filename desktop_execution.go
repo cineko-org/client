@@ -27,10 +27,10 @@ type executionStore interface {
 }
 
 type executionServer interface {
-	ExecuteAvailability(context.Context, string, domain.Showtime) error
-	RecordLocalSystemEvent(string, string, domain.EventTone, string)
 	CanAcceptExecution() bool
 	ExecutionAvailable() <-chan struct{}
+	ExecuteAvailability(context.Context, string, domain.Showtime) error
+	RecordLocalSystemEvent(string, string, domain.EventTone, string)
 }
 
 func (worker *desktopExecutionWorker) Run(ctx context.Context) error {

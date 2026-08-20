@@ -13,7 +13,7 @@ func TestShowtimeOccurrenceKey(t *testing.T) {
 		TheaterID: "theater", AuditoriumID: "auditorium", MovieID: "movie_1", Movie: "Movie",
 		Date: "2026-08-10", StartsAt: "12:30",
 	}
-	want := "theater\x00auditorium\x00Movie\x002026-08-10\x0012:30"
+	want := "theater\x00auditorium\x00movie_1\x002026-08-10\x0012:30"
 	if got := ShowtimeOccurrenceKey(showtime); got != want {
 		t.Fatalf("ShowtimeOccurrenceKey(without ID) = %q, want %q", got, want)
 	}

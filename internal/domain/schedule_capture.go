@@ -16,8 +16,12 @@ func ShowtimeOccurrenceKey(showtime Showtime) string {
 	if showtime.ID != "" {
 		return showtime.ID
 	}
+	movie := showtime.MovieID
+	if movie == "" {
+		movie = showtime.Movie
+	}
 	return strings.Join([]string{
-		showtime.TheaterID, showtime.AuditoriumID, showtime.Movie,
+		showtime.TheaterID, showtime.AuditoriumID, movie,
 		showtime.Date, showtime.StartsAt,
 	}, "\x00")
 }
