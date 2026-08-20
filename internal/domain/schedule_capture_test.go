@@ -10,7 +10,7 @@ func TestShowtimeOccurrenceKey(t *testing.T) {
 	}
 
 	showtime := Showtime{
-		TheaterID: "theater", AuditoriumID: "auditorium", Movie: "Movie",
+		TheaterID: "theater", AuditoriumID: "auditorium", MovieID: "movie_1", Movie: "Movie",
 		Date: "2026-08-10", StartsAt: "12:30",
 	}
 	want := "theater\x00auditorium\x00Movie\x002026-08-10\x0012:30"

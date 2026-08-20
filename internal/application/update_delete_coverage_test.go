@@ -27,6 +27,7 @@ func TestMonitorServiceRejectsStaleUpdateAndDelete(t *testing.T) {
 			ExpectedRevision: 1,
 			UserID:           "user",
 			PresetID:         "preset",
+			MovieID:          "movie_1",
 			Movie:            "Movie",
 			TargetDates:      []string{"2026-08-10"},
 			PollInterval:     5 * time.Second,

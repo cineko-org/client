@@ -96,6 +96,9 @@ func (app *DesktopApp) startup(ctx context.Context) {
 				select {
 				case <-changes.ResourceChanged():
 					app.emit("data:changed")
+					if app.server != nil {
+						app.server.NotifyExecutionEvent()
+					}
 				case <-ctx.Done():
 					return
 				}
@@ -103,15 +106,23 @@ func (app *DesktopApp) startup(ctx context.Context) {
 		}()
 	}
 	if err := app.applySavedHookSettings(); err != nil {
-		app.server.RecordLocalSystemEvent(app.activeUserID(), "hook.invalid", domain.EventError, "저장된 알림 훅 설정을 적용하지 못했습니다: "+err.Error())
+		app.server.RecordLocalSystemEvent(app.activeUserID(), "hook.invalid", domain.EventError, "저장된 외부 알림 설정을 적용하지 못했습니다. 설정을 확인하세요.")
 	}
 	app.server.Start(ctx)
 	if app.execution != nil {
-		go app.execution.Run(ctx)
+		go func() {
+			if err := app.execution.Run(ctx); err != nil {
+				app.server.RecordLocalSystemEvent(
+					app.activeUserID(), "execution.supervisor_failed", domain.EventError,
+					"예매 실행 연결을 복구하지 못했습니다. 앱을 다시 시작하세요.",
+				)
+				runtime.Quit(ctx)
+			}
+		}()
 	}
 	if err := app.applySavedNetworkSettings(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "cineko: apply network settings: %v\n", err)
-		app.server.RecordSystemEvent(app.activeUserID(), "network.invalid", domain.EventError, "저장된 프록시 설정을 적용하지 못했습니다: "+err.Error())
+		app.server.RecordSystemEvent(app.activeUserID(), "network.invalid", domain.EventError, "저장된 프록시 설정을 적용하지 못했습니다. 설정을 확인하세요.")
 		return
 	}
 	go app.checkSavedNetworkHealth(ctx)
@@ -226,7 +237,7 @@ func (app *DesktopApp) secondInstance(data options.SecondInstanceData) {
 }
 
 func (app *DesktopApp) emitTransferError(err error) {
-	app.emit("transfer:error", err.Error())
+	app.emit("transfer:error", userFacingDesktopError(err))
 }
 
 func (app *DesktopApp) Exit() {

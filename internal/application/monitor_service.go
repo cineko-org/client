@@ -15,6 +15,7 @@ type CreateMonitorRequest struct {
 	UserID            string
 	PresetID          string
 	Mode              domain.MonitorMode
+	MovieID           string
 	Movie             string
 	TargetDates       []string
 	TargetWeekdays    []int
@@ -166,6 +167,7 @@ func (service *MonitorService) newMonitor(request CreateMonitorRequest) domain.M
 		UserID:            request.UserID,
 		PresetID:          request.PresetID,
 		Mode:              monitorModeOrDefault(request.Mode),
+		MovieID:           strings.TrimSpace(request.MovieID),
 		Movie:             strings.TrimSpace(request.Movie),
 		TargetDates:       append([]string(nil), request.TargetDates...),
 		TargetWeekdays:    append([]int(nil), request.TargetWeekdays...),

@@ -12,14 +12,37 @@ import (
 )
 
 type executionStoreFake struct {
+	mu           sync.Mutex
 	heartbeatErr error
 	heartbeat    func(context.Context) (central.ExecutionHeartbeatResponse, error)
+	claim        func() (*central.ExecutionCommand, error)
+	claims       int
+	ready        chan struct{}
+	retryable    bool
 	completed    chan central.ExecutionResultRequest
 }
 
-func (*executionStoreFake) ClaimExecution(context.Context, string) (*central.ExecutionCommand, error) {
+func (store *executionStoreFake) ClaimExecution(context.Context, string) (*central.ExecutionCommand, error) {
+	store.mu.Lock()
+	store.claims++
+	claim := store.claim
+	store.mu.Unlock()
+	if claim != nil {
+		return claim()
+	}
 	return nil, nil
 }
+
+func (store *executionStoreFake) ExecutionReady() <-chan struct{} {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.ready == nil {
+		store.ready = make(chan struct{}, 1)
+	}
+	return store.ready
+}
+
+func (store *executionStoreFake) ExecutionClaimRetryable(error) bool { return store.retryable }
 
 func (store *executionStoreFake) HeartbeatExecution(
 	ctx context.Context,
@@ -82,6 +105,76 @@ func (server *executionServerFake) ExecuteAvailability(
 }
 
 func (*executionServerFake) RecordLocalSystemEvent(string, string, domain.EventTone, string) {}
+func (*executionServerFake) CanAcceptExecution() bool                                        { return true }
+func (*executionServerFake) ExecutionAvailable() <-chan struct{}                             { return nil }
+
+func (store *executionStoreFake) claimCount() int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.claims
+}
+
+func TestExecutionWorkerWaitsForDurableReadySignal(t *testing.T) {
+	store := &executionStoreFake{ready: make(chan struct{}, 1)}
+	worker := &desktopExecutionWorker{store: store, server: &executionServerFake{}}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := store.claimCount(); got != 1 {
+		t.Fatalf("claim count = %d, want initial claim only", got)
+	}
+}
+
+func TestExecutionWorkerRetriesTransientClaimFailureWithBoundedDelay(t *testing.T) {
+	store := &executionStoreFake{ready: make(chan struct{}, 1), retryable: true}
+	var calls int
+	store.claim = func() (*central.ExecutionCommand, error) {
+		calls++
+		if calls < 3 {
+			return nil, errors.New("temporary central failure")
+		}
+		return nil, nil
+	}
+	worker := &desktopExecutionWorker{
+		store: store, server: &executionServerFake{},
+		retryDelay: func(int) time.Duration { return time.Millisecond },
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := store.claimCount(); got < 3 {
+		t.Fatalf("claim count = %d, want at least 3", got)
+	}
+}
+
+func TestExecutionWorkerStopsOnTerminalClaimFailure(t *testing.T) {
+	store := &executionStoreFake{retryable: false, claim: func() (*central.ExecutionCommand, error) {
+		return nil, errors.New("unauthorized")
+	}}
+	worker := &desktopExecutionWorker{store: store, server: &executionServerFake{}}
+	if err := worker.Run(t.Context()); err == nil {
+		t.Fatal("Run() succeeded for terminal claim failure")
+	}
+}
+
+func TestExecutionWorkerCancellationDoesNotRetry(t *testing.T) {
+	store := &executionStoreFake{retryable: true, claim: func() (*central.ExecutionCommand, error) {
+		return nil, context.Canceled
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	worker := &desktopExecutionWorker{store: store, server: &executionServerFake{}}
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := store.claimCount(); got != 0 {
+		t.Fatalf("claim count = %d, want 0 after cancellation", got)
+	}
+}
 
 func TestExecutionHeartbeatIntervalUsesRemainingLease(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 0, 0, 0, 0, time.UTC)
@@ -134,11 +227,32 @@ func TestExecutionUsesExactCommandShowtime(t *testing.T) {
 	server.mu.Unlock()
 	if showtime.ID != command.Payload.Showtime.ID || showtime.Movie != "영화" ||
 		showtime.AuditoriumID != "auditorium" || showtime.Date != "2026-08-20" ||
-		showtime.StartsAt != "20:00" || showtime.EndsAt != "22:00" {
+		showtime.CivilDate != "2026-08-20" || showtime.StartsAt != "20:00" || showtime.EndsAt != "22:00" {
 		t.Fatalf("executed showtime = %+v", showtime)
 	}
 	if result := <-store.completed; result.Status != "completed" {
 		t.Fatalf("completion = %+v", result)
+	}
+}
+
+func TestExecutionPreservesProviderDateForAfterMidnightShowtime(t *testing.T) {
+	location := time.FixedZone("KST", 9*60*60)
+	payload := central.ExecutionPayload{
+		ObservedAt: time.Date(2026, 8, 20, 23, 0, 0, 0, location),
+		Showtime: central.Showtime{
+			ID: "showtime", ProviderID: central.ProviderCGV, SourceKey: "0056/2026-08-20/0007/0003", TheaterID: "theater",
+			Movie:      central.Movie{ID: "movie_1", Title: "영화"},
+			Auditorium: central.Auditorium{ID: "auditorium", Name: "IMAX"},
+			StartsAt:   time.Date(2026, 8, 21, 1, 30, 0, 0, location),
+			EndsAt:     time.Date(2026, 8, 21, 4, 32, 0, 0, location), AvailableSeats: 2, Capacity: 100,
+		},
+	}
+	showtime, err := executionShowtime(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if showtime.Date != "2026-08-20" || showtime.CivilDate != "2026-08-21" || showtime.StartsAt != "01:30" || showtime.EndsAt != "04:32" {
+		t.Fatalf("execution showtime = %+v", showtime)
 	}
 }
 
@@ -164,8 +278,8 @@ func validExecutionCommand(expiresAt time.Time) central.ExecutionCommand {
 		Payload: central.ExecutionPayload{
 			ObservedAt: time.Date(2026, 8, 12, 19, 59, 0, 0, location),
 			Showtime: central.Showtime{
-				ID: "showtime", ProviderID: central.ProviderCGV, SourceKey: "source", TheaterID: "theater",
-				Movie:          central.Movie{Title: "영화"},
+				ID: "showtime", ProviderID: central.ProviderCGV, SourceKey: "0056/2026-08-20/0007/0003", TheaterID: "theater",
+				Movie:          central.Movie{ID: "movie_1", Title: "영화"},
 				Auditorium:     central.Auditorium{ID: "auditorium", Name: "IMAX"},
 				StartsAt:       time.Date(2026, 8, 20, 20, 0, 0, 0, location),
 				EndsAt:         time.Date(2026, 8, 20, 22, 0, 0, 0, location),

@@ -17,7 +17,7 @@ type webPaymentAutomation struct {
 }
 
 func (*webPaymentAutomation) FindShowtimes(context.Context, application.ShowtimeQuery) ([]domain.Showtime, error) {
-	return []domain.Showtime{{ID: "showtime", Movie: "영화", Date: "2026-08-20", StartsAt: "20:00"}}, nil
+	return []domain.Showtime{{ID: "showtime", MovieID: "movie_1", Movie: "영화", Date: "2026-08-20", StartsAt: "20:00"}}, nil
 }
 
 func (*webPaymentAutomation) OpenSeatSelection(
@@ -58,7 +58,7 @@ func TestPreparedPaymentKeepsBrowserAndReusesMonitorOnRetry(t *testing.T) {
 		},
 	}
 	monitor := domain.MonitorJob{
-		ID: "monitor", UserID: "user", PresetID: preset.ID, Movie: "영화",
+		ID: "monitor", UserID: "user", PresetID: preset.ID, MovieID: "movie_1", Movie: "영화",
 		TargetDates: []string{"2026-08-20"}, PollInterval: time.Minute, PollIntervalMax: 2 * time.Minute,
 	}
 	seatMap := domain.SeatMap{

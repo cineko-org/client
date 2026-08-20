@@ -46,7 +46,7 @@ describe('monitor model', () => {
 
   it('validates required monitor selections', () => {
     expect(monitorFormError(initialMonitorForm)).toBe('영화와 좌석 프리셋을 선택하세요.');
-    const selected = { ...initialMonitorForm, movie: '영화', presetId: 'preset' };
+    const selected = { ...initialMonitorForm, movieId: 'movie', movie: '영화', presetId: 'preset' };
     expect(monitorFormError(selected)).toBe('관람 날짜나 반복 요일을 하나 이상 추가하세요.');
     expect(monitorFormError({ ...selected, dates: ['2026-08-10'] })).toBe('');
     expect(monitorFormError({ ...selected, weekdays: ['1'] })).toBe('');
@@ -56,11 +56,11 @@ describe('monitor model', () => {
   it('maps the editor form to the monitor API contract', () => {
     const form = {
       ...initialMonitorForm,
-      id: 'monitor', movie: '영화', presetId: 'preset', dates: ['2026-08-10'],
+      id: 'monitor', movieId: 'movie', movie: '영화', presetId: 'preset', dates: ['2026-08-10'],
       weekdays: ['1', '6'], pollMinMinutes: 4, pollMaxMinutes: 9,
     };
     expect(monitorSaveRequest(form, 'user')).toMatchObject({
-      id: 'monitor', userId: 'user', targetDates: ['2026-08-10'], targetWeekdays: [1, 6],
+      id: 'monitor', userId: 'user', movieId: 'movie', targetDates: ['2026-08-10'], targetWeekdays: [1, 6],
       pollInterval: 240_000_000_000, pollIntervalMax: 540_000_000_000,
     });
   });
@@ -78,12 +78,12 @@ describe('monitor model', () => {
       '대기', '실행 중', '결제 확인 필요', '결제 결과 확인 필요', '예매 완료', '실패', '중지',
     ]);
     const stored = {
-      id: 'monitor', movie: '영화', presetId: 'preset', pollInterval: 180_000_000_000,
+      id: 'monitor', movieId: 'movie', movie: '영화', presetId: 'preset', pollInterval: 180_000_000_000,
       pollIntervalMax: 480_000_000_000, mode: 'opening',
       targetDates: ['2026-08-10'], targetWeekdays: [1], searchHorizonDays: 14,
       earliestTime: '18:00', latestTime: '22:00',
     } as Monitor;
-    expect(formFromMonitor(stored)).toMatchObject({ id: 'monitor', pollMinMinutes: 3, pollMaxMinutes: 8, weekdays: ['1'], horizonDays: 14 });
+    expect(formFromMonitor(stored)).toMatchObject({ id: 'monitor', movieId: 'movie', pollMinMinutes: 3, pollMaxMinutes: 8, weekdays: ['1'], horizonDays: 14 });
     expect(monitorIntervalLabel(stored)).toBe('3–8분');
     expect(formFromMonitor({ ...stored, pollInterval: 0, pollIntervalMax: 0, searchHorizonDays: 0 })).toMatchObject({ pollMinMinutes: 3, pollMaxMinutes: 8, horizonDays: 28 });
     expect(monitorIntervalLabel({ pollInterval: 0, pollIntervalMax: 0 })).toBe('3–8분');

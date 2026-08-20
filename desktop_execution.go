@@ -10,52 +10,85 @@ import (
 	central "github.com/cineko-org/contracts/v3"
 )
 
-const executionClaimInterval = time.Second
-
 type desktopExecutionWorker struct {
 	store          executionStore
 	server         executionServer
 	installationID string
 	userID         string
+	retryDelay     func(int) time.Duration
 }
 
 type executionStore interface {
 	ClaimExecution(context.Context, string) (*central.ExecutionCommand, error)
 	HeartbeatExecution(context.Context, string, string) (central.ExecutionHeartbeatResponse, error)
 	CompleteExecution(context.Context, string, central.ExecutionResultRequest) error
+	ExecutionReady() <-chan struct{}
+	ExecutionClaimRetryable(error) bool
 }
 
 type executionServer interface {
 	ExecuteAvailability(context.Context, string, domain.Showtime) error
 	RecordLocalSystemEvent(string, string, domain.EventTone, string)
+	CanAcceptExecution() bool
+	ExecutionAvailable() <-chan struct{}
 }
 
-func (worker *desktopExecutionWorker) Run(ctx context.Context) {
+func (worker *desktopExecutionWorker) Run(ctx context.Context) error {
 	claimFailureReported := false
+	claimFailures := 0
 	for ctx.Err() == nil {
-		command, err := worker.store.ClaimExecution(ctx, worker.installationID)
-		if err != nil {
-			if !claimFailureReported {
-				worker.server.RecordLocalSystemEvent(
-					worker.userID, "execution.claim_failed", domain.EventError,
-					"예매 실행 신호를 확인하지 못했습니다: "+err.Error(),
-				)
-				claimFailureReported = true
-			}
-			if !waitExecutionClaim(ctx) {
-				return
+		if !worker.server.CanAcceptExecution() {
+			if !waitExecutionSignal(ctx, worker.server.ExecutionAvailable()) {
+				return nil
 			}
 			continue
 		}
+		command, err := worker.store.ClaimExecution(ctx, worker.installationID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			if !claimFailureReported {
+				worker.server.RecordLocalSystemEvent(
+					worker.userID, "execution.claim_failed", domain.EventError,
+					"예매 실행 신호를 확인하지 못했습니다. 잠시 후 다시 시도합니다.",
+				)
+				claimFailureReported = true
+			}
+			if !worker.store.ExecutionClaimRetryable(err) {
+				return fmt.Errorf("claim execution: %w", err)
+			}
+			claimFailures++
+			if !waitExecutionRetry(ctx, worker.store.ExecutionReady(), worker.claimRetryDelay(claimFailures)) {
+				return nil
+			}
+			continue
+		}
+		claimFailures = 0
 		claimFailureReported = false
 		if command == nil {
-			if !waitExecutionClaim(ctx) {
-				return
+			if !waitExecutionSignal(ctx, worker.store.ExecutionReady()) {
+				return nil
 			}
 			continue
 		}
 		worker.execute(ctx, *command)
 	}
+	return nil
+}
+
+func (worker *desktopExecutionWorker) claimRetryDelay(failures int) time.Duration {
+	if worker.retryDelay != nil {
+		return worker.retryDelay(failures)
+	}
+	delay := 250 * time.Millisecond
+	for attempt := 1; attempt < failures && delay < 8*time.Second; attempt++ {
+		delay *= 2
+	}
+	if delay > 8*time.Second {
+		return 8 * time.Second
+	}
+	return delay
 }
 
 func (worker *desktopExecutionWorker) execute(ctx context.Context, command central.ExecutionCommand) {
@@ -107,7 +140,7 @@ func (worker *desktopExecutionWorker) execute(ctx context.Context, command centr
 		}
 		worker.server.RecordLocalSystemEvent(
 			worker.userID, "execution.failed", domain.EventError,
-			"예매 준비에 실패했습니다: "+err.Error(),
+			"예매 준비에 실패했습니다. 모니터 상태를 확인하고 다시 시도하세요.",
 		)
 	} else {
 		worker.server.RecordLocalSystemEvent(
@@ -118,7 +151,7 @@ func (worker *desktopExecutionWorker) execute(ctx context.Context, command centr
 	if completeErr := worker.store.CompleteExecution(context.WithoutCancel(ctx), command.ID, result); completeErr != nil {
 		worker.server.RecordLocalSystemEvent(
 			worker.userID, "execution.result_failed", domain.EventError,
-			"예매 실행 결과를 저장하지 못했습니다: "+completeErr.Error(),
+			"예매 실행 결과를 저장하지 못했습니다. 연결을 확인하세요.",
 		)
 	}
 }
@@ -170,18 +203,18 @@ func (worker *desktopExecutionWorker) completeFailedExecution(
 	ctx context.Context,
 	command central.ExecutionCommand,
 	reasonCode string,
-	cause error,
+	_ error,
 ) {
 	worker.server.RecordLocalSystemEvent(
 		worker.userID, "execution.failed", domain.EventError,
-		"예매 실행 신호가 올바르지 않습니다: "+cause.Error(),
+		"예매 실행 신호가 올바르지 않습니다. 모니터를 새로고침하고 다시 시도하세요.",
 	)
 	if err := worker.store.CompleteExecution(context.WithoutCancel(ctx), command.ID, central.ExecutionResultRequest{
 		LeaseToken: command.LeaseToken, Status: "failed", ReasonCode: reasonCode,
 	}); err != nil {
 		worker.server.RecordLocalSystemEvent(
 			worker.userID, "execution.result_failed", domain.EventError,
-			"예매 실행 결과를 저장하지 못했습니다: "+err.Error(),
+			"예매 실행 결과를 저장하지 못했습니다. 연결을 확인하세요.",
 		)
 	}
 }
@@ -190,19 +223,24 @@ func executionShowtime(payload central.ExecutionPayload) (domain.Showtime, error
 	const koreaOffset = 9 * 60 * 60
 	location := time.FixedZone("Asia/Seoul", koreaOffset)
 	value := payload.Showtime
-	if value.ID == "" || value.TheaterID == "" || value.Movie.Title == "" || value.Auditorium.ID == "" ||
+	if value.ID == "" || value.ProviderID == "" || value.SourceKey == "" || value.TheaterID == "" || value.Movie.ID == "" || value.Movie.Title == "" || value.Auditorium.ID == "" ||
 		value.Auditorium.Name == "" || value.StartsAt.IsZero() || value.EndsAt.IsZero() ||
 		!value.EndsAt.After(value.StartsAt) || payload.ObservedAt.IsZero() ||
 		value.AvailableSeats < 1 || value.Capacity < value.AvailableSeats || value.SoldOut {
 		return domain.Showtime{}, errors.New("central execution showtime is incomplete or unavailable")
 	}
 	startsAt, endsAt := value.StartsAt.In(location), value.EndsAt.In(location)
+	scheduleDate, err := domain.ScheduleDateFromShowtimeSourceKey(value.SourceKey)
+	if err != nil {
+		return domain.Showtime{}, fmt.Errorf("central execution showtime has invalid source key: %w", err)
+	}
 	return domain.Showtime{
-		ID: value.ID, Movie: value.Movie.Title, PosterURL: value.Movie.PosterURL,
+		ID: value.ID, ProviderID: value.ProviderID, SourceKey: value.SourceKey,
+		MovieID: value.Movie.ID, Movie: value.Movie.Title, PosterURL: value.Movie.PosterURL,
 		TheaterID:    value.TheaterID,
 		AuditoriumID: value.Auditorium.ID, AuditoriumName: value.Auditorium.Name,
 		ScreenTypes: append([]string(nil), value.Auditorium.ScreenTypes...),
-		Date:        startsAt.Format(time.DateOnly), StartsAt: startsAt.Format("15:04"),
+		Date:        scheduleDate, CivilDate: startsAt.Format(time.DateOnly), StartsAt: startsAt.Format("15:04"),
 		EndsAt: endsAt.Format("15:04"), AvailableSeats: value.AvailableSeats,
 		Capacity: value.Capacity, SoldOut: value.SoldOut, ObservedAt: payload.ObservedAt,
 	}, nil
@@ -223,12 +261,23 @@ func executionFailureCode(err error) string {
 	return "booking_preparation_failed"
 }
 
-func waitExecutionClaim(ctx context.Context) bool {
-	timer := time.NewTimer(executionClaimInterval)
+func waitExecutionSignal(ctx context.Context, signal <-chan struct{}) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-signal:
+		return true
+	}
+}
+
+func waitExecutionRetry(ctx context.Context, signal <-chan struct{}, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
+	case <-signal:
+		return true
 	case <-timer.C:
 		return true
 	}

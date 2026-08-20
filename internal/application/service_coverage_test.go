@@ -92,7 +92,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 	monitors := &monitorRepositoryFake{}
 	service := NewMonitorService(monitors, presets, &sequenceIDs{}, fixedClock{now})
 	request := CreateMonitorRequest{
-		UserID: "user", PresetID: "preset", Movie: " Movie ", TargetWeekdays: []int{1},
+		UserID: "user", PresetID: "preset", MovieID: "movie_1", Movie: " Movie ", TargetWeekdays: []int{1},
 	}
 	created, err := service.Create(ctx, request)
 	if err != nil || created.Mode != domain.MonitorModeOpening ||
@@ -152,7 +152,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 		t.Fatal(err)
 	}
 	invalidUpdate := update
-	invalidUpdate.Movie = ""
+	invalidUpdate.MovieID = ""
 	if _, err := service.Update(ctx, UpdateMonitorRequest{ID: created.ID, CreateMonitorRequest: invalidUpdate}); err == nil {
 		t.Fatal("Update accepted invalid monitor")
 	}
@@ -193,7 +193,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 	}
 	presets.getErr = nil
 	invalid := request
-	invalid.Movie = ""
+	invalid.MovieID = ""
 	if _, err := service.Create(ctx, invalid); err == nil {
 		t.Fatal("Create() accepted invalid monitor")
 	}
@@ -272,7 +272,7 @@ func TestMonitorServiceCreateIdempotentPaths(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
 	request := CreateMonitorRequest{
-		UserID: "user", PresetID: "preset", Movie: "Movie", TargetDates: []string{"2026-08-10"},
+		UserID: "user", PresetID: "preset", MovieID: "movie_1", Movie: "Movie", TargetDates: []string{"2026-08-10"},
 		PollInterval: 5 * time.Second, PollIntervalMax: 8 * time.Second,
 	}
 	presets := newPresetRepositoryFake()
@@ -308,6 +308,7 @@ func TestMonitorServiceCreateIdempotentPaths(t *testing.T) {
 	presets.getErr = nil
 	invalid := request
 	invalid.Movie = ""
+	invalid.MovieID = ""
 	if _, err := service.CreateIdempotent(ctx, "command", invalid); err == nil {
 		t.Fatal("CreateIdempotent accepted an invalid request")
 	}

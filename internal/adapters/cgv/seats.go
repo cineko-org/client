@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
+	contracts "github.com/cineko-org/contracts/v3"
 )
 
 type rawSeat struct {
@@ -103,14 +104,15 @@ func (adapter *Adapter) openSeats(
 	if adapter.selectedRegion == "" {
 		return seatSelection{}, fmt.Errorf("%w: theater context is unavailable", ErrUIContractChanged)
 	}
-	if err := adapter.openShowtime(showtime); err != nil {
+	selectedShowtime, err := adapter.openShowtime(showtime)
+	if err != nil {
 		return seatSelection{}, err
 	}
 	snapshot, err := adapter.refreshSeatSnapshot(ctx, showtime.AuditoriumID)
 	if err != nil {
 		return seatSelection{}, err
 	}
-	if err := adapter.configureSeatSelection(showtime, seatCount); err != nil {
+	if err := adapter.configureSeatSelection(selectedShowtime, seatCount); err != nil {
 		return seatSelection{}, err
 	}
 	raw, err := adapter.validatedSeatNodes(snapshot)
@@ -122,102 +124,145 @@ func (adapter *Adapter) openSeats(
 	}, nil
 }
 
-func (adapter *Adapter) openShowtime(showtime domain.Showtime) error {
+func (adapter *Adapter) openShowtime(showtime domain.Showtime) (domain.Showtime, error) {
 	region := showtime.TheaterRegion
 	if region == "" {
 		region = adapter.selectedRegion
 	}
 	if region == "" {
-		return fmt.Errorf("%w: theater region is unavailable", ErrUIContractChanged)
+		return domain.Showtime{}, fmt.Errorf("%w: theater region is unavailable", ErrUIContractChanged)
 	}
 	if err := adapter.selectCinemaTheater(region, showtime.TheaterName); err != nil {
-		return err
+		return domain.Showtime{}, err
 	}
 	if err := adapter.selectDate(showtime.Date); err != nil {
-		return err
+		return domain.Showtime{}, err
 	}
-	clicked, err := adapter.clickExactShowtime(showtime)
+	rows, err := adapter.captureScheduleRows()
 	if err != nil {
-		return err
+		return domain.Showtime{}, fmt.Errorf("capture commanded CGV showtime: %w", err)
+	}
+	providerShowtime, err := commandedShowtime(rows, showtime)
+	if err != nil {
+		return domain.Showtime{}, err
+	}
+	clicked, err := adapter.clickExactShowtime(providerShowtime)
+	if err != nil {
+		return domain.Showtime{}, err
 	}
 	if !clicked {
-		return fmt.Errorf("%w: exact showtime %s was not found", ErrUIContractChanged, showtime.ID)
+		return domain.Showtime{}, fmt.Errorf("%w: exact showtime %s was not found", ErrUIContractChanged, showtime.ID)
 	}
 	if err := adapter.wait(800 * time.Millisecond); err != nil {
-		return err
+		return domain.Showtime{}, err
 	}
 	nonMember, err := adapter.clickButtonExact("비회원 예매")
 	if err != nil {
-		return err
+		return domain.Showtime{}, err
 	}
 	if nonMember {
 		if err := adapter.wait(500 * time.Millisecond); err != nil {
-			return err
+			return domain.Showtime{}, err
 		}
 	}
 	loginRequired, err := adapter.bodyContains("CGV 회원 로그인이 필요한 서비스")
 	if err != nil {
-		return err
+		return domain.Showtime{}, err
 	}
 	if loginRequired {
-		return ErrAuthenticationRequired
+		return domain.Showtime{}, ErrAuthenticationRequired
 	}
-	return nil
+	return providerShowtime, nil
+}
+
+// commandedShowtime resolves the command tuple against the fresh provider
+// response. The returned display projection is the only identity allowed at
+// the DOM boundary; command display text is never trusted for this lookup.
+func commandedShowtime(rows []providerScheduleRow, command domain.Showtime) (domain.Showtime, error) {
+	if err := validateShowtimeIdentity(command); err != nil {
+		return domain.Showtime{}, err
+	}
+	var matches []providerScheduleRow
+	for _, row := range rows {
+		if showtimeSourceKey(row.SiteNo, row.Date, row.AuditoriumNo, row.Sequence) != command.SourceKey {
+			continue
+		}
+		if contracts.CatalogID(contracts.ProviderCGV, "movie", row.MovieNo) != command.MovieID {
+			return domain.Showtime{}, fmt.Errorf("%w: provider tuple movie does not match command", ErrUIContractChanged)
+		}
+		matches = append(matches, row)
+	}
+	if len(matches) != 1 {
+		return domain.Showtime{}, fmt.Errorf("%w: expected one provider row for %s, got %d", ErrUIContractChanged, command.SourceKey, len(matches))
+	}
+	entry, err := scheduleEntryFromProviderRow(matches[0], domain.Theater{
+		ID: command.TheaterID, Name: command.TheaterName,
+	})
+	if err != nil {
+		return domain.Showtime{}, fmt.Errorf("%w: provider showtime display projection is incomplete: %v", ErrUIContractChanged, err)
+	}
+	if entry.Showtime.Date != command.Date {
+		return domain.Showtime{}, fmt.Errorf("%w: provider schedule date does not match command", ErrUIContractChanged)
+	}
+	return entry.Showtime, nil
 }
 
 func (adapter *Adapter) clickExactShowtime(showtime domain.Showtime) (bool, error) {
-	if showtime.SourceLabel != "" {
-		return adapter.clickButtonExact(showtime.SourceLabel)
-	}
-	expression := fmt.Sprintf(`(() => {
-		const expected = {movie: %s, auditorium: %s, startsAt: %s, endsAt: %s};
-		const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
-		const previous = (element, selector) => {
-			let current = element;
-			while (current) {
-				let sibling = current.previousElementSibling;
-				while (sibling) {
-					if (sibling.matches && sibling.matches(selector)) return sibling;
-					const nested = sibling.querySelectorAll ? window.__cinekoQueryAll(selector, sibling) : [];
-					if (nested.length) return nested[nested.length - 1];
-					sibling = sibling.previousElementSibling;
-				}
-				current = current.parentElement;
-			}
-			return null;
-		};
-		const button = window.__cinekoQueryAll('button').find(candidate => {
-			if (candidate.disabled) return false;
-			const label = normalize(candidate.innerText || candidate.textContent);
-			if (!label.includes(expected.startsAt) || !label.includes(expected.endsAt)) return false;
-			const movieHeading = previous(candidate, 'h2');
-			const poster = movieHeading && window.__cinekoQuery('img[alt*="포스터"]', movieHeading);
-			const movie = poster
-				? normalize(poster.getAttribute('alt')).replace(/\s*포스터$/, '')
-				: normalize(movieHeading && movieHeading.innerText);
-			const structured = window.__cinekoQuery('[class*="_theater__"]', candidate);
-			const group = previous(candidate, 'h3');
-			const auditorium = normalize(structured && structured.innerText) || normalize(group && group.innerText);
-			return movie.toLocaleLowerCase('ko-KR') === expected.movie.toLocaleLowerCase('ko-KR') &&
-				(auditorium === expected.auditorium || auditorium.includes(expected.auditorium));
-		});
-		if (!button) return false;
-		button.click();
-		return true;
-	})()`, jsString(showtime.Movie), jsString(showtime.AuditoriumName),
-		jsString(showtime.StartsAt), jsString(showtime.EndsAt))
-	var clicked bool
-	if err := adapter.evaluate(expression, &clicked); err != nil {
+	if err := validateShowtimeIdentity(showtime); err != nil {
 		return false, err
 	}
-	return clicked, nil
+	seatTotals := scheduleSeatTotals(showtime)
+	if seatTotals == "" {
+		return false, fmt.Errorf("%w: showtime seat totals are incomplete", ErrUIContractChanged)
+	}
+	// CGV schedule buttons expose display text only; the authoritative tuple was
+	// captured from searchMovScnInfo before this boundary. Never infer identity
+	// from DOM attributes or silently choose among duplicate display rows.
+	expression := fmt.Sprintf(`(() => {
+		const expectedRow = [%s, %s];
+		const expectedButton = [%s, %s];
+		const expectedSeats = %s;
+		const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
+		const compact = value => normalize(value).replace(/\s+/g, '');
+		const scopeText = element => {
+			const values = [];
+			let current = element;
+			for (let depth = 0; current && depth < 5; depth += 1, current = current.parentElement) {
+				values.push(normalize(current.innerText || current.textContent));
+			}
+			return values.join(' ');
+		};
+		const matches = window.__cinekoQueryAll('button').filter(candidate => {
+			if (candidate.disabled) return false;
+			const buttonText = normalize(candidate.innerText || candidate.textContent);
+			const renderedText = scopeText(candidate);
+			return expectedRow.every(value => renderedText.includes(normalize(value))) &&
+				expectedButton.every(value => buttonText.includes(normalize(value))) &&
+				(!expectedSeats || compact(buttonText).includes(compact(expectedSeats)));
+		});
+		if (matches.length !== 1) return {count: matches.length, clicked: false};
+		matches[0].scrollIntoView({block: 'center'});
+		matches[0].click();
+		return {count: 1, clicked: true};
+	})()`, jsString(showtime.Movie), jsString(showtime.AuditoriumName), jsString(showtime.StartsAt), jsString(showtime.EndsAt), seatTotals)
+	var result struct {
+		Count   int  `json:"count"`
+		Clicked bool `json:"clicked"`
+	}
+	if err := adapter.evaluate(expression, &result); err != nil {
+		return false, err
+	}
+	if result.Count > 1 {
+		return false, fmt.Errorf("%w: showtime display is ambiguous for provider tuple %s", ErrUIContractChanged, showtime.SourceKey)
+	}
+	return result.Clicked, nil
 }
 
 func (adapter *Adapter) configureSeatSelection(showtime domain.Showtime, seatCount int) error {
 	if err := adapter.selectPartySize(seatCount); err != nil {
 		return err
 	}
-	if err := adapter.selectSeatPageShowtime(showtime); err != nil {
+	if err := adapter.verifySeatPageShowtime(showtime); err != nil {
 		return err
 	}
 	return adapter.wait(500 * time.Millisecond)
@@ -291,27 +336,91 @@ func (adapter *Adapter) clickRefresh() (bool, error) {
 	return clicked, err
 }
 
-func (adapter *Adapter) selectSeatPageShowtime(showtime domain.Showtime) error {
-	expression := fmt.Sprintf(`(() => {
-		const startsAt = %s;
-		const endsAt = %s;
-		const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
-		const button = window.__cinekoQueryAll('button').find(item => {
-			const label = normalize(item.getAttribute('aria-label') || item.innerText || item.textContent);
-			return !item.disabled && label.includes(startsAt) && (!endsAt || label.includes(endsAt));
-		});
-		if (!button) return false;
-		button.click();
-		return true;
-	})()`, jsString(showtime.StartsAt), jsString(showtime.EndsAt))
-	var selected bool
-	if err := adapter.evaluate(expression, &selected); err != nil {
+// verifySeatPageShowtime checks the fields CGV renders after navigation. The
+// seat page has no provider tuple in its DOM, so a mismatch is a hard stop.
+func (adapter *Adapter) verifySeatPageShowtime(showtime domain.Showtime) error {
+	if err := validateShowtimeIdentity(showtime); err != nil {
 		return err
 	}
-	if !selected {
-		return fmt.Errorf("%w: seat-page showtime %s was not found", ErrUIContractChanged, showtime.StartsAt)
+	dateVariants, err := showtimeDateDisplayVariants(showtime.Date)
+	if err != nil {
+		return err
+	}
+	encodedDates := make([]string, 0, len(dateVariants))
+	for _, value := range dateVariants {
+		encodedDates = append(encodedDates, jsString(value))
+	}
+	expression := fmt.Sprintf(`(() => {
+		const text = (document.body && (document.body.innerText || document.body.textContent) || '').replace(/\s+/g, ' ').trim();
+		const expectedDate = [%s];
+		return {
+			movie: text.includes(%s),
+			theater: text.includes(%s),
+			auditorium: text.includes(%s),
+			start: text.includes(%s),
+			end: text.includes(%s),
+			date: expectedDate.some(value => text.includes(value))
+		};
+	})()`, strings.Join(encodedDates, ","), jsString(showtime.Movie), jsString(showtime.TheaterName), jsString(showtime.AuditoriumName), jsString(showtime.StartsAt), jsString(showtime.EndsAt))
+	var result struct {
+		Movie      bool `json:"movie"`
+		Theater    bool `json:"theater"`
+		Auditorium bool `json:"auditorium"`
+		Start      bool `json:"start"`
+		End        bool `json:"end"`
+		Date       bool `json:"date"`
+	}
+	if err := adapter.evaluate(expression, &result); err != nil {
+		return err
+	}
+	if !result.Movie || !result.Theater || !result.Auditorium || !result.Start || !result.End || !result.Date {
+		return fmt.Errorf("%w: seat-page showtime display does not match provider tuple %s", ErrUIContractChanged, showtime.SourceKey)
 	}
 	return nil
+}
+
+func validateShowtimeIdentity(showtime domain.Showtime) error {
+	parts := strings.Split(strings.TrimSpace(showtime.SourceKey), "/")
+	if strings.TrimSpace(showtime.ProviderID) != contracts.ProviderCGV || len(parts) != 4 {
+		return fmt.Errorf("%w: provider showtime tuple is incomplete", ErrUIContractChanged)
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			return fmt.Errorf("%w: provider showtime tuple is incomplete", ErrUIContractChanged)
+		}
+	}
+	for name, value := range map[string]string{
+		"movie": showtime.Movie, "theater": showtime.TheaterName,
+		"auditorium": showtime.AuditoriumName, "date": showtime.Date, "start": showtime.StartsAt,
+		"end": showtime.EndsAt,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%w: showtime %s display identity is incomplete", ErrUIContractChanged, name)
+		}
+	}
+	return nil
+}
+
+func scheduleSeatTotals(showtime domain.Showtime) string {
+	if showtime.Capacity <= 0 || showtime.AvailableSeats < 0 || showtime.AvailableSeats > showtime.Capacity {
+		return ""
+	}
+	return fmt.Sprintf("%d/%d석", showtime.AvailableSeats, showtime.Capacity)
+}
+
+func showtimeDateDisplayVariants(isoDate string) ([]string, error) {
+	parsed, err := time.ParseInLocation(time.DateOnly, isoDate, domain.KoreaLocation)
+	if err != nil {
+		return nil, fmt.Errorf("%w: showtime date %q is invalid", ErrUIContractChanged, isoDate)
+	}
+	return []string{
+		parsed.Format(time.DateOnly),
+		parsed.Format("2006.01.02"),
+		parsed.Format("2006/01/02"),
+		fmt.Sprintf("%d년 %d월 %d일", parsed.Year(), parsed.Month(), parsed.Day()),
+		fmt.Sprintf("%d월 %d일", parsed.Month(), parsed.Day()),
+		parsed.Format("01/02"),
+	}, nil
 }
 
 func (adapter *Adapter) selectPartySize(count int) error {
@@ -349,12 +458,12 @@ func (adapter *Adapter) extractSeatNodes() ([]rawSeat, error) {
 	const expression = `(() => {
 		const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
 		const pattern = /(?:^|\s)([A-Z])\s?(\d{1,2})(?:\s|$)/i;
-		const elements = window.__cinekoQueryAll('button,[role="button"],[data-seat]');
+		const elements = window.__cinekoQueryAll('button,[role="button"],[data-seatlocno]');
 		const seats = [];
 		for (const element of elements) {
 			const source = normalize(
 				element.getAttribute('aria-label') || element.getAttribute('title') ||
-				element.getAttribute('data-seat') || element.innerText || element.textContent
+				element.getAttribute('data-seatlocno') || element.innerText || element.textContent
 			);
 			const match = source.match(pattern);
 			if (!match) continue;

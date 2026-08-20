@@ -64,7 +64,7 @@ func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
 	base := &workerRepository{
 		job: domain.MonitorJob{
-			ID: "monitor", UserID: "user", PresetID: "preset", Movie: "영화",
+			ID: "monitor", UserID: "user", PresetID: "preset", MovieID: "movie_1", Movie: "영화",
 			TargetDates: []string{"2026-08-20"}, PollInterval: 5 * time.Second,
 			Status: domain.MonitorPending,
 		},
@@ -86,7 +86,7 @@ func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 		live: []domain.LiveSeat{{Label: "H10", Available: true}},
 	}}
 	showtime := domain.Showtime{
-		ID: "source", Movie: "영화", TheaterID: "theater", AuditoriumID: "auditorium",
+		ID: "source", ProviderID: "cgv", SourceKey: "0056/2026-08-20/0007/0003", MovieID: "movie_1", Movie: "영화", TheaterID: "theater", AuditoriumID: "auditorium",
 		Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00",
 		AvailableSeats: 10, Capacity: 100,
 	}
@@ -118,14 +118,14 @@ func TestClaimedBookingRejectsPayloadMismatch(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
 	claimed := ClaimedBooking{
 		Monitor: domain.MonitorJob{
-			ID: "monitor", PresetID: "preset", Movie: "영화", Status: domain.MonitorPending,
+			ID: "monitor", PresetID: "preset", MovieID: "movie_1", Movie: "영화", Status: domain.MonitorPending,
 			TargetDates: []string{"2026-08-20"},
 		},
 		Preset:     domain.Preset{ID: "preset", TheaterID: "theater", AuditoriumID: "auditorium"},
 		Theater:    domain.Theater{ID: "theater"},
 		Auditorium: domain.Auditorium{ID: "auditorium"},
 		Showtime: domain.Showtime{
-			ID: "source", Movie: "다른 영화", TheaterID: "theater", AuditoriumID: "auditorium",
+			ID: "source", ProviderID: "cgv", SourceKey: "0056/2026-08-20/0007/0003", MovieID: "movie_2", Movie: "다른 영화", TheaterID: "theater", AuditoriumID: "auditorium",
 			Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00",
 			AvailableSeats: 1, Capacity: 100,
 		},
@@ -140,14 +140,14 @@ func TestClaimedBookingValidationBoundaries(t *testing.T) {
 	valid := func() ClaimedBooking {
 		return ClaimedBooking{
 			Monitor: domain.MonitorJob{
-				ID: "monitor", PresetID: "preset", Movie: "영화", Status: domain.MonitorPending,
+				ID: "monitor", PresetID: "preset", MovieID: "movie_1", Movie: "영화", Status: domain.MonitorPending,
 				TargetDates: []string{"2026-08-20"},
 			},
 			Preset:     domain.Preset{ID: "preset", TheaterID: "theater", AuditoriumID: "auditorium"},
 			Theater:    domain.Theater{ID: "theater"},
 			Auditorium: domain.Auditorium{ID: "auditorium"},
 			Showtime: domain.Showtime{
-				ID: "source", Movie: "영화", TheaterID: "theater", AuditoriumID: "auditorium",
+				ID: "source", ProviderID: "cgv", SourceKey: "0056/2026-08-20/0007/0003", MovieID: "movie_1", Movie: "영화", TheaterID: "theater", AuditoriumID: "auditorium",
 				Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00",
 				AvailableSeats: 1, Capacity: 100,
 			},
@@ -183,7 +183,7 @@ func TestRunClaimedShowtimeFailureBoundaries(t *testing.T) {
 	makeWorker := func(putErrAt int, openErr error) (*BookingWorker, *centralFenceRepository, ClaimedBooking) {
 		base := &workerRepository{
 			job: domain.MonitorJob{
-				ID: "monitor", UserID: "user", PresetID: "preset", Movie: "영화",
+				ID: "monitor", UserID: "user", PresetID: "preset", MovieID: "movie_1", Movie: "영화",
 				TargetDates: []string{"2026-08-20"}, Status: domain.MonitorPending,
 			},
 			preset: domain.Preset{
@@ -213,7 +213,7 @@ func TestRunClaimedShowtimeFailureBoundaries(t *testing.T) {
 		claimed := ClaimedBooking{
 			Monitor: base.job, Preset: base.preset, Theater: base.theater, Auditorium: base.auditorium,
 			Showtime: domain.Showtime{
-				ID: "source", Movie: "영화", TheaterID: "theater", AuditoriumID: "auditorium",
+				ID: "source", ProviderID: "cgv", SourceKey: "0056/2026-08-20/0007/0003", MovieID: "movie_1", Movie: "영화", TheaterID: "theater", AuditoriumID: "auditorium",
 				Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00",
 				AvailableSeats: 1, Capacity: 100,
 			},

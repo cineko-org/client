@@ -6,11 +6,33 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/adapters/egress"
 )
+
+type warmInitializerLifecycleStub struct {
+	closeErr  error
+	waitErr   error
+	needsKill bool
+	killCalls atomic.Int32
+	waitCalls atomic.Int32
+}
+
+func (stub *warmInitializerLifecycleStub) CloseWithError() error { return stub.closeErr }
+func (stub *warmInitializerLifecycleStub) ProcessNeedsForcedReap() bool {
+	return stub.needsKill
+}
+func (stub *warmInitializerLifecycleStub) KillProcessTree() error {
+	stub.killCalls.Add(1)
+	return nil
+}
+func (stub *warmInitializerLifecycleStub) WaitProcess() error {
+	stub.waitCalls.Add(1)
+	return stub.waitErr
+}
 
 func TestFactoryRequiresEgressManager(t *testing.T) {
 	t.Parallel()
@@ -131,6 +153,50 @@ func TestSessionProfileRejectsEmptyAndPathLikeKeys(t *testing.T) {
 		filepath.Join(config.ProfileDir+"-tasks", "sessions")+string(filepath.Separator),
 	) {
 		t.Fatalf("unsafe session profile = %q, cleanup=%v", profile, cleanup != nil)
+	}
+}
+
+func TestWarmProfileIsPerSlotAndDoesNotExposeUserKey(t *testing.T) {
+	t.Parallel()
+	base := filepath.Join(t.TempDir(), "chrome-profile")
+	first, err := warmProfileForTask(base, "user-a", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := warmProfileForTask(base, "user-a", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || strings.Contains(first, "user-a") || strings.Contains(second, "user-a") {
+		t.Fatalf("warm profiles are not isolated/redacted: %q %q", first, second)
+	}
+	root := filepath.Join(base+"-tasks", "warm")
+	for _, profile := range []string{first, second} {
+		relative, err := filepath.Rel(root, profile)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			t.Fatalf("warm profile escaped isolation root: %q", profile)
+		}
+	}
+}
+
+func TestWarmInitializerNonTransportCloseErrorDoesNotKill(t *testing.T) {
+	profileDir := t.TempDir()
+	initErr := errors.New("authentication failed")
+	closeErr := errors.New("browser context close failed")
+	lifecycle := &warmInitializerLifecycleStub{closeErr: closeErr}
+
+	err := cleanupWarmInitializerFailure(lifecycle, profileDir, initErr)
+	if !errors.Is(err, initErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("cleanup error = %v, want initializer and close errors", err)
+	}
+	if got := lifecycle.killCalls.Load(); got != 0 {
+		t.Fatalf("kill calls = %d, want 0 for non-transport close error", got)
+	}
+	if got := lifecycle.waitCalls.Load(); got != 1 {
+		t.Fatalf("wait calls = %d, want 1", got)
+	}
+	if _, statErr := os.Stat(profileDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed warm profile still exists: %v", statErr)
 	}
 }
 

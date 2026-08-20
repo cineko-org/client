@@ -1,12 +1,28 @@
 package centralhttp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"testing"
 
 	central "github.com/cineko-org/contracts/v3"
 )
+
+func TestExecutionClaimRetryClassification(t *testing.T) {
+	store := &Store{}
+	if !store.ExecutionClaimRetryable(centralAPIError{status: 503}) ||
+		!store.ExecutionClaimRetryable(&net.DNSError{Err: "temporary", IsTemporary: true}) ||
+		!store.ExecutionClaimRetryable(context.DeadlineExceeded) ||
+		!store.ExecutionClaimRetryable(context.Canceled) {
+		t.Fatal("retryable claim failure was classified as terminal")
+	}
+	if store.ExecutionClaimRetryable(errCentralUnauthorized) ||
+		store.ExecutionClaimRetryable(centralAPIError{status: 400, code: "invalid_request"}) {
+		t.Fatal("terminal claim failure was classified as retryable")
+	}
+}
 
 func TestSSEParserRequiresMonotonicCursor(t *testing.T) {
 	parser := newSSEParser(4)
@@ -40,6 +56,11 @@ func TestStoreConsumesTypedEventStream(t *testing.T) {
 	if err := store.consumeSSEEvent(sseEvent{type_: "cineko.control", data: control}); err != nil {
 		t.Fatal(err)
 	}
+	select {
+	case <-store.ExecutionReady():
+	default:
+		t.Fatal("stream readiness did not wake the execution worker after reconnect")
+	}
 	resource, _ := json.Marshal(central.ClientEvent{
 		Sequence: 1, ID: "event", Type: "monitor.updated",
 		Resource: central.EventResource{Kind: "monitors", ID: "monitor", Revision: 2},
@@ -62,6 +83,33 @@ func TestStoreConsumesTypedEventStream(t *testing.T) {
 	case <-store.ResyncRequired():
 	default:
 		t.Fatal("full resync was not surfaced")
+	}
+}
+
+func TestExecutionReadyEventIsBufferedAndCoalesced(t *testing.T) {
+	store, err := newStore("http://localhost", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sequence := int64(1); sequence <= 2; sequence++ {
+		payload, _ := json.Marshal(central.ClientEvent{
+			Sequence: sequence, ID: "event", Type: executionReadyEventType,
+			Resource: central.EventResource{Kind: "executions", ID: "execution", Revision: sequence},
+			Data:     json.RawMessage(`{"id":"execution"}`),
+		})
+		if err := store.consumeSSEEvent(sseEvent{id: sequence, type_: executionReadyEventType, data: payload}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-store.ExecutionReady():
+	default:
+		t.Fatal("execution event sent before waiter was attached was lost")
+	}
+	select {
+	case <-store.ExecutionReady():
+		t.Fatal("duplicate execution events were not coalesced")
+	default:
 	}
 }
 

@@ -52,6 +52,22 @@ type probeDrainingAutomation struct {
 	release     func()
 }
 
+func (automation *probeDrainingAutomation) RetainPayment() error {
+	retainer, ok := automation.Automation.(interface{ RetainPayment() error })
+	if !ok {
+		return nil
+	}
+	return retainer.RetainPayment()
+}
+
+func (automation *probeDrainingAutomation) PaymentFailure() <-chan struct{} {
+	notifier, ok := automation.Automation.(interface{ PaymentFailure() <-chan struct{} })
+	if !ok {
+		return nil
+	}
+	return notifier.PaymentFailure()
+}
+
 func (automation *probeDrainingAutomation) Close() {
 	automation.releaseOnce.Do(func() {
 		defer automation.release()

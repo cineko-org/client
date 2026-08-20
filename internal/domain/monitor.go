@@ -31,11 +31,14 @@ const (
 )
 
 type MonitorJob struct {
-	Revision          int64         `json:"revision,omitempty"`
-	ID                string        `json:"id"`
-	UserID            string        `json:"userId"`
-	PresetID          string        `json:"presetId"`
-	Mode              MonitorMode   `json:"mode"`
+	Revision int64       `json:"revision,omitempty"`
+	ID       string      `json:"id"`
+	UserID   string      `json:"userId"`
+	PresetID string      `json:"presetId"`
+	Mode     MonitorMode `json:"mode"`
+	// MovieID is the canonical catalog identity used for execution matching.
+	MovieID string `json:"movieId"`
+	// Movie is a display snapshot and is not an execution identity.
 	Movie             string        `json:"movie"`
 	TargetDates       []string      `json:"targetDates"`
 	TargetWeekdays    []int         `json:"targetWeekdays"`
@@ -56,8 +59,8 @@ func (job MonitorJob) Validate() error {
 	if job.ID == "" || job.UserID == "" || job.PresetID == "" {
 		return errors.New("monitor id, user id, and preset id are required")
 	}
-	if strings.TrimSpace(job.Movie) == "" || len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
-		return errors.New("monitor movie and at least one target date or weekday are required")
+	if strings.TrimSpace(job.MovieID) == "" || len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
+		return errors.New("monitor movie id and at least one target date or weekday are required")
 	}
 	if err := job.validateMode(); err != nil {
 		return err
@@ -74,7 +77,11 @@ func (job MonitorJob) Validate() error {
 	if err := validateTargetWeekdays(job.TargetWeekdays, job.SearchHorizonDays); err != nil {
 		return err
 	}
-	return validateTimeWindow(job.EarliestTime, job.LatestTime)
+	return ScheduleWindow{
+		Weekdays: job.TargetWeekdays,
+		Earliest: job.EarliestTime,
+		Latest:   job.LatestTime,
+	}.Validate()
 }
 
 func (job MonitorJob) validateMode() error {
@@ -113,26 +120,12 @@ func validateTargetWeekdays(weekdays []int, horizon int) error {
 	return nil
 }
 
-func validateTimeWindow(earliest, latest string) error {
-	for name, value := range map[string]string{"earliest time": earliest, "latest time": latest} {
-		if value == "" {
-			continue
-		}
-		if _, err := time.Parse("15:04", value); err != nil {
-			return fmt.Errorf("invalid %s %q: %w", name, value, err)
-		}
-	}
-	if earliest != "" && latest != "" && earliest > latest {
-		return errors.New("earliest time cannot be later than latest time")
-	}
-	return nil
-}
-
 func (job MonitorJob) ResolveTargetDates(now time.Time) []string {
 	seen := make(map[string]struct{}, len(job.TargetDates)+job.SearchHorizonDays)
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	localNow := now.In(KoreaLocation)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, KoreaLocation)
 	for _, value := range job.TargetDates {
-		parsed, err := time.ParseInLocation("2006-01-02", value, now.Location())
+		parsed, err := time.ParseInLocation(time.DateOnly, value, KoreaLocation)
 		if err == nil && !parsed.Before(today) {
 			seen[value] = struct{}{}
 		}
@@ -171,9 +164,10 @@ func (job MonitorJob) Expired(now time.Time) bool {
 	if len(job.TargetWeekdays) > 0 || len(job.TargetDates) == 0 {
 		return false
 	}
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	localNow := now.In(KoreaLocation)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, KoreaLocation)
 	for _, value := range job.TargetDates {
-		parsed, err := time.ParseInLocation("2006-01-02", value, now.Location())
+		parsed, err := time.ParseInLocation(time.DateOnly, value, KoreaLocation)
 		if err == nil && !parsed.Before(today) {
 			return false
 		}

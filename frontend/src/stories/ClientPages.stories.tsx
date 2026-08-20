@@ -55,7 +55,7 @@ export const NewMonitor: Story = {
       <MonitorEditorPageView
         onBack={noop}
         builder={{
-          movies: catalog.movies, presets, form: { ...initialMonitorForm, movie: catalog.movies[0].title, presetId: presets[0].id, dates: ['2026-08-20'] },
+          movies: catalog.movies, presets, form: { ...initialMonitorForm, movieId: catalog.movies[0].id, movie: catalog.movies[0].title, presetId: presets[0].id, dates: ['2026-08-20'] },
           submitting: false, onChange: noop, onSubmit: noop,
         }}
       />
@@ -67,7 +67,7 @@ export const EditMonitor: Story = {
   render: () => (
     <Canvas><MonitorEditorPageView onBack={noop} builder={{
       movies: catalog.movies, presets,
-      form: { ...initialMonitorForm, id: monitors[0].id, movie: monitors[0].movie, presetId: presets[0].id, dates: monitors[0].targetDates, earliestTime: '18:00', latestTime: '23:30' },
+      form: { ...initialMonitorForm, id: monitors[0].id, movieId: monitors[0].movieId, movie: monitors[0].movie, presetId: presets[0].id, dates: monitors[0].targetDates, earliestTime: '18:00', latestTime: '23:30' },
       submitting: false, onChange: noop, onSubmit: noop,
     }} /></Canvas>
   ),

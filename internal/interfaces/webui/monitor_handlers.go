@@ -17,6 +17,7 @@ type monitorRequest struct {
 	UserID            string             `json:"userId"`
 	PresetID          string             `json:"presetId"`
 	Mode              domain.MonitorMode `json:"mode"`
+	MovieID           string             `json:"movieId"`
 	Movie             string             `json:"movie"`
 	TargetDates       []string           `json:"targetDates"`
 	TargetWeekdays    []int              `json:"targetWeekdays"`
@@ -75,7 +76,8 @@ func (server *Server) startMonitorRetry(input monitorRequest) error {
 func (input monitorRequest) applicationRequest() application.CreateMonitorRequest {
 	return application.CreateMonitorRequest{
 		ExpectedRevision: input.Revision,
-		UserID:           input.UserID, PresetID: input.PresetID, Mode: input.Mode, Movie: input.Movie,
+		UserID:           input.UserID, PresetID: input.PresetID, Mode: input.Mode,
+		MovieID: input.MovieID, Movie: input.Movie,
 		TargetDates: input.TargetDates, TargetWeekdays: input.TargetWeekdays,
 		SearchHorizonDays: input.SearchHorizonDays,
 		EarliestTime:      input.EarliestTime, LatestTime: input.LatestTime,
@@ -92,12 +94,14 @@ func (server *Server) createMonitor(writer http.ResponseWriter, request *http.Re
 			job, err := service.CreateIdempotent(ctx, input.IdempotencyKey, input.applicationRequest())
 			if err == nil {
 				server.startSavedAuthentication()
+				server.refreshBookingDemand(ctx)
 			}
 			return job, err
 		}
 		job, err := service.Create(ctx, input.applicationRequest())
 		if err == nil {
 			server.startSavedAuthentication()
+			server.refreshBookingDemand(ctx)
 		}
 		return job, err
 	})
@@ -112,6 +116,7 @@ func (server *Server) updateMonitor(writer http.ResponseWriter, request *http.Re
 		})
 		if err == nil {
 			server.startSavedAuthentication()
+			server.refreshBookingDemand(ctx)
 		}
 		return job, err
 	})
@@ -138,5 +143,6 @@ func (server *Server) deleteMonitor(writer http.ResponseWriter, request *http.Re
 		server.writeError(writer, err)
 		return
 	}
+	server.refreshBookingDemand(request.Context())
 	server.writeJSON(writer, http.StatusOK, map[string]string{"status": "deleted"})
 }

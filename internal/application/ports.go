@@ -107,12 +107,15 @@ type CatalogGateway interface {
 }
 
 type ShowtimeQuery struct {
-	Movie        string
-	Theater      domain.Theater
-	Auditorium   domain.Auditorium
-	TargetDates  []string
-	EarliestTime string
-	LatestTime   string
+	MovieID string
+	// Movie is a display snapshot for adapters; matching must use MovieID.
+	Movie          string
+	Theater        domain.Theater
+	Auditorium     domain.Auditorium
+	TargetDates    []string
+	TargetWeekdays []int
+	EarliestTime   string
+	LatestTime     string
 }
 
 type ShowtimeGateway interface {

@@ -32,6 +32,9 @@ func TestCatalogSnapshotUsesGlobalEndpointAndStableIdempotencyKey(t *testing.T) 
 			if request.Header.Get("Authorization") != "Bearer access" {
 				t.Errorf("authorization = %q", request.Header.Get("Authorization"))
 			}
+			if request.Header.Get(installationIDHeader) != "installation-1" {
+				t.Errorf("installation header = %q", request.Header.Get(installationIDHeader))
+			}
 			var snapshot central.CatalogSnapshot
 			decodeRequest(t, request, &snapshot)
 			requests = append(requests, snapshot)
@@ -122,6 +125,9 @@ func TestSeatMapVersionUploadsOnlyStaticLayoutWithContentIdentity(t *testing.T) 
 			if request.Method != http.MethodPut {
 				t.Errorf("method = %s", request.Method)
 			}
+			if request.Header.Get(installationIDHeader) != "installation-1" {
+				t.Errorf("installation header = %q", request.Header.Get(installationIDHeader))
+			}
 			var version central.SeatMapVersion
 			decodeRequest(t, request, &version)
 			uploaded = append(uploaded, version)
@@ -204,7 +210,8 @@ func TestGetSeatMapUsesAuditoriumLatestVersionEndpoint(t *testing.T) {
 func openCatalogStore(t *testing.T, server *httptest.Server, now time.Time) *Store {
 	t.Helper()
 	store, err := Open(context.Background(), Config{
-		BaseURL: server.URL, UserID: "user", AccessToken: "credential", HTTPClient: server.Client(),
+		BaseURL: server.URL, UserID: "user", AccessToken: "credential",
+		InstallationID: "installation-1", HTTPClient: server.Client(),
 	})
 	if err != nil {
 		t.Fatal(err)

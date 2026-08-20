@@ -280,7 +280,7 @@ func (app *DesktopApp) checkSavedNetworkHealth(ctx context.Context) {
 		return
 	}
 	if err != nil {
-		app.server.RecordSystemEvent(app.activeUserID(), "network.health_failed", domain.EventError, "프록시 설정을 읽지 못했습니다: "+err.Error())
+		app.server.RecordSystemEvent(app.activeUserID(), "network.health_failed", domain.EventError, "프록시 설정을 읽지 못했습니다. 설정을 확인하세요.")
 		return
 	}
 	if settings.Network == nil {
@@ -297,7 +297,7 @@ func (app *DesktopApp) checkSavedNetworkHealth(ctx context.Context) {
 		}
 	}
 	if err != nil {
-		app.server.RecordSystemEvent(app.activeUserID(), "network.health_failed", domain.EventError, "저장된 프록시가 동작하지 않습니다: "+err.Error())
+		app.server.RecordSystemEvent(app.activeUserID(), "network.health_failed", domain.EventError, "저장된 프록시가 동작하지 않습니다. 설정을 확인하세요.")
 	}
 }
 

@@ -95,7 +95,7 @@ func TestSeatMapAssignmentConversionAndValidation(t *testing.T) {
 		Theater:    central.Theater{ID: "theater", Region: "서울", Name: "용산아이파크몰"},
 		Auditorium: &auditorium,
 		Showtime: &central.Showtime{
-			ID: "showtime", Movie: central.Movie{Title: "영화"}, Auditorium: auditorium,
+			ID: "showtime", ProviderID: central.ProviderCGV, SourceKey: "0056/2026-08-20/0007/0003", Movie: central.Movie{ID: "movie_1", Title: "영화"}, Auditorium: auditorium,
 			StartsAt: startsAt, EndsAt: endsAt,
 		},
 		TimeZone: "Asia/Seoul",

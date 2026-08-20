@@ -10,12 +10,12 @@ func TestMonitorJobValidateChecksDatesAndTimeWindow(t *testing.T) {
 	t.Parallel()
 
 	job := MonitorJob{
-		ID: "m1", UserID: "u1", PresetID: "p1", Movie: "오디세이",
+		ID: "m1", UserID: "u1", PresetID: "p1", MovieID: "movie_1", Movie: "오디세이",
 		TargetDates: []string{"2026-08-10"}, PollInterval: 5 * time.Second,
 		EarliestTime: "20:00", LatestTime: "18:00",
 	}
-	if err := job.Validate(); err == nil {
-		t.Fatal("Validate() accepted a reversed time window")
+	if err := job.Validate(); err != nil {
+		t.Fatalf("Validate() rejected an overnight time window: %v", err)
 	}
 	job.EarliestTime, job.LatestTime = "18:00", "20:00"
 	job.TargetDates = []string{"08/10/2026"}
@@ -28,7 +28,7 @@ func TestMonitorJobValidateAcceptsWeekdaySchedule(t *testing.T) {
 	t.Parallel()
 
 	job := MonitorJob{
-		ID: "m1", UserID: "u1", PresetID: "p1", Movie: "오디세이",
+		ID: "m1", UserID: "u1", PresetID: "p1", MovieID: "movie_1", Movie: "오디세이",
 		TargetWeekdays:    []int{int(time.Monday), int(time.Saturday)},
 		SearchHorizonDays: 28, PollInterval: 5 * time.Second,
 	}
@@ -90,7 +90,7 @@ func TestCancellationMonitorRequiresExactDates(t *testing.T) {
 
 	job := MonitorJob{
 		ID: "m1", UserID: "u1", PresetID: "p1", Mode: MonitorModeCancellation,
-		Movie: "오디세이", TargetWeekdays: []int{int(time.Saturday)},
+		MovieID: "movie_1", Movie: "오디세이", TargetWeekdays: []int{int(time.Saturday)},
 		SearchHorizonDays: 28, PollInterval: 5 * time.Second,
 	}
 	if err := job.Validate(); err == nil {

@@ -58,8 +58,9 @@ type CredentialVault interface {
 type AutomationPurpose string
 
 const (
-	AutomationSession AutomationPurpose = "session"
-	AutomationScan    AutomationPurpose = "scan"
+	AutomationSession      AutomationPurpose = "session"
+	AutomationScan         AutomationPurpose = "scan"
+	AutomationCancellation AutomationPurpose = "cancellation"
 )
 
 type AutomationFactory func(context.Context, bool, AutomationPurpose, string) (Automation, error)
@@ -87,6 +88,11 @@ type Dependencies struct {
 	AccountStateChanged func(bool)
 	Credentials         CredentialVault
 	UserID              string
+	// BookingDemandChanged tells the Client runtime whether authenticated
+	// opening monitors need warm booking capacity.
+	BookingDemandChanged func(bool)
+	// BookingCapacityAvailable reports whether a ready booking slot exists.
+	BookingCapacityAvailable func() bool
 }
 
 type taskState struct {
@@ -111,15 +117,18 @@ const (
 )
 
 type Server struct {
-	repository          Repository
-	factory             AutomationFactory
-	ids                 application.IDGenerator
-	clock               application.Clock
-	waiter              application.Waiter
-	eventPublisher      application.EventPublisher
-	accountStateChanged func(bool)
-	credentials         CredentialVault
-	userID              string
+	repository               Repository
+	factory                  AutomationFactory
+	ids                      application.IDGenerator
+	clock                    application.Clock
+	waiter                   application.Waiter
+	eventPublisher           application.EventPublisher
+	accountStateChanged      func(bool)
+	credentials              CredentialVault
+	userID                   string
+	bookingDemandChanged     func(bool)
+	bookingCapacityAvailable func() bool
+	executionReady           chan struct{}
 
 	rootContext     context.Context
 	allowedHost     string
@@ -147,7 +156,10 @@ func New(dependencies Dependencies) (*Server, error) {
 		ids: dependencies.IDs, clock: dependencies.Clock, waiter: dependencies.Waiter,
 		eventPublisher: dependencies.Events, accountStateChanged: dependencies.AccountStateChanged,
 		credentials: dependencies.Credentials, userID: strings.TrimSpace(dependencies.UserID),
-		tasks: make(map[string]taskState), taskCancels: make(map[string]context.CancelFunc),
+		bookingDemandChanged:     dependencies.BookingDemandChanged,
+		bookingCapacityAvailable: dependencies.BookingCapacityAvailable,
+		executionReady:           make(chan struct{}, 1),
+		tasks:                    make(map[string]taskState), taskCancels: make(map[string]context.CancelFunc),
 		catalogLast: make(map[string]time.Time), paymentSessions: make(map[string]*paymentSession),
 	}, nil
 }
@@ -256,11 +268,76 @@ func (server *Server) Start(ctx context.Context) {
 			server.recordMaintenanceFailure("event-retention", err)
 		}
 	}
+	server.refreshBookingDemand(ctx)
+}
+
+// NotifyBookingCapacityChanged wakes the desktop execution worker after a
+// warm browser becomes ready or a retained payment session is released.
+func (server *Server) NotifyBookingCapacityChanged() {
+	server.signalExecutionAvailable()
+}
+
+// NotifyExecutionEvent wakes the execution worker after Central data changes.
+func (server *Server) NotifyExecutionEvent() {
+	server.signalExecutionAvailable()
+}
+
+// ExecutionAvailable is the local readiness event consumed by desktop execution.
+func (server *Server) ExecutionAvailable() <-chan struct{} {
+	return server.executionReady
+}
+
+// CanAcceptExecution prevents Central claims while no authenticated browser
+// slot is ready locally.
+func (server *Server) CanAcceptExecution() bool {
+	if server.bookingCapacityAvailable != nil {
+		return server.bookingCapacityAvailable()
+	}
+	server.paymentMu.Lock()
+	defer server.paymentMu.Unlock()
+	return len(server.paymentSessions) == 0
+}
+
+func (server *Server) signalExecutionAvailable() {
+	if server.executionReady == nil {
+		return
+	}
+	select {
+	case server.executionReady <- struct{}{}:
+	default:
+	}
+}
+
+func (server *Server) refreshBookingDemand(ctx context.Context) {
+	if server.bookingDemandChanged == nil {
+		return
+	}
+	active := false
+	if server.credentials != nil && strings.TrimSpace(server.userID) != "" {
+		if _, err := server.credentials.Load(ctx, server.userID); err == nil {
+			monitors, monitorErr := server.repository.ListMonitorsByUser(ctx, server.userID)
+			if monitorErr != nil {
+				server.recordMaintenanceFailure("booking-demand", monitorErr)
+			} else {
+				for _, monitor := range monitors {
+					if (monitor.Status == domain.MonitorPending || monitor.Status == domain.MonitorRunning) &&
+						monitor.EffectiveMode() == domain.MonitorModeOpening {
+						active = true
+						break
+					}
+				}
+			}
+		} else if !errors.Is(err, domain.ErrAccountCredentialsNotFound) {
+			server.recordMaintenanceFailure("booking-demand-credentials", err)
+		}
+	}
+	server.bookingDemandChanged(active)
+	server.signalExecutionAvailable()
 }
 
 func (server *Server) recordMaintenanceFailure(id string, err error) {
 	server.tasksMu.Lock()
-	server.tasks[id] = taskState{Status: "failed", Message: err.Error(), UpdatedAt: server.clock.Now()}
+	server.tasks[id] = taskState{Status: "failed", Message: publicErrorMessage(err), UpdatedAt: server.clock.Now()}
 	server.tasksMu.Unlock()
 }
 
@@ -352,6 +429,11 @@ func (server *Server) state(writer http.ResponseWriter, request *http.Request) {
 		server.writeError(writer, err)
 		return
 	}
+	for index := range monitors {
+		if monitors[index].LastError != "" {
+			monitors[index].LastError = publicErrorMessage(errors.New(monitors[index].LastError))
+		}
+	}
 	reservations, err := server.repository.ListReservationsByUser(ctx, userID)
 	if err != nil {
 		server.writeError(writer, err)
@@ -414,7 +496,7 @@ func (server *Server) setAccountState(authenticated bool, err error) {
 	switch {
 	case err != nil:
 		state.Status = "error"
-		state.Message = err.Error()
+		state.Message = publicErrorMessage(err)
 	case authenticated:
 		state.Status = "authenticated"
 	default:
@@ -450,6 +532,7 @@ func (server *Server) saveAccountCredentials(writer http.ResponseWriter, request
 	server.account.AccountID = strings.TrimSpace(input.ID)
 	server.accountMu.Unlock()
 	server.startSavedAuthentication()
+	server.refreshBookingDemand(request.Context())
 	server.writeJSON(writer, http.StatusAccepted, map[string]string{"status": "credentials saved"})
 }
 
@@ -466,6 +549,7 @@ func (server *Server) deleteAccountCredentials(writer http.ResponseWriter, reque
 	server.account.CredentialsSaved = false
 	server.account.AccountID = ""
 	server.accountMu.Unlock()
+	server.refreshBookingDemand(request.Context())
 	server.writeJSON(writer, http.StatusOK, map[string]string{"status": "credentials deleted"})
 }
 
@@ -868,8 +952,7 @@ func (server *Server) withBookingWorker(
 	})
 	reservation, err := run(worker, ctx, monitorID)
 	if err == nil && reservation.Status == "prepared" {
-		server.retainPaymentSession(monitorID, reservation, automation)
-		retained = true
+		retained = server.retainPaymentSession(monitorID, reservation, automation)
 	}
 	return err
 }
@@ -935,8 +1018,7 @@ func (server *Server) ExecuteAvailability(
 		return ctx.Err()
 	}
 	if err == nil && reservation.Status == "prepared" {
-		server.retainPaymentSession(monitorID, reservation, automation)
-		retained = true
+		retained = server.retainPaymentSession(monitorID, reservation, automation)
 	}
 	return err
 }
@@ -981,7 +1063,7 @@ func (server *Server) cancelReservation(writer http.ResponseWriter, request *htt
 	if !server.decode(writer, request, &input) {
 		return
 	}
-	server.withAutomationKey(writer, request.Context(), !input.Headful, AutomationSession, input.ReservationID, func(automation Automation) (any, error) {
+	server.withAutomationKey(writer, request.Context(), !input.Headful, AutomationCancellation, input.ReservationID, func(automation Automation) (any, error) {
 		result, err := application.NewCancellationService(
 			server.repository, automation, server.clock, server.repository,
 		).Cancel(request.Context(), input.UserID, input.ReservationID, input.Commit)
@@ -1040,7 +1122,7 @@ func (server *Server) finishTask(id string, err error) {
 		state.Status = "stopped"
 	} else if err != nil {
 		state.Status = "failed"
-		state.Message = err.Error()
+		state.Message = publicErrorMessage(err)
 	}
 	server.tasksMu.Lock()
 	server.tasks[id] = state
@@ -1052,7 +1134,7 @@ func (server *Server) decode(writer http.ResponseWriter, request *http.Request, 
 	decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "입력값을 확인하세요."})
 		return false
 	}
 	return true
@@ -1088,7 +1170,38 @@ func (server *Server) writeError(writer http.ResponseWriter, err error) {
 		errors.Is(err, application.ErrMonitorExpired):
 		status = http.StatusUnprocessableEntity
 	}
-	server.writeJSON(writer, status, map[string]string{"error": err.Error()})
+	server.writeJSON(writer, status, map[string]string{"error": publicErrorMessage(err)})
+}
+
+func publicErrorMessage(err error) string {
+	if err == nil {
+		return "요청을 처리하지 못했습니다."
+	}
+	switch {
+	case errors.Is(err, application.ErrNotFound):
+		return "요청한 정보를 찾을 수 없습니다. 새로고침 후 다시 시도하세요."
+	case errors.Is(err, application.ErrConflict):
+		return "다른 변경사항이 먼저 저장되었습니다. 새로고침 후 다시 시도하세요."
+	case errors.Is(err, application.ErrBookingNotOpen):
+		return "아직 예매할 수 없는 회차입니다."
+	case errors.Is(err, application.ErrSeatUnavailable):
+		return "조건에 맞는 좌석을 찾지 못했습니다."
+	case errors.Is(err, application.ErrMonitorExpired):
+		return "관찰할 날짜가 지나 모니터가 종료되었습니다."
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "요청 시간이 초과되었습니다. 잠시 후 다시 시도하세요."
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "proxy"), strings.Contains(message, "soxy"), strings.Contains(message, "socks"):
+		return "프록시 설정이나 연결 상태를 확인하세요."
+	case strings.Contains(message, "credential"), strings.Contains(message, "authenticate"), strings.Contains(message, "login"):
+		return "CGV 로그인에 실패했습니다. 로그인 정보를 확인하고 다시 시도하세요."
+	case strings.Contains(message, "central"), strings.Contains(message, "connect"), strings.Contains(message, "dial"), strings.Contains(message, "network"):
+		return "Cineko 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요."
+	default:
+		return "요청을 처리하지 못했습니다. 입력값을 확인하고 다시 시도하세요."
+	}
 }
 
 func (server *Server) writeJSON(writer http.ResponseWriter, status int, value any) {

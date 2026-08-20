@@ -121,7 +121,7 @@ func validConfiguration(now time.Time) domain.Configuration {
 		SeatCount: 1, SeatPreference: domain.SeatPreference{CandidateSeats: []string{"A1"}, Adjacency: domain.SeatAdjacencyRequired}, CreatedAt: now, UpdatedAt: now,
 	}
 	monitor := domain.MonitorJob{
-		ID: "monitor-1", UserID: "user-1", PresetID: preset.ID, Movie: "오디세이",
+		ID: "monitor-1", UserID: "user-1", PresetID: preset.ID, MovieID: "movie_1", Movie: "오디세이",
 		TargetDates: []string{"2026-08-10"}, PollInterval: 5 * time.Second,
 		Status: domain.MonitorPending, CreatedAt: now, UpdatedAt: now,
 	}

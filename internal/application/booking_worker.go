@@ -235,7 +235,9 @@ func (claimed ClaimedBooking) validateMonitorContext() error {
 
 func (claimed ClaimedBooking) validateShowtimeContext() error {
 	job, showtime := claimed.Monitor, claimed.Showtime
-	if showtime.ID == "" || !strings.EqualFold(strings.TrimSpace(showtime.Movie), strings.TrimSpace(job.Movie)) ||
+	if showtime.ID == "" || strings.TrimSpace(showtime.ProviderID) == "" || strings.TrimSpace(showtime.SourceKey) == "" ||
+		strings.TrimSpace(job.MovieID) == "" ||
+		strings.TrimSpace(showtime.MovieID) == "" || showtime.MovieID != job.MovieID ||
 		showtime.AuditoriumID != claimed.Auditorium.ID || showtime.TheaterID != claimed.Theater.ID {
 		return errors.New("claimed showtime does not match the monitor")
 	}
@@ -251,8 +253,11 @@ func (claimed ClaimedBooking) validateSchedule(now time.Time) error {
 		return errors.New("claimed showtime schedule is incomplete")
 	}
 	if !slices.Contains(job.ResolveTargetDates(now), showtime.Date) ||
-		job.EarliestTime != "" && showtime.StartsAt < job.EarliestTime ||
-		job.LatestTime != "" && showtime.StartsAt > job.LatestTime {
+		!(domain.ScheduleWindow{
+			Weekdays: job.TargetWeekdays,
+			Earliest: job.EarliestTime,
+			Latest:   job.LatestTime,
+		}.MatchesShowtime(showtime)) {
 		return errors.New("claimed showtime is outside the monitor schedule")
 	}
 	return nil
@@ -350,8 +355,8 @@ func (worker *BookingWorker) attempt(
 	auditorium domain.Auditorium,
 ) (domain.Reservation, error) {
 	showtimes, err := worker.showtimes.FindShowtimes(ctx, ShowtimeQuery{
-		Movie: job.Movie, Theater: theater, Auditorium: auditorium,
-		TargetDates:  job.ResolveTargetDates(worker.clock.Now()),
+		MovieID: job.MovieID, Movie: job.Movie, Theater: theater, Auditorium: auditorium,
+		TargetDates: job.ResolveTargetDates(worker.clock.Now()), TargetWeekdays: job.TargetWeekdays,
 		EarliestTime: job.EarliestTime, LatestTime: job.LatestTime,
 	})
 	if err != nil {

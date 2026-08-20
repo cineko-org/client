@@ -2,8 +2,6 @@ package cgv
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
+	contracts "github.com/cineko-org/contracts/v3"
 )
 
 var schedulePattern = regexp.MustCompile(
@@ -21,6 +20,8 @@ var schedulePattern = regexp.MustCompile(
 
 type rawSchedule struct {
 	Label      string `json:"label"`
+	MovieID    string `json:"movieId"`
+	SourceKey  string `json:"sourceKey"`
 	Movie      string `json:"movie"`
 	PosterURL  string `json:"posterUrl"`
 	Group      string `json:"group"`
@@ -121,6 +122,9 @@ func (adapter *Adapter) FindShowtimes(
 	if err := adapter.selectCinemaTheater(query.Theater.Region, query.Theater.Name); err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(query.MovieID) == "" {
+		return nil, nil
+	}
 	var matches []domain.Showtime
 	for _, targetDate := range query.TargetDates {
 		if err := adapter.selectDate(targetDate); err != nil {
@@ -132,14 +136,15 @@ func (adapter *Adapter) FindShowtimes(
 		}
 		dateHasAvailableMatch := false
 		for _, entry := range entries {
-			if !movieMatches(query.Movie, entry.Showtime.Movie) ||
+			if entry.Showtime.MovieID == "" || entry.Showtime.MovieID != query.MovieID ||
 				!auditoriumMatches(query.Auditorium.Name, entry.AuditoriumName) {
 				continue
 			}
-			if query.EarliestTime != "" && entry.Showtime.StartsAt < query.EarliestTime {
-				continue
-			}
-			if query.LatestTime != "" && entry.Showtime.StartsAt > query.LatestTime {
+			if !(domain.ScheduleWindow{
+				Weekdays: query.TargetWeekdays,
+				Earliest: query.EarliestTime,
+				Latest:   query.LatestTime,
+			}.MatchesShowtime(entry.Showtime)) {
 				continue
 			}
 			showtime := entry.Showtime
@@ -251,14 +256,13 @@ func (adapter *Adapter) selectCinemaTheater(region, theater string) error {
 }
 
 func (adapter *Adapter) selectDate(isoDate string) error {
-	location := time.FixedZone("KST", 9*60*60)
-	parsed, err := time.ParseInLocation("2006-01-02", isoDate, location)
+	parsed, err := time.ParseInLocation(time.DateOnly, isoDate, domain.KoreaLocation)
 	if err != nil {
 		return err
 	}
 	weekdays := []string{"일", "월", "화", "수", "목", "금", "토"}
 	markers := []string{weekdays[parsed.Weekday()]}
-	if time.Now().In(location).Format("2006-01-02") == isoDate {
+	if time.Now().In(domain.KoreaLocation).Format(time.DateOnly) == isoDate {
 		markers = append([]string{"오늘"}, markers...)
 	}
 	var labels []string
@@ -272,6 +276,7 @@ func (adapter *Adapter) selectDate(isoDate string) error {
 		if !dateButtonMatches(label, parsed.Day(), markers) {
 			continue
 		}
+		adapter.resetScheduleResponses()
 		clicked, clickErr := adapter.clickButtonExact(normalize(label))
 		if clickErr != nil {
 			return clickErr
@@ -320,51 +325,51 @@ func (adapter *Adapter) extractSchedules(
 	date string,
 	theater domain.Theater,
 ) ([]scheduleEntry, error) {
-	const expression = `(() => {
-		const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
-		const previous = (element, selector) => {
-			let current = element;
-			while (current) {
-				let sibling = current.previousElementSibling;
-				while (sibling) {
-					if (sibling.matches && sibling.matches(selector)) return sibling;
-					const nested = sibling.querySelectorAll ? window.__cinekoQueryAll(selector, sibling) : [];
-					if (nested.length) return nested[nested.length - 1];
-					sibling = sibling.previousElementSibling;
-				}
-				current = current.parentElement;
-			}
-			return null;
-		};
-		return window.__cinekoQueryAll('button').map(button => {
-			const label = normalize(button.innerText || button.textContent);
-			if (!/^\d{2}:\d{2}-/.test(label)) return null;
-			const group = previous(button, 'h3');
-			const movieHeading = previous(button, 'h2');
-			const poster = movieHeading && window.__cinekoQuery('img[alt*="포스터"]', movieHeading);
-			const auditorium = window.__cinekoQuery('[class*="_theater__"]', button);
-			return {
-				label,
-				movie: poster ? normalize(poster.getAttribute('alt')).replace(/\s*포스터$/, '') : normalize(movieHeading && movieHeading.innerText),
-				posterUrl: poster ? normalize(poster.currentSrc || poster.getAttribute('src')) : '',
-				group: normalize(group && group.innerText),
-				auditorium: normalize(auditorium && auditorium.innerText),
-				disabled: !!button.disabled
-			};
-		}).filter(Boolean);
-	})()`
-	var raw []rawSchedule
-	if err := adapter.evaluate(expression, &raw); err != nil {
-		return nil, fmt.Errorf("extract CGV schedules: %w", err)
+	raw, err := adapter.captureScheduleRows()
+	if err != nil {
+		return nil, err
 	}
 	entries := make([]scheduleEntry, 0, len(raw))
-	for _, item := range raw {
-		entry, ok := parseSchedule(item, date, theater)
-		if ok {
-			entries = append(entries, entry)
+	for _, row := range raw {
+		if row.Date != date {
+			continue
 		}
+		entry, err := scheduleEntryFromProviderRow(row, theater)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+func scheduleEntryFromProviderRow(row providerScheduleRow, theater domain.Theater) (scheduleEntry, error) {
+	auditoriumName, screenTypes := parseAuditorium("", row.AuditoriumName)
+	if auditoriumName == "" {
+		return scheduleEntry{}, fmt.Errorf("CGV schedule row %q has no auditorium display name", row.Sequence)
+	}
+	showtimeSource := showtimeSourceKey(row.SiteNo, row.Date, row.AuditoriumNo, row.Sequence)
+	movieSource := strings.TrimSpace(row.MovieNo)
+	auditoriumSource := auditoriumSourceKey(row.SiteNo, row.AuditoriumNo)
+	startClock := providerClockDisplay(row.StartClock)
+	endClock := providerClockDisplay(row.EndClock)
+	civilDate := providerCivilDate(row.Date, row.StartClock)
+	if startClock == "" || endClock == "" || civilDate == "" {
+		return scheduleEntry{}, fmt.Errorf("CGV schedule row %q has invalid clock range", row.Sequence)
+	}
+	showtime := domain.Showtime{
+		ID:         contracts.CatalogID(contracts.ProviderCGV, "showtime", showtimeSource),
+		ProviderID: contracts.ProviderCGV, SourceKey: showtimeSource,
+		MovieID: contracts.CatalogID(contracts.ProviderCGV, "movie", movieSource), Movie: row.MovieTitle,
+		TheaterID: theater.ID, TheaterName: theater.Name,
+		AuditoriumID:   contracts.CatalogID(contracts.ProviderCGV, "auditorium", auditoriumSource),
+		AuditoriumName: auditoriumName, ScreenTypes: screenTypes,
+		Date: row.Date, CivilDate: civilDate, StartsAt: startClock, EndsAt: endClock,
+		AvailableSeats: row.Available, Capacity: row.Capacity,
+		SoldOut: row.Available == 0, ObservedAt: time.Now(),
+		SourceLabel: strings.Join([]string{startClock, endClock, row.MovieTitle, auditoriumName}, " "),
+	}
+	return scheduleEntry{Showtime: showtime, AuditoriumName: auditoriumName, ScreenTypes: screenTypes}, nil
 }
 
 func parseSchedule(item rawSchedule, date string, theater domain.Theater) (scheduleEntry, bool) {
@@ -381,11 +386,18 @@ func parseSchedule(item rawSchedule, date string, theater domain.Theater) (sched
 	if auditoriumName == "" {
 		return scheduleEntry{}, false
 	}
+	movieID := strings.TrimSpace(item.MovieID)
+	sourceKey := strings.TrimSpace(item.SourceKey)
+	if movieID == "" || sourceKey == "" {
+		return scheduleEntry{}, false
+	}
 	showtime := domain.Showtime{
-		ID:    stableSourceID(theater.Name, date, item.Movie, auditoriumName, match[1]),
-		Movie: item.Movie, PosterURL: item.PosterURL, TheaterID: theater.ID, TheaterName: theater.Name,
+		ID:         contracts.CatalogID(contracts.ProviderCGV, "showtime", sourceKey),
+		ProviderID: contracts.ProviderCGV, SourceKey: sourceKey,
+		MovieID: movieID, Movie: item.Movie, PosterURL: item.PosterURL,
+		TheaterID: theater.ID, TheaterName: theater.Name,
 		AuditoriumName: auditoriumName, ScreenTypes: screenTypes,
-		Date: date, StartsAt: match[1], EndsAt: match[2],
+		Date: date, CivilDate: providerCivilDate(date, match[1]), StartsAt: match[1], EndsAt: match[2],
 		AvailableSeats: available, Capacity: capacity,
 		SoldOut: item.Disabled || match[5] != "", ObservedAt: time.Now(),
 		SourceLabel: normalize(item.Label),
@@ -427,12 +439,6 @@ func detectScreenTypes(value string) []string {
 	return types
 }
 
-func movieMatches(requested, observed string) bool {
-	requested = strings.ToLower(normalize(requested))
-	observed = strings.ToLower(normalize(observed))
-	return requested == observed || strings.Contains(observed, requested)
-}
-
 func auditoriumMatches(requested, observed string) bool {
 	requested = strings.ToLower(strings.ReplaceAll(normalize(requested), " ", ""))
 	observed = strings.ToLower(strings.ReplaceAll(normalize(observed), " ", ""))
@@ -456,7 +462,34 @@ func mergeStrings(left, right []string) []string {
 	return merged
 }
 
-func stableSourceID(parts ...string) string {
-	hash := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return hex.EncodeToString(hash[:12])
+func providerClockDisplay(raw string) string {
+	hour, minute, err := parseProviderClock(raw)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", hour%24, minute)
+}
+
+func providerCivilDate(date, rawClock string) string {
+	hour, minute, err := parseProviderClock(rawClock)
+	if err != nil {
+		return ""
+	}
+	base, err := time.ParseInLocation(time.DateOnly, strings.TrimSpace(date), domain.KoreaLocation)
+	if err != nil {
+		return ""
+	}
+	return base.Add(time.Duration(hour*60+minute) * time.Minute).Format(time.DateOnly)
+}
+
+func theaterSourceKey(siteNo string) string { return strings.TrimSpace(siteNo) }
+
+func auditoriumSourceKey(siteNo, auditoriumNo string) string {
+	return strings.Join([]string{theaterSourceKey(siteNo), strings.TrimSpace(auditoriumNo)}, "/")
+}
+
+func showtimeSourceKey(siteNo, date, auditoriumNo, sequence string) string {
+	return strings.Join([]string{
+		theaterSourceKey(siteNo), strings.TrimSpace(date), strings.TrimSpace(auditoriumNo), strings.TrimSpace(sequence),
+	}, "/")
 }
