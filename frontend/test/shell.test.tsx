@@ -1,5 +1,5 @@
 import { MantineProvider } from '@mantine/core';
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShellView } from '../src/features/shell/ui/AppShellView';
 import { cinekoTheme } from '../src/app/theme';
@@ -13,7 +13,10 @@ beforeEach(() => {
 	})));
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+	cleanup();
+	vi.unstubAllGlobals();
+});
 
 describe('application shell', () => {
 	it('keeps one navigation model across desktop and mobile surfaces', () => {
