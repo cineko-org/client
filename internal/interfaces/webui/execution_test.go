@@ -56,7 +56,7 @@ func TestExecuteAvailabilityClosesBrowserWhenCentralFenceIsCancelled(t *testing.
 		},
 	}
 	monitor := domain.MonitorJob{
-		ID: "monitor", UserID: "user", PresetID: preset.ID, Movie: "영화",
+		ID: "monitor", UserID: "user", PresetID: preset.ID, MovieID: "movie", Movie: "영화",
 		TargetDates: []string{"2026-08-20"}, PollInterval: time.Minute,
 		Status: domain.MonitorPending,
 	}
@@ -91,7 +91,7 @@ func TestExecuteAvailabilityClosesBrowserWhenCentralFenceIsCancelled(t *testing.
 	executionContext, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	showtime := domain.Showtime{
-		ID: "source", Movie: "영화", AuditoriumID: auditorium.ID, AuditoriumName: auditorium.Name,
+		ID: "source", MovieID: "movie", Movie: "영화", AuditoriumID: auditorium.ID, AuditoriumName: auditorium.Name,
 		Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00",
 		AvailableSeats: 10, Capacity: 100,
 	}
@@ -124,7 +124,7 @@ func TestExecuteAvailabilityCancelsBrowserFactoryWhenFenceIsLost(t *testing.T) {
 		},
 	}
 	monitor := domain.MonitorJob{
-		ID: "monitor", UserID: "user", PresetID: preset.ID, Movie: "영화",
+		ID: "monitor", UserID: "user", PresetID: preset.ID, MovieID: "movie", Movie: "영화",
 		TargetDates: []string{"2026-08-20"}, PollInterval: time.Minute,
 		Status: domain.MonitorPending,
 	}
@@ -156,7 +156,7 @@ func TestExecuteAvailabilityCancelsBrowserFactoryWhenFenceIsLost(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- server.ExecuteAvailability(executionContext, monitor.ID, domain.Showtime{
-			ID: "source", Movie: "영화", AuditoriumID: auditorium.ID, AuditoriumName: auditorium.Name,
+			ID: "source", MovieID: "movie", Movie: "영화", AuditoriumID: auditorium.ID, AuditoriumName: auditorium.Name,
 			Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00",
 			AvailableSeats: 10, Capacity: 100,
 		})

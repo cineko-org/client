@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	maximumResponseBody = 8 << 20
-	sessionRefreshSkew  = time.Minute
+	maximumResponseBody  = 8 << 20
+	sessionRefreshSkew   = time.Minute
+	installationIDHeader = "X-Cineko-Installation-Id"
 )
 
 var errCentralUnauthorized = errors.New("central session is unauthorized")
@@ -39,10 +40,11 @@ var (
 )
 
 type Config struct {
-	BaseURL     string
-	UserID      string
-	AccessToken string
-	HTTPClient  *http.Client
+	BaseURL        string
+	UserID         string
+	AccessToken    string
+	InstallationID string
+	HTTPClient     *http.Client
 }
 
 type LaunchConfig struct {
@@ -63,10 +65,11 @@ type LaunchConfig struct {
 }
 
 type Store struct {
-	baseURL string
-	userID  string
-	client  *http.Client
-	clock   func() time.Time
+	baseURL        string
+	userID         string
+	installationID string
+	client         *http.Client
+	clock          func() time.Time
 
 	authMu           sync.Mutex
 	token            string
@@ -84,6 +87,7 @@ type Store struct {
 	resyncRequired    chan struct{}
 	resyncOnce        sync.Once
 	resourceChanged   chan struct{}
+	executionReady    chan struct{}
 }
 
 type monitorLease struct {
@@ -113,6 +117,19 @@ type apiErrorEnvelope struct {
 	} `json:"error"`
 }
 
+type centralAPIError struct {
+	status    int
+	code      string
+	retryable bool
+}
+
+func (failure centralAPIError) Error() string {
+	if failure.code == "" {
+		return fmt.Sprintf("central request failed with HTTP %d", failure.status)
+	}
+	return fmt.Sprintf("central request failed: %s", failure.code)
+}
+
 func Open(ctx context.Context, config Config) (*Store, error) {
 	store, err := newStore(config.BaseURL, config.UserID, config.HTTPClient)
 	if err != nil {
@@ -120,6 +137,7 @@ func Open(ctx context.Context, config Config) (*Store, error) {
 	}
 	config.UserID = strings.TrimSpace(config.UserID)
 	config.AccessToken = strings.TrimSpace(config.AccessToken)
+	store.installationID = strings.TrimSpace(config.InstallationID)
 	if config.UserID == "" || config.AccessToken == "" {
 		return nil, errors.New("central user ID and access token are required")
 	}
@@ -144,6 +162,7 @@ func OpenLaunched(ctx context.Context, config LaunchConfig) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	store.installationID = config.InstallationID
 	store.releaseGeneration.Store(config.ReleaseGeneration)
 	var auth central.AuthExchangeResponse
 	if err := store.request(
@@ -236,6 +255,7 @@ func newStore(baseURL string, userID string, client *http.Client) (*Store, error
 		clock: time.Now, leases: make(map[string]monitorLease), updateRequired: make(chan struct{}),
 		resyncRequired:  make(chan struct{}),
 		resourceChanged: make(chan struct{}, 1),
+		executionReady:  make(chan struct{}, 1),
 	}, nil
 }
 
@@ -248,6 +268,8 @@ func (store *Store) UpdateRequired() <-chan struct{} { return store.updateRequir
 func (store *Store) ResyncRequired() <-chan struct{} { return store.resyncRequired }
 
 func (store *Store) ResourceChanged() <-chan struct{} { return store.resourceChanged }
+
+func (store *Store) ExecutionReady() <-chan struct{} { return store.executionReady }
 
 func (store *Store) releaseUpdateNeeded() bool {
 	select {
@@ -356,6 +378,21 @@ func (store *Store) ClaimExecution(
 	return &command, nil
 }
 
+func (*Store) ExecutionClaimRetryable(err error) bool {
+	if err == nil || errors.Is(err, errCentralUnauthorized) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var apiFailure centralAPIError
+	if errors.As(err, &apiFailure) {
+		return apiFailure.retryable || apiFailure.status >= http.StatusInternalServerError
+	}
+	var networkFailure net.Error
+	return errors.As(err, &networkFailure)
+}
+
 func (store *Store) HeartbeatExecution(
 	ctx context.Context,
 	commandID string,
@@ -455,6 +492,9 @@ func (store *Store) ListAuditoriumsByTheater(ctx context.Context, theaterID stri
 }
 
 func (store *Store) PutSeatMap(ctx context.Context, value domain.SeatMap) error {
+	if store.installationID == "" {
+		return errors.New("catalog mutation requires an installation identity")
+	}
 	layout, err := json.Marshal(struct {
 		Seats  []domain.Seat        `json:"seats"`
 		Zones  []domain.LayoutZone  `json:"zones"`
@@ -482,8 +522,9 @@ func (store *Store) PutSeatMap(ctx context.Context, value domain.SeatMap) error 
 	return store.request(ctx, http.MethodPut,
 		"/v1/catalog/seat-map-versions/"+url.PathEscape(version.ID), true,
 		map[string]string{
-			"Content-Type":    "application/json",
-			"Idempotency-Key": version.ID,
+			"Content-Type":       "application/json",
+			"Idempotency-Key":    version.ID,
+			installationIDHeader: store.installationID,
 		}, version, nil)
 }
 
@@ -619,10 +660,14 @@ func (store *Store) PutExternalOperation(ctx context.Context, value domain.Exter
 }
 
 func (store *Store) PublishCatalogSnapshot(ctx context.Context, value central.CatalogSnapshot) error {
+	if store.installationID == "" {
+		return errors.New("catalog mutation requires an installation identity")
+	}
 	return store.request(ctx, http.MethodPost, "/v1/catalog/snapshots", true,
 		map[string]string{
-			"Content-Type":    "application/json",
-			"Idempotency-Key": catalogSnapshotKey(value),
+			"Content-Type":       "application/json",
+			"Idempotency-Key":    catalogSnapshotKey(value),
+			installationIDHeader: store.installationID,
 		}, value, nil)
 }
 
@@ -1186,7 +1231,7 @@ func (store *Store) validateEmbeddedOwnership(payload []byte) error {
 func decodeAPIError(status int, contents []byte) error {
 	var envelope apiErrorEnvelope
 	if err := json.Unmarshal(contents, &envelope); err != nil || envelope.Error.Code == "" {
-		return fmt.Errorf("central request failed with HTTP %d", status)
+		return centralAPIError{status: status, retryable: status >= http.StatusInternalServerError}
 	}
 	switch envelope.Error.Code {
 	case "not_found":
@@ -1198,7 +1243,7 @@ func decodeAPIError(status int, contents []byte) error {
 	case "rate_limited":
 		return fmt.Errorf("%w: %s", ErrPINRateLimited, envelope.Error.Message)
 	default:
-		return fmt.Errorf("central %s: %s", envelope.Error.Code, envelope.Error.Message)
+		return centralAPIError{status: status, code: envelope.Error.Code, retryable: envelope.Error.Retryable}
 	}
 }
 

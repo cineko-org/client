@@ -10,52 +10,85 @@ import (
 	central "github.com/cineko-org/contracts/v3"
 )
 
-const executionClaimInterval = time.Second
-
 type desktopExecutionWorker struct {
 	store          executionStore
 	server         executionServer
 	installationID string
 	userID         string
+	retryDelay     func(int) time.Duration
 }
 
 type executionStore interface {
 	ClaimExecution(context.Context, string) (*central.ExecutionCommand, error)
 	HeartbeatExecution(context.Context, string, string) (central.ExecutionHeartbeatResponse, error)
 	CompleteExecution(context.Context, string, central.ExecutionResultRequest) error
+	ExecutionReady() <-chan struct{}
+	ExecutionClaimRetryable(error) bool
 }
 
 type executionServer interface {
+	CanAcceptExecution() bool
+	ExecutionAvailable() <-chan struct{}
 	ExecuteAvailability(context.Context, string, domain.Showtime) error
 	RecordLocalSystemEvent(string, string, domain.EventTone, string)
 }
 
-func (worker *desktopExecutionWorker) Run(ctx context.Context) {
+func (worker *desktopExecutionWorker) Run(ctx context.Context) error {
 	claimFailureReported := false
+	claimFailures := 0
 	for ctx.Err() == nil {
-		command, err := worker.store.ClaimExecution(ctx, worker.installationID)
-		if err != nil {
-			if !claimFailureReported {
-				worker.server.RecordLocalSystemEvent(
-					worker.userID, "execution.claim_failed", domain.EventError,
-					"예매 실행 신호를 확인하지 못했습니다: "+err.Error(),
-				)
-				claimFailureReported = true
-			}
-			if !waitExecutionClaim(ctx) {
-				return
+		if !worker.server.CanAcceptExecution() {
+			if !waitExecutionSignal(ctx, worker.server.ExecutionAvailable()) {
+				return nil
 			}
 			continue
 		}
+		command, err := worker.store.ClaimExecution(ctx, worker.installationID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			if !claimFailureReported {
+				worker.server.RecordLocalSystemEvent(
+					worker.userID, "execution.claim_failed", domain.EventError,
+					"예매 실행 신호를 확인하지 못했습니다. 잠시 후 다시 시도합니다.",
+				)
+				claimFailureReported = true
+			}
+			if !worker.store.ExecutionClaimRetryable(err) {
+				return fmt.Errorf("claim execution: %w", err)
+			}
+			claimFailures++
+			if !waitExecutionRetry(ctx, worker.store.ExecutionReady(), worker.claimRetryDelay(claimFailures)) {
+				return nil
+			}
+			continue
+		}
+		claimFailures = 0
 		claimFailureReported = false
 		if command == nil {
-			if !waitExecutionClaim(ctx) {
-				return
+			if !waitExecutionSignal(ctx, worker.store.ExecutionReady()) {
+				return nil
 			}
 			continue
 		}
 		worker.execute(ctx, *command)
 	}
+	return nil
+}
+
+func (worker *desktopExecutionWorker) claimRetryDelay(failures int) time.Duration {
+	if worker.retryDelay != nil {
+		return worker.retryDelay(failures)
+	}
+	delay := 250 * time.Millisecond
+	for attempt := 1; attempt < failures && delay < 8*time.Second; attempt++ {
+		delay *= 2
+	}
+	if delay > 8*time.Second {
+		return 8 * time.Second
+	}
+	return delay
 }
 
 func (worker *desktopExecutionWorker) execute(ctx context.Context, command central.ExecutionCommand) {
@@ -107,7 +140,7 @@ func (worker *desktopExecutionWorker) execute(ctx context.Context, command centr
 		}
 		worker.server.RecordLocalSystemEvent(
 			worker.userID, "execution.failed", domain.EventError,
-			"예매 준비에 실패했습니다: "+err.Error(),
+			"예매 준비에 실패했습니다. 모니터 상태를 확인하고 다시 시도하세요.",
 		)
 	} else {
 		worker.server.RecordLocalSystemEvent(
@@ -118,7 +151,7 @@ func (worker *desktopExecutionWorker) execute(ctx context.Context, command centr
 	if completeErr := worker.store.CompleteExecution(context.WithoutCancel(ctx), command.ID, result); completeErr != nil {
 		worker.server.RecordLocalSystemEvent(
 			worker.userID, "execution.result_failed", domain.EventError,
-			"예매 실행 결과를 저장하지 못했습니다: "+completeErr.Error(),
+			"예매 실행 결과를 저장하지 못했습니다. 연결을 확인하세요.",
 		)
 	}
 }
@@ -170,18 +203,18 @@ func (worker *desktopExecutionWorker) completeFailedExecution(
 	ctx context.Context,
 	command central.ExecutionCommand,
 	reasonCode string,
-	cause error,
+	_ error,
 ) {
 	worker.server.RecordLocalSystemEvent(
 		worker.userID, "execution.failed", domain.EventError,
-		"예매 실행 신호가 올바르지 않습니다: "+cause.Error(),
+		"예매 실행 신호가 올바르지 않습니다. 모니터를 새로고침하고 다시 시도하세요.",
 	)
 	if err := worker.store.CompleteExecution(context.WithoutCancel(ctx), command.ID, central.ExecutionResultRequest{
 		LeaseToken: command.LeaseToken, Status: "failed", ReasonCode: reasonCode,
 	}); err != nil {
 		worker.server.RecordLocalSystemEvent(
 			worker.userID, "execution.result_failed", domain.EventError,
-			"예매 실행 결과를 저장하지 못했습니다: "+err.Error(),
+			"예매 실행 결과를 저장하지 못했습니다. 연결을 확인하세요.",
 		)
 	}
 }
@@ -223,12 +256,23 @@ func executionFailureCode(err error) string {
 	return "booking_preparation_failed"
 }
 
-func waitExecutionClaim(ctx context.Context) bool {
-	timer := time.NewTimer(executionClaimInterval)
+func waitExecutionSignal(ctx context.Context, signal <-chan struct{}) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-signal:
+		return true
+	}
+}
+
+func waitExecutionRetry(ctx context.Context, signal <-chan struct{}, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
+	case <-signal:
+		return true
 	case <-timer.C:
 		return true
 	}

@@ -22,7 +22,16 @@ export function MonitorBuilderView(props: MonitorBuilderViewProps) {
       <Box component="form" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
         <Stack gap="xl">
           <Columns>
-            <SelectField label="영화" placeholder="영화 선택" data={movies.map((movie) => movie.title)} value={form.movie} onChange={(movie) => onChange({ ...form, movie: movie || '' })} />
+            <SelectField
+              label="영화"
+              placeholder="영화 선택"
+              data={movies.map((movie) => ({ value: movie.id, label: movie.title }))}
+              value={form.movieId}
+              onChange={(movieId) => {
+                const selected = movies.find((movie) => movie.id === movieId);
+                onChange({ ...form, movieId: movieId || '', movie: selected?.title || '' });
+              }}
+            />
             <SelectField label="좌석 프리셋" placeholder="프리셋 선택" data={presets.map((preset) => ({ value: preset.id, label: preset.name }))} value={form.presetId} onChange={(presetId) => onChange({ ...form, presetId: presetId || '' })} />
           </Columns>
           <Stack gap="xs">

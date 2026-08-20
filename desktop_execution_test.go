@@ -12,14 +12,34 @@ import (
 )
 
 type executionStoreFake struct {
+	mu           sync.Mutex
 	heartbeatErr error
 	heartbeat    func(context.Context) (central.ExecutionHeartbeatResponse, error)
 	completed    chan central.ExecutionResultRequest
+	claims       int
+	claim        func() (*central.ExecutionCommand, error)
+	ready        chan struct{}
+	retryable    bool
 }
 
-func (*executionStoreFake) ClaimExecution(context.Context, string) (*central.ExecutionCommand, error) {
+func (store *executionStoreFake) ClaimExecution(context.Context, string) (*central.ExecutionCommand, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.claims++
+	if store.claim != nil {
+		return store.claim()
+	}
 	return nil, nil
 }
+
+func (store *executionStoreFake) ExecutionReady() <-chan struct{} {
+	if store.ready == nil {
+		store.ready = make(chan struct{}, 1)
+	}
+	return store.ready
+}
+
+func (store *executionStoreFake) ExecutionClaimRetryable(error) bool { return store.retryable }
 
 func (store *executionStoreFake) HeartbeatExecution(
 	ctx context.Context,
@@ -62,9 +82,22 @@ func (store *executionStoreFake) CompleteExecution(
 }
 
 type executionServerFake struct {
-	mu       sync.Mutex
-	showtime domain.Showtime
-	run      func(context.Context) error
+	mu        sync.Mutex
+	showtime  domain.Showtime
+	run       func(context.Context) error
+	accepting *bool
+	available chan struct{}
+}
+
+func (server *executionServerFake) CanAcceptExecution() bool {
+	return server.accepting == nil || *server.accepting
+}
+
+func (server *executionServerFake) ExecutionAvailable() <-chan struct{} {
+	if server.available == nil {
+		server.available = make(chan struct{}, 1)
+	}
+	return server.available
 }
 
 func (server *executionServerFake) ExecuteAvailability(
@@ -82,6 +115,144 @@ func (server *executionServerFake) ExecuteAvailability(
 }
 
 func (*executionServerFake) RecordLocalSystemEvent(string, string, domain.EventTone, string) {}
+
+func TestExecutionWorkerDoesNotClaimWhilePaymentIsPending(t *testing.T) {
+	accepting := false
+	store := &executionStoreFake{}
+	worker := desktopExecutionWorker{store: store, server: &executionServerFake{accepting: &accepting}}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	worker.Run(ctx)
+	if store.claims != 0 {
+		t.Fatalf("claimed %d executions while payment was pending", store.claims)
+	}
+}
+
+func TestExecutionWorkerClaimsOnceThenWaitsForDurableWake(t *testing.T) {
+	store := &executionStoreFake{ready: make(chan struct{}, 1)}
+	server := &executionServerFake{available: make(chan struct{}, 1)}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	(&desktopExecutionWorker{store: store, server: server}).Run(ctx)
+	store.mu.Lock()
+	claims := store.claims
+	store.mu.Unlock()
+	if claims != 1 {
+		t.Fatalf("claims = %d, want one initial claim without polling", claims)
+	}
+}
+
+func TestExecutionWorkerConsumesWakeBufferedBeforeWait(t *testing.T) {
+	ready := make(chan struct{}, 1)
+	ready <- struct{}{}
+	store := &executionStoreFake{ready: ready}
+	server := &executionServerFake{available: make(chan struct{}, 1)}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	(&desktopExecutionWorker{store: store, server: server}).Run(ctx)
+	store.mu.Lock()
+	claims := store.claims
+	store.mu.Unlock()
+	if claims != 2 {
+		t.Fatalf("claims = %d, want initial claim plus buffered wake claim", claims)
+	}
+}
+
+func TestExecutionWorkerRetriesTransientClaimFailureWithoutPollingNoWork(t *testing.T) {
+	attempt := 0
+	store := &executionStoreFake{
+		ready: make(chan struct{}, 1), retryable: true,
+		claim: func() (*central.ExecutionCommand, error) {
+			attempt++
+			if attempt == 1 {
+				return nil, errors.New("temporary transport failure")
+			}
+			return nil, nil
+		},
+	}
+	server := &executionServerFake{available: make(chan struct{}, 1)}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	worker := &desktopExecutionWorker{
+		store: store, server: server, retryDelay: func(int) time.Duration { return time.Millisecond },
+	}
+	worker.Run(ctx)
+	store.mu.Lock()
+	claims := store.claims
+	store.mu.Unlock()
+	if claims != 2 {
+		t.Fatalf("claims = %d, want one transient retry followed by an event wait", claims)
+	}
+}
+
+func TestExecutionWorkerReturnsTerminalClaimFailure(t *testing.T) {
+	store := &executionStoreFake{
+		ready: make(chan struct{}, 1),
+		claim: func() (*central.ExecutionCommand, error) {
+			return nil, errors.New("authentication rejected")
+		},
+	}
+	worker := &desktopExecutionWorker{store: store, server: &executionServerFake{}}
+	if err := worker.Run(t.Context()); err == nil {
+		t.Fatal("terminal claim failure did not stop the execution supervisor")
+	}
+	store.mu.Lock()
+	claims := store.claims
+	store.mu.Unlock()
+	if claims != 1 {
+		t.Fatalf("terminal failure claims = %d, want no retry", claims)
+	}
+}
+
+func TestExecutionWorkerRecoversFromTransientDeadline(t *testing.T) {
+	attempt := 0
+	store := &executionStoreFake{
+		ready: make(chan struct{}, 1), retryable: true,
+		claim: func() (*central.ExecutionCommand, error) {
+			attempt++
+			if attempt == 1 {
+				return nil, context.DeadlineExceeded
+			}
+			return nil, nil
+		},
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	worker := &desktopExecutionWorker{
+		store: store, server: &executionServerFake{},
+		retryDelay: func(int) time.Duration { return time.Millisecond },
+	}
+	if err := worker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	claims := store.claims
+	store.mu.Unlock()
+	if claims != 2 {
+		t.Fatalf("deadline recovery claims = %d, want one retry then event wait", claims)
+	}
+}
+
+func TestExecutionWorkerDoesNotRetryAfterParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	store := &executionStoreFake{
+		ready: make(chan struct{}, 1), retryable: true,
+		claim: func() (*central.ExecutionCommand, error) {
+			cancel()
+			return nil, context.Canceled
+		},
+	}
+	worker := &desktopExecutionWorker{store: store, server: &executionServerFake{}}
+	if err := worker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	claims := store.claims
+	store.mu.Unlock()
+	if claims != 1 {
+		t.Fatalf("parent cancellation claims = %d, want no retry", claims)
+	}
+}
 
 func TestExecutionHeartbeatIntervalUsesRemainingLease(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 0, 0, 0, 0, time.UTC)

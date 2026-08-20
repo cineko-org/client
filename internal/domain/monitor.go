@@ -9,7 +9,11 @@ import (
 	"time"
 )
 
-const DefaultSearchHorizonDays = 28
+const DefaultSearchHorizonDays = 14
+
+// seoulLocation is the timezone used for CGV's calendar and showtime rules.
+// CGV presents showtimes in Korea Standard Time, which has no DST transition.
+var seoulLocation = time.FixedZone("Asia/Seoul", 9*60*60)
 
 type MonitorMode string
 
@@ -36,6 +40,7 @@ type MonitorJob struct {
 	UserID            string        `json:"userId"`
 	PresetID          string        `json:"presetId"`
 	Mode              MonitorMode   `json:"mode"`
+	MovieID           string        `json:"movieId"`
 	Movie             string        `json:"movie"`
 	TargetDates       []string      `json:"targetDates"`
 	TargetWeekdays    []int         `json:"targetWeekdays"`
@@ -56,8 +61,8 @@ func (job MonitorJob) Validate() error {
 	if job.ID == "" || job.UserID == "" || job.PresetID == "" {
 		return errors.New("monitor id, user id, and preset id are required")
 	}
-	if strings.TrimSpace(job.Movie) == "" || len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
-		return errors.New("monitor movie and at least one target date or weekday are required")
+	if strings.TrimSpace(job.MovieID) == "" || strings.TrimSpace(job.Movie) == "" || len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
+		return errors.New("monitor movie id, movie title, and at least one target date or weekday are required")
 	}
 	if err := job.validateMode(); err != nil {
 		return err
@@ -107,8 +112,8 @@ func validateTargetWeekdays(weekdays []int, horizon int) error {
 		}
 		seen[weekday] = struct{}{}
 	}
-	if len(weekdays) > 0 && (horizon < 1 || horizon > 365) {
-		return errors.New("weekday search horizon must be between 1 and 365 days")
+	if len(weekdays) > 0 && (horizon < 1 || horizon > DefaultSearchHorizonDays) {
+		return fmt.Errorf("weekday search horizon must be between 1 and %d days", DefaultSearchHorizonDays)
 	}
 	return nil
 }
@@ -118,21 +123,76 @@ func validateTimeWindow(earliest, latest string) error {
 		if value == "" {
 			continue
 		}
-		if _, err := time.Parse("15:04", value); err != nil {
-			return fmt.Errorf("invalid %s %q: %w", name, value, err)
+		if _, ok := parseClockMinutes(value); !ok {
+			return fmt.Errorf("invalid %s %q: expected HH:MM", name, value)
 		}
 	}
-	if earliest != "" && latest != "" && earliest > latest {
-		return errors.New("earliest time cannot be later than latest time")
+	if earliest != "" && earliest == latest {
+		return errors.New("earliest and latest times must differ")
 	}
 	return nil
 }
 
+// TimeWindowContains reports whether a showtime start belongs to the monitor's
+// half-open time window [earliest, latest). A missing bound is unbounded. When
+// both bounds exist and earliest is later than latest, the window crosses
+// midnight and is the union [earliest, 24:00) + [00:00, latest). Comparisons
+// are made from canonical HH:MM values, never lexically against arbitrary
+// labels.
+func TimeWindowContains(showtime, earliest, latest string) bool {
+	minute, ok := parseClockMinutes(showtime)
+	if !ok {
+		return false
+	}
+	start, hasStart := parseClockMinutes(earliest)
+	end, hasEnd := parseClockMinutes(latest)
+	if (earliest != "" && !hasStart) || (latest != "" && !hasEnd) {
+		return false
+	}
+	if !hasStart && !hasEnd {
+		return true
+	}
+	if hasStart && !hasEnd {
+		return minute >= start
+	}
+	if !hasStart && hasEnd {
+		return minute < end
+	}
+	if start < end {
+		return minute >= start && minute < end
+	}
+	if start > end {
+		return minute >= start || minute < end
+	}
+	// Equal bounds describe an empty half-open interval.
+	return false
+}
+
+func parseClockMinutes(value string) (int, bool) {
+	if len(value) != len("15:04") || value[2] != ':' {
+		return 0, false
+	}
+	for index, character := range value {
+		if index == 2 {
+			continue
+		}
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
+	parsed, err := time.Parse("15:04", value)
+	if err != nil {
+		return 0, false
+	}
+	return parsed.Hour()*60 + parsed.Minute(), true
+}
+
 func (job MonitorJob) ResolveTargetDates(now time.Time) []string {
 	seen := make(map[string]struct{}, len(job.TargetDates)+job.SearchHorizonDays)
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	now = now.In(seoulLocation)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, seoulLocation)
 	for _, value := range job.TargetDates {
-		parsed, err := time.ParseInLocation("2006-01-02", value, now.Location())
+		parsed, err := time.ParseInLocation("2006-01-02", value, seoulLocation)
 		if err == nil && !parsed.Before(today) {
 			seen[value] = struct{}{}
 		}
@@ -171,9 +231,10 @@ func (job MonitorJob) Expired(now time.Time) bool {
 	if len(job.TargetWeekdays) > 0 || len(job.TargetDates) == 0 {
 		return false
 	}
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	now = now.In(seoulLocation)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, seoulLocation)
 	for _, value := range job.TargetDates {
-		parsed, err := time.ParseInLocation("2006-01-02", value, now.Location())
+		parsed, err := time.ParseInLocation("2006-01-02", value, seoulLocation)
 		if err == nil && !parsed.Before(today) {
 			return false
 		}

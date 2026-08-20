@@ -9,7 +9,7 @@ import (
 )
 
 func TestDecodeDesktopLaunchPayload(t *testing.T) {
-	valid := fmt.Sprintf(`{"launchTicket":"ticket","installationId":"install","deviceId":"device","releaseGeneration":17,"clientVersion":"1.0.0","artifactSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","protocol":%d,"browserRevision":"1234","browserArtifactSha256":"1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","playwrightVersion":"1.60.0","playwrightArtifactSha256":"2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}`, central.ProtocolVersion)
+	valid := fmt.Sprintf(`{"launchTicket":"ticket","installationId":"install","deviceId":"device","releaseGeneration":17,"clientVersion":"1.0.0","artifactSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","protocol":%d,"browserRevision":"1234","browserArtifactSha256":"1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","playwrightVersion":"1.60.0","playwrightArtifactSha256":"2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","startupReadyNonce":"abcdefghijklmnopqrstuvwxyz012345"}`, central.ProtocolVersion)
 	payload, err := decodeDesktopLaunchPayload(strings.NewReader(valid))
 	if err != nil || payload.InstallationID != "install" || payload.ReleaseGeneration != 17 || payload.Protocol != central.ProtocolVersion {
 		t.Fatalf("decodeDesktopLaunchPayload() = %+v, %v", payload, err)

@@ -1,4 +1,4 @@
-.PHONY: check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security test workflow-check
+.PHONY: behavior-contract-check check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security test workflow-check
 
 WAILS ?= $(shell go env GOPATH)/bin/wails
 WAILS_DEV_SERVER ?= 127.0.0.1:34116
@@ -61,6 +61,9 @@ contract-release-check:
 	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3.2.1$$' vendor/modules.txt
 	@grep -Eq '^github.com/cineko-org/contracts/v3 v3.2.1 h1:' go.sum
 
-check: lint security coverage test frontend-check workflow-check contract-check
+behavior-contract-check:
+	bash scripts/verify-behavior-contract.sh
+
+check: lint security coverage test frontend-check workflow-check contract-check behavior-contract-check
 	node --check internal/interfaces/webui/assets/app.js
 	grep -Eq '^# github.com/cineko-org/probe/v2 v2.1.3( => ../probe)?$$' vendor/modules.txt

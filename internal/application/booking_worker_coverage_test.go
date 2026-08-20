@@ -377,7 +377,7 @@ func validWorkerJob() domain.MonitorJob {
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
 	return domain.MonitorJob{
 		ID: "monitor", UserID: "user", PresetID: "preset", Mode: domain.MonitorModeOpening,
-		Movie: "Movie", TargetDates: []string{"2026-08-10"}, PollInterval: 5 * time.Second,
+		MovieID: "movie", Movie: "Movie", TargetDates: []string{"2026-08-10"}, PollInterval: 5 * time.Second,
 		Status: domain.MonitorPending, CreatedAt: now, UpdatedAt: now,
 	}
 }

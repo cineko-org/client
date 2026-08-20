@@ -28,7 +28,7 @@ func TestBookingWorkerStopsAtPreparedPaymentWhenCommitIsDisabled(t *testing.T) {
 	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
 	repository := &workerRepository{
 		job: domain.MonitorJob{
-			ID: "monitor-1", UserID: "user-1", PresetID: "preset-1", Movie: "오디세이",
+			ID: "monitor-1", UserID: "user-1", PresetID: "preset-1", MovieID: "movie-odyssey", Movie: "오디세이",
 			TargetDates: []string{"2026-08-10"}, PollInterval: 5 * time.Second,
 		},
 		preset: domain.Preset{
@@ -76,7 +76,7 @@ func TestMonitorServiceDefaultsRollingWeekdayHorizon(t *testing.T) {
 	service := NewMonitorService(repository, repository, &sequenceIDs{}, fixedClock{now: now})
 
 	job, err := service.Create(context.Background(), CreateMonitorRequest{
-		UserID: "user-1", PresetID: "preset-1", Movie: "오디세이",
+		UserID: "user-1", PresetID: "preset-1", MovieID: "movie-odyssey", Movie: "오디세이",
 		TargetWeekdays: []int{int(time.Saturday)}, PollInterval: 5 * time.Second,
 	})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestMonitorServiceRejectsExpiredExactDates(t *testing.T) {
 	service := NewMonitorService(repository, repository, &sequenceIDs{}, fixedClock{now: now})
 
 	_, err := service.Create(context.Background(), CreateMonitorRequest{
-		UserID: "user-1", PresetID: "preset-1", Movie: "오디세이",
+		UserID: "user-1", PresetID: "preset-1", MovieID: "movie-odyssey", Movie: "오디세이",
 		TargetDates: []string{"2026-08-08"}, PollInterval: 5 * time.Second,
 	})
 	if !errors.Is(err, ErrMonitorExpired) {
@@ -109,7 +109,7 @@ func TestCancellationMonitorFailsWhenShowtimeIsNotOpen(t *testing.T) {
 	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
 	repository := &workerRepository{
 		job: domain.MonitorJob{
-			ID: "monitor-1", UserID: "user-1", PresetID: "preset-1", Movie: "오디세이",
+			ID: "monitor-1", UserID: "user-1", PresetID: "preset-1", MovieID: "movie-odyssey", Movie: "오디세이",
 			Mode: domain.MonitorModeCancellation, TargetDates: []string{"2026-08-10"},
 			PollInterval: 5 * time.Second,
 		},

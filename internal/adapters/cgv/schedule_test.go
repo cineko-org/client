@@ -56,6 +56,36 @@ func TestParseScheduleAcceptsCompactLiveCGVLabel(t *testing.T) {
 	}
 }
 
+func TestParseScheduleNormalizesPostMidnightCGVClockToActualDate(t *testing.T) {
+	entry, ok := parseSchedule(rawSchedule{
+		Label:   "25:00-27:09 10 / 100 석",
+		MovieID: "movie-1",
+		Movie:   "오디세이",
+		Group:   "IMAX관IMAX LASER 2D",
+	}, "2026-08-21", domain.Theater{ID: "theater", Name: "용산아이파크몰"})
+	if !ok {
+		t.Fatal("parseSchedule() rejected extended CGV clock")
+	}
+	if entry.Showtime.Date != "2026-08-22" || entry.Showtime.StartsAt != "01:00" || entry.Showtime.EndsAt != "03:09" {
+		t.Fatalf("normalized showtime = %+v", entry.Showtime)
+	}
+	if entry.Showtime.MovieID != "movie-1" {
+		t.Fatalf("movie id = %q, want movie-1", entry.Showtime.MovieID)
+	}
+}
+
+func TestMovieMatchesUsesCanonicalIDWhenProvided(t *testing.T) {
+	if !movieMatches("movie-1", "같은 제목", "movie-1", "같은 제목") {
+		t.Fatal("matching movie ID was rejected")
+	}
+	if movieMatches("movie-1", "같은 제목", "movie-2", "같은 제목") {
+		t.Fatal("same title with a different movie ID was accepted")
+	}
+	if movieMatches("movie-1", "제목", "", "제목") {
+		t.Fatal("missing observed movie ID was accepted for an ID-bound query")
+	}
+}
+
 func TestParseScheduleUsesStructuredAuditoriumInsteadOfShowtimeBadges(t *testing.T) {
 	entry, ok := parseSchedule(rawSchedule{
 		Label:      "19:45 - 21:44 매진 조조 성우 무대인사 컬처데이",
@@ -70,11 +100,29 @@ func TestParseScheduleUsesStructuredAuditoriumInsteadOfShowtimeBadges(t *testing
 	if entry.AuditoriumName != "6관 (Laser)" {
 		t.Fatalf("auditorium = %q, want 6관 (Laser)", entry.AuditoriumName)
 	}
-	if entry.Showtime.ID != "9238317d2a1589ed7c5d3241" {
+	if entry.Showtime.ID != "e199f9f2bcfccb72db3d6d3a" {
 		t.Fatalf("canonical CGV showtime identity drifted: %q", entry.Showtime.ID)
 	}
 	if !entry.Showtime.SoldOut {
 		t.Fatal("sold-out showtime was not preserved")
+	}
+}
+
+func TestParseScheduleIdentityIgnoresDisplayRenamesWhenCanonicalIDsExist(t *testing.T) {
+	first, ok := parseSchedule(rawSchedule{
+		Label: "20:00-22:00 10 / 100 석", MovieID: "movie-1", Movie: "옛 제목", Group: "IMAX관",
+	}, "2026-08-21", domain.Theater{ID: "theater-1", Name: "옛 극장명"})
+	if !ok {
+		t.Fatal("first parse rejected")
+	}
+	second, ok := parseSchedule(rawSchedule{
+		Label: "20:00-22:00 10 / 100 석", MovieID: "movie-1", Movie: "새 제목", Group: "IMAX관",
+	}, "2026-08-21", domain.Theater{ID: "theater-1", Name: "새 극장명"})
+	if !ok {
+		t.Fatal("second parse rejected")
+	}
+	if first.Showtime.ID != second.Showtime.ID {
+		t.Fatalf("display rename changed canonical identity: %q != %q", first.Showtime.ID, second.Showtime.ID)
 	}
 }
 

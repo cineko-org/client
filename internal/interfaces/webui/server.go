@@ -49,6 +49,10 @@ type Automation interface {
 	Close()
 }
 
+type PaymentRetainer interface {
+	RetainPayment() error
+}
+
 type CredentialVault interface {
 	Load(context.Context, string) (domain.AccountCredentials, error)
 	Save(context.Context, string, domain.AccountCredentials) error
@@ -87,6 +91,11 @@ type Dependencies struct {
 	AccountStateChanged func(bool)
 	Credentials         CredentialVault
 	UserID              string
+	// BookingDemandChanged updates Client-local warm browser demand. Central
+	// remains the durable monitor/command owner; this callback only controls
+	// local prewarming while active monitors exist.
+	BookingDemandChanged     func(int)
+	BookingCapacityAvailable func() bool
 }
 
 type taskState struct {
@@ -111,15 +120,17 @@ const (
 )
 
 type Server struct {
-	repository          Repository
-	factory             AutomationFactory
-	ids                 application.IDGenerator
-	clock               application.Clock
-	waiter              application.Waiter
-	eventPublisher      application.EventPublisher
-	accountStateChanged func(bool)
-	credentials         CredentialVault
-	userID              string
+	repository               Repository
+	factory                  AutomationFactory
+	ids                      application.IDGenerator
+	clock                    application.Clock
+	waiter                   application.Waiter
+	eventPublisher           application.EventPublisher
+	accountStateChanged      func(bool)
+	credentials              CredentialVault
+	userID                   string
+	bookingDemandChanged     func(int)
+	bookingCapacityAvailable func() bool
 
 	rootContext     context.Context
 	allowedHost     string
@@ -132,6 +143,7 @@ type Server struct {
 	catalogLast     map[string]time.Time
 	paymentMu       sync.Mutex
 	paymentSessions map[string]*paymentSession
+	executionReady  chan struct{}
 }
 
 func New(dependencies Dependencies) (*Server, error) {
@@ -147,8 +159,11 @@ func New(dependencies Dependencies) (*Server, error) {
 		ids: dependencies.IDs, clock: dependencies.Clock, waiter: dependencies.Waiter,
 		eventPublisher: dependencies.Events, accountStateChanged: dependencies.AccountStateChanged,
 		credentials: dependencies.Credentials, userID: strings.TrimSpace(dependencies.UserID),
-		tasks: make(map[string]taskState), taskCancels: make(map[string]context.CancelFunc),
+		bookingDemandChanged:     dependencies.BookingDemandChanged,
+		bookingCapacityAvailable: dependencies.BookingCapacityAvailable,
+		tasks:                    make(map[string]taskState), taskCancels: make(map[string]context.CancelFunc),
 		catalogLast: make(map[string]time.Time), paymentSessions: make(map[string]*paymentSession),
+		executionReady: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -256,11 +271,39 @@ func (server *Server) Start(ctx context.Context) {
 			server.recordMaintenanceFailure("event-retention", err)
 		}
 	}
+	server.refreshBookingDemand(ctx)
+}
+
+const defaultBookingWarmDemand = 2
+
+func (server *Server) refreshBookingDemand(ctx context.Context) {
+	if server.bookingDemandChanged == nil || strings.TrimSpace(server.userID) == "" {
+		return
+	}
+	if server.credentials != nil {
+		if _, err := server.credentials.Load(ctx, server.userID); err != nil {
+			server.bookingDemandChanged(0)
+			return
+		}
+	}
+	monitors, err := server.repository.ListMonitorsByUser(ctx, server.userID)
+	if err != nil {
+		return
+	}
+	desired := 0
+	for _, monitor := range monitors {
+		if (monitor.Status == domain.MonitorPending || monitor.Status == domain.MonitorRunning) &&
+			(monitor.EffectiveMode() == domain.MonitorModeOpening || monitor.EffectiveMode() == domain.MonitorModeCancellation) {
+			desired = defaultBookingWarmDemand
+			break
+		}
+	}
+	server.bookingDemandChanged(desired)
 }
 
 func (server *Server) recordMaintenanceFailure(id string, err error) {
 	server.tasksMu.Lock()
-	server.tasks[id] = taskState{Status: "failed", Message: err.Error(), UpdatedAt: server.clock.Now()}
+	server.tasks[id] = taskState{Status: "failed", Message: publicErrorMessage(err), UpdatedAt: server.clock.Now()}
 	server.tasksMu.Unlock()
 }
 
@@ -357,6 +400,11 @@ func (server *Server) state(writer http.ResponseWriter, request *http.Request) {
 		server.writeError(writer, err)
 		return
 	}
+	for index := range monitors {
+		if monitors[index].LastError != "" {
+			monitors[index].LastError = publicErrorMessage(errors.New(monitors[index].LastError))
+		}
+	}
 	server.writeJSON(writer, http.StatusOK, map[string]any{
 		"userId": userID, "catalog": catalog, "presets": presets,
 		"monitors": monitors, "reservations": reservations,
@@ -414,7 +462,7 @@ func (server *Server) setAccountState(authenticated bool, err error) {
 	switch {
 	case err != nil:
 		state.Status = "error"
-		state.Message = err.Error()
+		state.Message = publicErrorMessage(err)
 	case authenticated:
 		state.Status = "authenticated"
 	default:
@@ -430,7 +478,7 @@ func (server *Server) setAccountState(authenticated bool, err error) {
 
 func (server *Server) saveAccountCredentials(writer http.ResponseWriter, request *http.Request) {
 	if server.credentials == nil {
-		server.writeJSON(writer, http.StatusNotImplemented, map[string]string{"error": "credential storage is unavailable"})
+		server.writeJSON(writer, http.StatusNotImplemented, map[string]string{"error": "이 기기에서는 로그인 정보를 저장할 수 없습니다."})
 		return
 	}
 	var input struct {
@@ -450,12 +498,13 @@ func (server *Server) saveAccountCredentials(writer http.ResponseWriter, request
 	server.account.AccountID = strings.TrimSpace(input.ID)
 	server.accountMu.Unlock()
 	server.startSavedAuthentication()
+	server.refreshBookingDemand(request.Context())
 	server.writeJSON(writer, http.StatusAccepted, map[string]string{"status": "credentials saved"})
 }
 
 func (server *Server) deleteAccountCredentials(writer http.ResponseWriter, request *http.Request) {
 	if server.credentials == nil {
-		server.writeJSON(writer, http.StatusNotImplemented, map[string]string{"error": "credential storage is unavailable"})
+		server.writeJSON(writer, http.StatusNotImplemented, map[string]string{"error": "이 기기에서는 로그인 정보를 저장할 수 없습니다."})
 		return
 	}
 	if err := server.credentials.Delete(request.Context(), server.userID); err != nil {
@@ -466,17 +515,18 @@ func (server *Server) deleteAccountCredentials(writer http.ResponseWriter, reque
 	server.account.CredentialsSaved = false
 	server.account.AccountID = ""
 	server.accountMu.Unlock()
+	server.refreshBookingDemand(request.Context())
 	server.writeJSON(writer, http.StatusOK, map[string]string{"status": "credentials deleted"})
 }
 
 func (server *Server) restoreAuthentication(writer http.ResponseWriter, _ *http.Request) {
 	if server.credentials == nil {
-		server.writeJSON(writer, http.StatusNotImplemented, map[string]string{"error": "credential storage is unavailable"})
+		server.writeJSON(writer, http.StatusNotImplemented, map[string]string{"error": "이 기기에서는 로그인 정보를 저장할 수 없습니다."})
 		return
 	}
 	credentials, err := server.credentials.Load(server.lifetimeContext(), server.userID)
 	if errors.Is(err, domain.ErrAccountCredentialsNotFound) {
-		server.writeJSON(writer, http.StatusNotFound, map[string]string{"error": "saved CGV credentials were not found"})
+		server.writeJSON(writer, http.StatusNotFound, map[string]string{"error": "요청한 정보를 찾을 수 없습니다. CGV 로그인 정보를 다시 저장하세요."})
 		return
 	}
 	if err != nil {
@@ -484,7 +534,7 @@ func (server *Server) restoreAuthentication(writer http.ResponseWriter, _ *http.
 		return
 	}
 	if !server.startCredentialAuthentication(credentials) {
-		server.writeJSON(writer, http.StatusConflict, map[string]string{"error": "login is already running"})
+		server.writeJSON(writer, http.StatusConflict, map[string]string{"error": "CGV 로그인을 이미 진행하고 있습니다."})
 		return
 	}
 	server.writeJSON(writer, http.StatusAccepted, map[string]string{"status": "saved login started"})
@@ -541,7 +591,7 @@ func (server *Server) lifetimeContext() context.Context {
 
 func (server *Server) openAuthentication(writer http.ResponseWriter, _ *http.Request) {
 	if !server.beginTask("authentication") {
-		server.writeJSON(writer, http.StatusConflict, map[string]string{"error": "login is already running"})
+		server.writeJSON(writer, http.StatusConflict, map[string]string{"error": "CGV 로그인을 이미 진행하고 있습니다."})
 		return
 	}
 	go func() {
@@ -573,7 +623,7 @@ func (server *Server) discoverAuditoriums(writer http.ResponseWriter, request *h
 		return
 	}
 	if strings.TrimSpace(input.Region) == "" || strings.TrimSpace(input.Theater) == "" {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "region and theater are required"})
+		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "지역과 CGV 지점을 선택하세요."})
 		return
 	}
 	requestKey := "auditoriums:" + strings.ToLower(strings.TrimSpace(input.Region)+"/"+strings.TrimSpace(input.Theater))
@@ -598,7 +648,7 @@ func (server *Server) captureAuditoriumSeatMap(writer http.ResponseWriter, reque
 		return
 	}
 	if strings.TrimSpace(input.AuditoriumID) == "" {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "auditorium is required"})
+		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "상영관을 선택하세요."})
 		return
 	}
 	if !input.Force {
@@ -619,7 +669,7 @@ func (server *Server) captureAuditoriumSeatMap(writer http.ResponseWriter, reque
 	}
 	requester, supported := server.repository.(seatMapBackfillRequester)
 	if !supported {
-		server.writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "seat-map backfill is unavailable"})
+		server.writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "좌석 배치를 지금 확인할 수 없습니다. 잠시 후 다시 시도하세요."})
 		return
 	}
 	if err := requester.RequestSeatMapBackfill(request.Context(), input.AuditoriumID); err != nil {
@@ -689,7 +739,7 @@ func (server *Server) syncCatalog(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	if strings.TrimSpace(input.Region) == "" || strings.TrimSpace(input.Theater) == "" {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "region and theater are required"})
+		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "지역과 CGV 지점을 선택하세요."})
 		return
 	}
 	ref := application.TheaterRef{Region: input.Region, Name: input.Theater}
@@ -746,7 +796,7 @@ func (server *Server) queryByID(
 ) {
 	id := request.URL.Query().Get(parameter)
 	if id == "" {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": parameter + " is required"})
+		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "필수 정보를 입력하세요."})
 		return
 	}
 	value, err := load(request.Context(), id)
@@ -846,6 +896,7 @@ func (server *Server) withBookingWorker(
 	background bool,
 	run func(*application.BookingWorker, context.Context, string) (domain.Reservation, error),
 ) error {
+	defer server.refreshBookingDemand(context.WithoutCancel(ctx))
 	browserContext := server.rootContext
 	if browserContext == nil {
 		browserContext = context.Background()
@@ -868,6 +919,11 @@ func (server *Server) withBookingWorker(
 	})
 	reservation, err := run(worker, ctx, monitorID)
 	if err == nil && reservation.Status == "prepared" {
+		if retainer, ok := automation.(PaymentRetainer); ok {
+			if retainErr := retainer.RetainPayment(); retainErr != nil {
+				return retainErr
+			}
+		}
 		server.retainPaymentSession(monitorID, reservation, automation)
 		retained = true
 	}
@@ -882,21 +938,9 @@ func (server *Server) ExecuteAvailability(
 	monitorID string,
 	showtime domain.Showtime,
 ) error {
-	if server.hasPaymentSession(monitorID) {
-		return nil
-	}
-	job, err := server.repository.GetMonitor(ctx, monitorID)
-	if err != nil {
-		return err
-	}
-	if job.Status == domain.MonitorTriggered || job.Status == domain.MonitorPaymentUnknown {
-		return nil
-	}
-	claimed, err := server.claimedBooking(ctx, monitorID, showtime)
-	if err != nil {
-		return err
-	}
-	if err := claimed.Validate(server.clock.Now()); err != nil {
+	defer server.refreshBookingDemand(context.WithoutCancel(ctx))
+	claimed, skip, err := server.prepareAvailabilityClaim(ctx, monitorID, showtime)
+	if err != nil || skip {
 		return err
 	}
 	browserContext := server.rootContext
@@ -935,10 +979,40 @@ func (server *Server) ExecuteAvailability(
 		return ctx.Err()
 	}
 	if err == nil && reservation.Status == "prepared" {
+		if retainer, ok := automation.(PaymentRetainer); ok {
+			if retainErr := retainer.RetainPayment(); retainErr != nil {
+				return retainErr
+			}
+		}
 		server.retainPaymentSession(monitorID, reservation, automation)
 		retained = true
 	}
 	return err
+}
+
+func (server *Server) prepareAvailabilityClaim(
+	ctx context.Context,
+	monitorID string,
+	showtime domain.Showtime,
+) (application.ClaimedBooking, bool, error) {
+	if server.hasPaymentSession(monitorID) {
+		return application.ClaimedBooking{}, true, nil
+	}
+	job, err := server.repository.GetMonitor(ctx, monitorID)
+	if err != nil {
+		return application.ClaimedBooking{}, false, err
+	}
+	if job.Status == domain.MonitorTriggered || job.Status == domain.MonitorPaymentUnknown {
+		return application.ClaimedBooking{}, true, nil
+	}
+	claimed, err := server.claimedBooking(ctx, monitorID, showtime)
+	if err != nil {
+		return application.ClaimedBooking{}, false, err
+	}
+	if err := claimed.Validate(server.clock.Now()); err != nil {
+		return application.ClaimedBooking{}, false, err
+	}
+	return claimed, false, nil
 }
 
 func (server *Server) claimedBooking(
@@ -1040,7 +1114,7 @@ func (server *Server) finishTask(id string, err error) {
 		state.Status = "stopped"
 	} else if err != nil {
 		state.Status = "failed"
-		state.Message = err.Error()
+		state.Message = publicErrorMessage(err)
 	}
 	server.tasksMu.Lock()
 	server.tasks[id] = state
@@ -1052,7 +1126,7 @@ func (server *Server) decode(writer http.ResponseWriter, request *http.Request, 
 	decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "입력값을 확인하세요."})
 		return false
 	}
 	return true
@@ -1088,7 +1162,35 @@ func (server *Server) writeError(writer http.ResponseWriter, err error) {
 		errors.Is(err, application.ErrMonitorExpired):
 		status = http.StatusUnprocessableEntity
 	}
-	server.writeJSON(writer, status, map[string]string{"error": err.Error()})
+	server.writeJSON(writer, status, map[string]string{"error": publicErrorMessage(err)})
+}
+
+func publicErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, application.ErrNotFound):
+		return "요청한 정보를 찾을 수 없습니다. 새로고침 후 다시 시도하세요."
+	case errors.Is(err, application.ErrConflict):
+		return "다른 변경사항이 먼저 저장되었습니다. 새로고침 후 다시 시도하세요."
+	case errors.Is(err, application.ErrBookingNotOpen):
+		return "아직 예매할 수 없는 회차입니다."
+	case errors.Is(err, application.ErrSeatUnavailable):
+		return "조건에 맞는 좌석을 찾지 못했습니다."
+	case errors.Is(err, application.ErrMonitorExpired):
+		return "관찰할 날짜가 지나 모니터가 종료되었습니다."
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "요청 시간이 초과되었습니다. 잠시 후 다시 시도하세요."
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "proxy"), strings.Contains(message, "soxy"):
+		return "프록시 설정이나 연결 상태를 확인하세요."
+	case strings.Contains(message, "credential"), strings.Contains(message, "authenticate"), strings.Contains(message, "login"):
+		return "CGV 로그인에 실패했습니다. 로그인 정보를 확인하고 다시 시도하세요."
+	case strings.Contains(message, "central"), strings.Contains(message, "connect"), strings.Contains(message, "dial"), strings.Contains(message, "network"):
+		return "Cineko 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요."
+	default:
+		return "요청을 처리하지 못했습니다. 입력값을 확인하고 다시 시도하세요."
+	}
 }
 
 func (server *Server) writeJSON(writer http.ResponseWriter, status int, value any) {

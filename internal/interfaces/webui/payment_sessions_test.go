@@ -58,7 +58,7 @@ func TestPreparedPaymentKeepsBrowserAndReusesMonitorOnRetry(t *testing.T) {
 		},
 	}
 	monitor := domain.MonitorJob{
-		ID: "monitor", UserID: "user", PresetID: preset.ID, Movie: "영화",
+		ID: "monitor", UserID: "user", PresetID: preset.ID, MovieID: "movie", Movie: "영화",
 		TargetDates: []string{"2026-08-20"}, PollInterval: time.Minute, PollIntervalMax: 2 * time.Minute,
 	}
 	seatMap := domain.SeatMap{
@@ -195,5 +195,35 @@ func TestRetryRecoversPersistedPaymentAttemptAfterAppRestart(t *testing.T) {
 	if updatedMonitor.Status != domain.MonitorPending || updatedMonitor.ReservationID != "" ||
 		updatedReservation.Status != "abandoned" {
 		t.Fatalf("recovered state = %+v / %+v", updatedMonitor, updatedReservation)
+	}
+}
+
+func TestRemovingLastPaymentSessionWakesExecutionWorker(t *testing.T) {
+	server := &Server{
+		paymentSessions: map[string]*paymentSession{"monitor": {}},
+		executionReady:  make(chan struct{}, 1),
+	}
+	if session := server.removePaymentSession("monitor", nil); session == nil {
+		t.Fatal("payment session was not removed")
+	}
+	select {
+	case <-server.ExecutionAvailable():
+	default:
+		t.Fatal("last payment session removal did not publish an execution wake")
+	}
+}
+
+func TestCanAcceptExecutionUsesReadyWarmCapacityForRetainedPayment(t *testing.T) {
+	ready := false
+	server := &Server{
+		paymentSessions:          map[string]*paymentSession{"retained": {}},
+		bookingCapacityAvailable: func() bool { return ready },
+	}
+	if server.CanAcceptExecution() {
+		t.Fatal("execution accepted without a ready warm slot")
+	}
+	ready = true
+	if !server.CanAcceptExecution() {
+		t.Fatal("ready warm slot was blocked by retained payment")
 	}
 }

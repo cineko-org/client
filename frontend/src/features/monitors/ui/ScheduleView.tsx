@@ -66,12 +66,12 @@ export function ScheduleView({ form, onChange }: ScheduleViewProps) {
               </Chip.Group>
             </Stack>
             <NumberField
-              label="요일 조건 유지"
+              label="한 번에 확인할 기간"
               value={form.horizonDays}
               onChange={(value) => set({ horizonDays: normalizeHorizon(value) })}
-              min={7}
-              max={90}
-              step={7}
+              min={1}
+              max={14}
+              step={1}
               suffix="일"
               allowDecimal={false}
               allowNegative={false}
@@ -82,7 +82,13 @@ export function ScheduleView({ form, onChange }: ScheduleViewProps) {
       </Stack>
 
       <Stack gap="sm">
-        <Stack gap={2}><Text fw={600}>선호 시간대</Text><Text size="xs" c="dimmed">비워두면 모든 회차를 확인합니다.</Text></Stack>
+        <Stack gap={2}>
+          <Text fw={600}>선호 시간대</Text>
+          <Text size="xs" c="dimmed">
+            실제 상영 시작 시각 기준입니다. 시작은 포함하고 마감은 제외합니다. 비워두면 모든 회차를 확인합니다.
+            시작이 마감보다 늦으면 자정을 넘어 확인합니다. 예: 21:00–06:00은 21:00 이상 또는 06:00 미만입니다.
+          </Text>
+        </Stack>
         <Columns>
           <TimePicker radius={0} label="시작" value={form.earliestTime} onChange={(earliestTime) => set({ earliestTime })} minutesStep={5} withDropdown clearable />
           <TimePicker radius={0} label="마감" value={form.latestTime} onChange={(latestTime) => set({ latestTime })} minutesStep={5} withDropdown clearable />

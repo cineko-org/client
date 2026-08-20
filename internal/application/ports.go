@@ -107,6 +107,7 @@ type CatalogGateway interface {
 }
 
 type ShowtimeQuery struct {
+	MovieID      string
 	Movie        string
 	Theater      domain.Theater
 	Auditorium   domain.Auditorium

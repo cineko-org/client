@@ -98,6 +98,13 @@ type Adapter struct {
 	userAgent         browserUserAgent
 	userAgentMetadata userAgentBootstrapIdentity
 	webGLIdentity     webGLIdentity
+	processPID        int
+	profileDir        string
+	browserCrashed    chan error
+	browserCrashOnce  sync.Once
+	processDone       chan struct{}
+	processDoneOnce   sync.Once
+	closing           atomic.Bool
 }
 
 type BrowserPool struct {
@@ -264,28 +271,11 @@ func newAdapter(
 	if pw == nil {
 		return nil, errors.New("playwright runtime is required")
 	}
-	adapterContext, cancelContext := context.WithCancel(parent)
-	persistedIdentity, err := loadSessionIdentity(config)
+	persistedIdentity, selectedUserAgent, locale, err := adapterLaunchIdentity(config)
 	if err != nil {
-		cancelContext()
 		return nil, err
 	}
-	var selectedUserAgent browserUserAgent
-	if persistedIdentity != nil {
-		selectedUserAgent = persistedIdentity.UserAgent
-	} else {
-		selectedUserAgent, err = selectBrowserUserAgent(config.ChromePath, config.UserAgentMode, nil)
-		if err != nil {
-			cancelContext()
-			return nil, err
-		}
-	}
-	locale := ""
-	if persistedIdentity != nil {
-		locale = persistedIdentity.Languages[0]
-	} else if config.UserAgentMode == UserAgentSession {
-		locale = profilePrimaryLanguage(config.ProfileDir)
-	}
+	adapterContext, cancelContext := context.WithCancel(parent)
 	options := persistentContextOptions(config, locale)
 	browserContext, err := pw.Chromium.LaunchPersistentContext(config.ProfileDir, options)
 	if err != nil {
@@ -318,8 +308,16 @@ func newAdapter(
 		stopPlaywright:  stopPlaywright, artifactsDir: config.ArtifactsDir,
 		seatResponses: make(chan seatNetworkResponse, 8), userAgent: selectedUserAgent,
 		userAgentMetadata: identity.metadata, webGLIdentity: identity.webGL,
-		blockResources: config.BlockResources,
+		blockResources: config.BlockResources, processPID: pw.Pid(), profileDir: config.ProfileDir,
+		browserCrashed: make(chan error, 1), processDone: make(chan struct{}),
 	}
+	browserContext.OnClose(func(playwright.BrowserContext) {
+		// Context closure is an early crash signal only. Driver reaping is
+		// signaled after stopPlaywright returns below.
+		if !adapter.closing.Load() {
+			adapter.browserCrashOnce.Do(func() { adapter.browserCrashed <- errors.New("CGV browser context closed") })
+		}
+	})
 	if persistedIdentity == nil {
 		if err := saveSessionIdentity(config, persistentBrowserIdentity{
 			Version: sessionIdentityVersion, UserAgent: selectedUserAgent,
@@ -338,6 +336,25 @@ func newAdapter(
 		adapter.Close()
 	}()
 	return adapter, nil
+}
+
+func adapterLaunchIdentity(config BrowserConfig) (*persistentBrowserIdentity, browserUserAgent, string, error) {
+	persistedIdentity, err := loadSessionIdentity(config)
+	if err != nil {
+		return nil, browserUserAgent{}, "", err
+	}
+	if persistedIdentity != nil {
+		return persistedIdentity, persistedIdentity.UserAgent, persistedIdentity.Languages[0], nil
+	}
+	selectedUserAgent, err := selectBrowserUserAgent(config.ChromePath, config.UserAgentMode, nil)
+	if err != nil {
+		return nil, browserUserAgent{}, "", err
+	}
+	locale := ""
+	if config.UserAgentMode == UserAgentSession {
+		locale = profilePrimaryLanguage(config.ProfileDir)
+	}
+	return nil, selectedUserAgent, locale, nil
 }
 
 func onlyBrowserPage(browserContext playwright.BrowserContext) (playwright.Page, error) {
@@ -634,6 +651,7 @@ func (adapter *Adapter) publishSeatResponse(response seatNetworkResponse) {
 
 func (adapter *Adapter) Close() {
 	adapter.closeOnce.Do(func() {
+		adapter.closing.Store(true)
 		adapter.cancelContext()
 		if adapter.identitySession != nil {
 			_ = adapter.identitySession.Detach()
@@ -643,6 +661,9 @@ func (adapter *Adapter) Close() {
 		}
 		if adapter.stopPlaywright != nil {
 			_ = adapter.stopPlaywright()
+		}
+		if adapter.processDone != nil {
+			adapter.processDoneOnce.Do(func() { close(adapter.processDone) })
 		}
 		adapter.lifecycleMu.Lock()
 		adapter.closed = true
@@ -654,6 +675,37 @@ func (adapter *Adapter) Close() {
 		}
 	})
 }
+
+// ProcessPID identifies the per-adapter Playwright driver that owns this
+// Chromium process tree. Shared BrowserPool instances must not be used for
+// zombie-safe warm slots because their driver PID is shared.
+func (adapter *Adapter) ProcessPID() int { return adapter.processPID }
+
+// ProcessProfileDir identifies the disposable profile owned by this adapter.
+func (adapter *Adapter) ProcessProfileDir() string { return adapter.profileDir }
+
+// ProcessPageCount reports the number of live pages in this adapter context.
+func (adapter *Adapter) ProcessPageCount() int {
+	if adapter.browserContext == nil {
+		return 0
+	}
+	return len(adapter.browserContext.Pages())
+}
+
+// ProcessCrashed reports an unexpected browser context closure.
+func (adapter *Adapter) ProcessCrashed() <-chan error { return adapter.browserCrashed }
+
+// WaitProcess waits until the Playwright driver has been stopped and reaped.
+func (adapter *Adapter) WaitProcess() error {
+	if adapter.processDone == nil {
+		return nil
+	}
+	<-adapter.processDone
+	return nil
+}
+
+// KillProcessTree forcefully terminates the driver and all of its descendants.
+func (adapter *Adapter) KillProcessTree() error { return killProcessTree(adapter.processPID) }
 
 // AddCloseHook registers resource cleanup after Chrome has stopped. If Close
 // already won the race, the hook runs synchronously instead of being lost.

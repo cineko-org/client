@@ -4,6 +4,7 @@ import "time"
 
 type Showtime struct {
 	ID             string    `json:"id"`
+	MovieID        string    `json:"movieId"`
 	Movie          string    `json:"movie"`
 	PosterURL      string    `json:"posterUrl,omitempty"`
 	TheaterID      string    `json:"theaterId"`

@@ -92,7 +92,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 	monitors := &monitorRepositoryFake{}
 	service := NewMonitorService(monitors, presets, &sequenceIDs{}, fixedClock{now})
 	request := CreateMonitorRequest{
-		UserID: "user", PresetID: "preset", Movie: " Movie ", TargetWeekdays: []int{1},
+		UserID: "user", PresetID: "preset", MovieID: "movie", Movie: " Movie ", TargetWeekdays: []int{1},
 	}
 	created, err := service.Create(ctx, request)
 	if err != nil || created.Mode != domain.MonitorModeOpening ||
@@ -272,7 +272,7 @@ func TestMonitorServiceCreateIdempotentPaths(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
 	request := CreateMonitorRequest{
-		UserID: "user", PresetID: "preset", Movie: "Movie", TargetDates: []string{"2026-08-10"},
+		UserID: "user", PresetID: "preset", MovieID: "movie", Movie: "Movie", TargetDates: []string{"2026-08-10"},
 		PollInterval: 5 * time.Second, PollIntervalMax: 8 * time.Second,
 	}
 	presets := newPresetRepositoryFake()

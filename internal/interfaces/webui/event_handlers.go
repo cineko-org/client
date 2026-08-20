@@ -122,7 +122,7 @@ func (server *Server) createEvent(writer http.ResponseWriter, request *http.Requ
 	input.UserID = strings.TrimSpace(input.UserID)
 	input.Message = strings.TrimSpace(input.Message)
 	if input.UserID == "" || input.Message == "" {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "userId and message are required"})
+		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "알림 내용을 입력하세요."})
 		return
 	}
 	event := domain.AppEvent{ID: server.ids.NewID(), UserID: input.UserID, Kind: input.Kind,

@@ -69,6 +69,7 @@ export interface Monitor {
   userId: string;
   presetId: string;
   mode: MonitorMode;
+  movieId: string;
   movie: string;
   targetDates: string[];
   targetWeekdays: number[];

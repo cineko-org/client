@@ -167,8 +167,26 @@ func TestRestoreAuthenticationExplainsMissingSavedCredentials(t *testing.T) {
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/auth/restore", nil)
 	response := httptest.NewRecorder()
 	server.apiRoutes().ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "saved CGV credentials were not found") {
+	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "요청한 정보를 찾을 수 없습니다") ||
+		strings.Contains(response.Body.String(), "/v1/") {
 		t.Fatalf("restore without saved credentials = %d, %s", response.Code, response.Body.String())
+	}
+}
+
+func TestPublicErrorsDoNotExposeInternalTransportDetails(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		err      error
+		expected string
+	}{
+		{errors.New("dial tcp 10.0.0.1:443: connection refused"), "Cineko 서비스에 연결할 수 없습니다"},
+		{errors.New("proxy request https://internal.invalid/v1 failed"), "프록시 설정이나 연결 상태"},
+		{application.ErrConflict, "다른 변경사항이 먼저 저장되었습니다"},
+	} {
+		message := publicErrorMessage(test.err)
+		if !strings.Contains(message, test.expected) || strings.Contains(message, "10.0.0.1") || strings.Contains(message, "/v1") {
+			t.Fatalf("publicErrorMessage(%v) = %q", test.err, message)
+		}
 	}
 }
 
@@ -344,7 +362,7 @@ func TestCreateMonitorIsIdempotent(t *testing.T) {
 	server := &Server{
 		repository: store, ids: &webAtomicIDs{}, clock: webTestClock{now},
 	}
-	body := `{"idempotencyKey":"command","userId":"user","presetId":"preset","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":180000000000,"pollIntervalMax":480000000000}`
+	body := `{"idempotencyKey":"command","userId":"user","presetId":"preset","movieId":"movie","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":180000000000,"pollIntervalMax":480000000000}`
 	for range 2 {
 		request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/monitors", strings.NewReader(body))
 		response := httptest.NewRecorder()

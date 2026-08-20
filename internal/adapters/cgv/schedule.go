@@ -16,11 +16,12 @@ import (
 )
 
 var schedulePattern = regexp.MustCompile(
-	`^(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\s*(?:(\d+)\s*/\s*(\d+)\s*석|(매진|예매종료))(?:\s*(.*))?$`,
+	`^(\d{2,}:\d{2})\s*-\s*(\d{2,}:\d{2})\s*(?:(\d+)\s*/\s*(\d+)\s*석|(매진|예매종료))(?:\s*(.*))?$`,
 )
 
 type rawSchedule struct {
 	Label      string `json:"label"`
+	MovieID    string `json:"movieId"`
 	Movie      string `json:"movie"`
 	PosterURL  string `json:"posterUrl"`
 	Group      string `json:"group"`
@@ -132,14 +133,11 @@ func (adapter *Adapter) FindShowtimes(
 		}
 		dateHasAvailableMatch := false
 		for _, entry := range entries {
-			if !movieMatches(query.Movie, entry.Showtime.Movie) ||
+			if !movieMatches(query.MovieID, query.Movie, entry.Showtime.MovieID, entry.Showtime.Movie) ||
 				!auditoriumMatches(query.Auditorium.Name, entry.AuditoriumName) {
 				continue
 			}
-			if query.EarliestTime != "" && entry.Showtime.StartsAt < query.EarliestTime {
-				continue
-			}
-			if query.LatestTime != "" && entry.Showtime.StartsAt > query.LatestTime {
+			if !domain.TimeWindowContains(entry.Showtime.StartsAt, query.EarliestTime, query.LatestTime) {
 				continue
 			}
 			showtime := entry.Showtime
@@ -338,13 +336,15 @@ func (adapter *Adapter) extractSchedules(
 		};
 		return window.__cinekoQueryAll('button').map(button => {
 			const label = normalize(button.innerText || button.textContent);
-			if (!/^\d{2}:\d{2}-/.test(label)) return null;
+			if (!/^\d{2,}:\d{2}-/.test(label)) return null;
 			const group = previous(button, 'h3');
 			const movieHeading = previous(button, 'h2');
+			const movieIdentity = movieHeading && (movieHeading.closest('[data-mov-no], [data-movie-id]') || movieHeading);
 			const poster = movieHeading && window.__cinekoQuery('img[alt*="포스터"]', movieHeading);
 			const auditorium = window.__cinekoQuery('[class*="_theater__"]', button);
 			return {
 				label,
+				movieId: normalize((movieIdentity && (movieIdentity.getAttribute('data-mov-no') || movieIdentity.getAttribute('data-movie-id'))) || (movieHeading && movieHeading.getAttribute('data-mov-no'))),
 				movie: poster ? normalize(poster.getAttribute('alt')).replace(/\s*포스터$/, '') : normalize(movieHeading && movieHeading.innerText),
 				posterUrl: poster ? normalize(poster.currentSrc || poster.getAttribute('src')) : '',
 				group: normalize(group && group.innerText),
@@ -372,6 +372,14 @@ func parseSchedule(item rawSchedule, date string, theater domain.Theater) (sched
 	if match == nil {
 		return scheduleEntry{}, false
 	}
+	showDate, startsAt, ok := normalizeCGVShowtime(date, match[1])
+	if !ok {
+		return scheduleEntry{}, false
+	}
+	_, endsAt, ok := normalizeCGVShowtime(date, match[2])
+	if !ok {
+		return scheduleEntry{}, false
+	}
 	available, capacity := 0, 0
 	if match[3] != "" {
 		_, _ = fmt.Sscanf(match[3], "%d", &available)
@@ -381,16 +389,46 @@ func parseSchedule(item rawSchedule, date string, theater domain.Theater) (sched
 	if auditoriumName == "" {
 		return scheduleEntry{}, false
 	}
+	identityTheater := theater.ID
+	if identityTheater == "" {
+		identityTheater = theater.Name
+	}
+	identityMovie := item.Movie
+	if item.MovieID != "" {
+		identityMovie = item.MovieID
+	}
 	showtime := domain.Showtime{
-		ID:    stableSourceID(theater.Name, date, item.Movie, auditoriumName, match[1]),
-		Movie: item.Movie, PosterURL: item.PosterURL, TheaterID: theater.ID, TheaterName: theater.Name,
+		ID:      stableSourceID(identityTheater, showDate, identityMovie, auditoriumName, startsAt),
+		MovieID: item.MovieID,
+		Movie:   item.Movie, PosterURL: item.PosterURL, TheaterID: theater.ID, TheaterName: theater.Name,
 		AuditoriumName: auditoriumName, ScreenTypes: screenTypes,
-		Date: date, StartsAt: match[1], EndsAt: match[2],
+		Date: showDate, StartsAt: startsAt, EndsAt: endsAt,
 		AvailableSeats: available, Capacity: capacity,
 		SoldOut: item.Disabled || match[5] != "", ObservedAt: time.Now(),
 		SourceLabel: normalize(item.Label),
 	}
 	return scheduleEntry{Showtime: showtime, AuditoriumName: auditoriumName, ScreenTypes: screenTypes}, true
+}
+
+// normalizeCGVShowtime converts CGV's post-midnight clock notation (for
+// example, Friday's 25:00) into the actual KST calendar date and a normal
+// 24-hour clock. Matching and weekday filtering must use the resulting date.
+func normalizeCGVShowtime(date, clock string) (string, string, bool) {
+	parts := strings.Split(clock, ":")
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	hour, errHour := strconv.Atoi(parts[0])
+	minute, errMinute := strconv.Atoi(parts[1])
+	if errHour != nil || errMinute != nil || hour < 0 || hour > 47 || minute < 0 || minute > 59 {
+		return "", "", false
+	}
+	base, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return "", "", false
+	}
+	actualDate := base.AddDate(0, 0, hour/24)
+	return actualDate.Format("2006-01-02"), fmt.Sprintf("%02d:%02d", hour%24, minute), true
 }
 
 func parseAuditorium(group, structuredName string) (string, []string) {
@@ -427,7 +465,11 @@ func detectScreenTypes(value string) []string {
 	return types
 }
 
-func movieMatches(requested, observed string) bool {
+func movieMatches(requestedID, requestedTitle, observedID, observedTitle string) bool {
+	if requestedID != "" {
+		return observedID != "" && requestedID == observedID
+	}
+	requested, observed := requestedTitle, observedTitle
 	requested = strings.ToLower(normalize(requested))
 	observed = strings.ToLower(normalize(observed))
 	return requested == observed || strings.Contains(observed, requested)

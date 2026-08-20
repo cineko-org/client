@@ -3,6 +3,7 @@ import type { Monitor, MonitorMode, MonitorStatus } from '../../api/types';
 export interface MonitorForm {
 	revision: number;
 	id: string;
+  movieId: string;
   movie: string;
   presetId: string;
   pollMinMinutes: number;
@@ -20,6 +21,7 @@ export interface MonitorSaveRequest {
 	id: string;
   userId: string;
   presetId: string;
+  movieId: string;
   movie: string;
   targetDates: string[];
   targetWeekdays: number[];
@@ -42,21 +44,21 @@ export const weekdayOptions = [
 ];
 
 export const initialMonitorForm: MonitorForm = {
-	id: '', revision: 0, movie: '', presetId: '', pollMinMinutes: 3, pollMaxMinutes: 8,
+	id: '', revision: 0, movieId: '', movie: '', presetId: '', pollMinMinutes: 3, pollMaxMinutes: 8,
   monitorMode: 'opening', dates: [], weekdays: [],
-  horizonDays: 28, earliestTime: '', latestTime: '',
+  horizonDays: 14, earliestTime: '', latestTime: '',
 };
 
 const durationMinutes = (value: number | undefined, fallback: number) => value ? Math.round(value / 60_000_000_000) : fallback;
 
 export function formFromMonitor(monitor: Monitor): MonitorForm {
 	return {
-		id: monitor.id, revision: monitor.revision ?? 0, movie: monitor.movie, presetId: monitor.presetId,
+		id: monitor.id, revision: monitor.revision ?? 0, movieId: monitor.movieId, movie: monitor.movie, presetId: monitor.presetId,
     pollMinMinutes: durationMinutes(monitor.pollInterval, 3),
     pollMaxMinutes: durationMinutes(monitor.pollIntervalMax, 8),
     monitorMode: monitor.mode,
     dates: [...monitor.targetDates], weekdays: monitor.targetWeekdays.map(String),
-    horizonDays: monitor.searchHorizonDays || 28, earliestTime: monitor.earliestTime, latestTime: monitor.latestTime,
+    horizonDays: monitor.searchHorizonDays || 14, earliestTime: monitor.earliestTime, latestTime: monitor.latestTime,
   };
 }
 
@@ -78,7 +80,7 @@ export function scheduleBounds(today: Date): { today: string; last: string } {
 }
 
 export function normalizeHorizon(value: number | string): number {
-  return typeof value === 'number' ? value : 28;
+  return typeof value === 'number' ? value : 14;
 }
 
 export function scheduleDescription(form: Pick<MonitorForm, 'dates' | 'weekdays' | 'horizonDays'>): string {
@@ -91,8 +93,10 @@ export function scheduleDescription(form: Pick<MonitorForm, 'dates' | 'weekdays'
 }
 
 export function monitorFormError(form: MonitorForm): string {
-  if (!form.movie || !form.presetId) return '영화와 좌석 프리셋을 선택하세요.';
+  if (!form.movieId || !form.movie || !form.presetId) return '영화와 좌석 프리셋을 선택하세요.';
   if (form.dates.length + form.weekdays.length === 0) return '관람 날짜나 반복 요일을 하나 이상 추가하세요.';
+  if (form.weekdays.length > 0 && (form.horizonDays < 1 || form.horizonDays > 14)) return '요일은 앞으로 1–14일 안에서 확인할 수 있습니다.';
+  if (form.earliestTime && form.earliestTime === form.latestTime) return '시작과 마감 시각은 달라야 합니다.';
   if (form.pollMinMinutes >= form.pollMaxMinutes) return '최대 확인 간격은 최소 간격보다 커야 합니다.';
   return '';
 }
@@ -103,6 +107,7 @@ export function monitorSaveRequest(form: MonitorForm, userId: string): MonitorSa
 		revision: form.revision,
     userId,
     presetId: form.presetId,
+    movieId: form.movieId,
     movie: form.movie,
     targetDates: [...form.dates],
     targetWeekdays: form.weekdays.map(Number),
@@ -120,13 +125,16 @@ export function monitorScheduleLabel(monitor: Partial<Monitor>): string {
   if (monitor.targetDates?.length) parts.push(monitor.targetDates.join(' · '));
   if (monitor.targetWeekdays?.length) {
     const names = monitor.targetWeekdays.map((day) => weekdayOptions[day]?.label).filter(Boolean).join(' · ');
-    parts.push(`매주 ${names}요일 · 앞으로 ${monitor.searchHorizonDays || 28}일`);
+    parts.push(`매주 ${names}요일 · 앞으로 ${monitor.searchHorizonDays || 14}일`);
   }
   return parts.join(' / ') || '대상 일정 없음';
 }
 
 export function monitorTimeLabel(monitor: Partial<Monitor>): string {
-  if (monitor.earliestTime && monitor.latestTime) return `${monitor.earliestTime}–${monitor.latestTime}`;
+  if (monitor.earliestTime && monitor.latestTime) {
+    const suffix = monitor.earliestTime > monitor.latestTime ? ' (자정 넘김)' : '';
+    return `${monitor.earliestTime}–${monitor.latestTime}${suffix}`;
+  }
   if (monitor.earliestTime) return `${monitor.earliestTime} 이후`;
   if (monitor.latestTime) return `${monitor.latestTime} 이전`;
   return '모든 시간대';

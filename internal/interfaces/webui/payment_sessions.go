@@ -17,6 +17,28 @@ type paymentSession struct {
 	timer         *time.Timer
 }
 
+type PaymentFailureNotifier interface {
+	PaymentFailure() <-chan struct{}
+}
+
+// CanAcceptExecution prevents a Client from claiming work it cannot start.
+// A prepared payment keeps the sole interactive browser session until the user
+// finishes or abandons it, so Central must retain any later command meanwhile.
+func (server *Server) CanAcceptExecution() bool {
+	if server.bookingCapacityAvailable != nil {
+		return server.bookingCapacityAvailable()
+	}
+	server.paymentMu.Lock()
+	defer server.paymentMu.Unlock()
+	return len(server.paymentSessions) == 0
+}
+
+func (server *Server) ExecutionAvailable() <-chan struct{} { return server.executionReady }
+
+// NotifyBookingCapacityChanged wakes the execution worker after a local warm
+// slot becomes ready or is retired. It does not claim or mutate Central work.
+func (server *Server) NotifyBookingCapacityChanged() { server.signalExecutionAvailable() }
+
 func (server *Server) retainPaymentSession(
 	monitorID string,
 	reservation domain.Reservation,
@@ -36,6 +58,32 @@ func (server *Server) retainPaymentSession(
 	})
 	server.paymentMu.Unlock()
 	closePaymentSession(previous)
+	if notifier, ok := automation.(PaymentFailureNotifier); ok {
+		go server.watchPaymentFailure(monitorID, session, notifier.PaymentFailure())
+	}
+}
+
+func (server *Server) watchPaymentFailure(monitorID string, expected *paymentSession, failure <-chan struct{}) {
+	if failure == nil {
+		return
+	}
+	select {
+	case <-failure:
+	case <-server.lifetimeContext().Done():
+		return
+	}
+	session := server.removePaymentSession(monitorID, expected)
+	if session == nil {
+		return
+	}
+	closePaymentSession(session)
+	ctx := server.lifetimeContext()
+	if err := server.finishPaymentAttempt(ctx, monitorID, session, "unknown", domain.MonitorPaymentUnknown); err != nil {
+		server.recordMaintenanceFailure("payment-browser-crash:"+monitorID, err)
+		return
+	}
+	server.addEvent(session.userID, "payment.browser_crashed", domain.EventError,
+		"결제 화면 브라우저가 종료되어 예매 결과를 확인해야 합니다.")
 }
 
 func (server *Server) hasPaymentSession(monitorID string) bool {
@@ -113,13 +161,25 @@ func (server *Server) finishPaymentAttempt(
 
 func (server *Server) removePaymentSession(monitorID string, expected *paymentSession) *paymentSession {
 	server.paymentMu.Lock()
-	defer server.paymentMu.Unlock()
 	session := server.paymentSessions[monitorID]
 	if session == nil || expected != nil && session != expected {
+		server.paymentMu.Unlock()
 		return nil
 	}
 	delete(server.paymentSessions, monitorID)
+	becameAvailable := len(server.paymentSessions) == 0
+	server.paymentMu.Unlock()
+	if becameAvailable {
+		server.signalExecutionAvailable()
+	}
 	return session
+}
+
+func (server *Server) signalExecutionAvailable() {
+	select {
+	case server.executionReady <- struct{}{}:
+	default:
+	}
 }
 
 func (server *Server) closePaymentSessions() {
@@ -134,6 +194,9 @@ func (server *Server) closePaymentSessions() {
 		delete(server.paymentSessions, monitorID)
 	}
 	server.paymentMu.Unlock()
+	if len(sessions) > 0 {
+		server.signalExecutionAvailable()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for _, retained := range sessions {

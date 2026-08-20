@@ -270,9 +270,12 @@ func TestMonitorValidationAndStateHelpers(t *testing.T) {
 			value.TargetWeekdays = []int{1}
 			value.SearchHorizonDays = 0
 		},
+		func(value *MonitorJob) {
+			value.TargetWeekdays = []int{1}
+			value.SearchHorizonDays = DefaultSearchHorizonDays + 1
+		},
 		func(value *MonitorJob) { value.EarliestTime = "bad" },
 		func(value *MonitorJob) { value.LatestTime = "bad" },
-		func(value *MonitorJob) { value.EarliestTime, value.LatestTime = "20:00", "10:00" },
 	}
 	for index, mutate := range mutations {
 		candidate := job
@@ -374,6 +377,6 @@ func validPreset() Preset {
 func validMonitorJob() MonitorJob {
 	return MonitorJob{
 		ID: "monitor", UserID: "user", PresetID: "preset", Mode: MonitorModeOpening,
-		Movie: "Movie", TargetDates: []string{"2026-08-10"}, PollInterval: 2 * time.Second,
+		MovieID: "movie", Movie: "Movie", TargetDates: []string{"2026-08-10"}, PollInterval: 2 * time.Second,
 	}
 }
