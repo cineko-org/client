@@ -138,11 +138,11 @@ export function AppShellView(props: AppShellViewProps) {
       padding={{ base: 16, xs: 24, md: 40, xl: 56 }}
       header={{ height: { base: 56, xs: 64 } }}
       navbar={{
-        width: navigationCollapsed ? 76 : { xs: 220, md: 244 },
-        breakpoint: 'xs',
+        width: navigationCollapsed ? 76 : { sm: 220, md: 244 },
+        breakpoint: 'sm',
         collapsed: { mobile: true },
       }}
-      footer={{ height: { base: 64, xs: 0 } }}
+      footer={{ height: { base: 64, sm: 0 } }}
       withBorder={false}
       bg="dark.9"
     >
@@ -150,7 +150,7 @@ export function AppShellView(props: AppShellViewProps) {
         <Group h="100%" justify="space-between" wrap="nowrap">
           <Group gap="sm" wrap="nowrap">
             <Text fw={800} lts="0.08em" tt="uppercase" size="sm">Cineko</Text>
-            <Text size="xs" c="dimmed" tt="uppercase" fw={700} lts="0.08em" visibleFrom="xs">Client</Text>
+            <Text size="xs" c="dimmed" tt="uppercase" fw={700} lts="0.08em" visibleFrom="sm">Client</Text>
           </Group>
           <Group gap="md" wrap="nowrap">
             <Group gap="md" wrap="nowrap" visibleFrom="md">
@@ -222,7 +222,7 @@ export function AppShellView(props: AppShellViewProps) {
           )}
         </Box>
       </AppShell.Main>
-      <AppShell.Footer bg="dark.9" withBorder hiddenFrom="xs">
+      <AppShell.Footer bg="dark.9" withBorder hiddenFrom="sm">
         <MobileNavigation activeSection={activeSection} onNavigate={onNavigate} />
       </AppShell.Footer>
       {feedback ? (

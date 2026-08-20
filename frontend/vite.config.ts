@@ -22,6 +22,7 @@ function copyPretendardVariable() {
 
 export default defineConfig({
   plugins: [react(), copyPretendardVariable()],
+  publicDir: false,
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
   },

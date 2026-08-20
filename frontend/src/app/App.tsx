@@ -16,6 +16,10 @@ import { AppRoutes } from './AppRoutes';
 import { cinekoTheme } from './theme';
 import { useRouter } from './useRouter';
 
+function applicationStyleNonce(): string {
+	return document.querySelector<HTMLMetaElement>('meta[name="cineko-style-nonce"]')?.content ?? '';
+}
+
 function CinekoApplication() {
   const {
     route, activeSection, navigate, navigateSection, openSettings,
@@ -93,7 +97,7 @@ function CinekoApplication() {
 
 export function App() {
   return (
-    <MantineProvider forceColorScheme="dark" theme={cinekoTheme}>
+    <MantineProvider forceColorScheme="dark" getStyleNonce={applicationStyleNonce} theme={cinekoTheme}>
       <DatesProvider settings={{ locale: 'ko', firstDayOfWeek: 0, weekendDays: [0, 6] }}>
         <CinekoApplication />
       </DatesProvider>
