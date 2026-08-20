@@ -20,7 +20,7 @@ func TestSignalDesktopStartupReadyPublishesPrivateAtomicMarker(t *testing.T) {
 	if err := signalDesktopStartupReady(dataDir, nonce); err != nil {
 		t.Fatal(err)
 	}
-	contents, err := os.ReadFile(path)
+	contents, err := os.ReadFile(path) // #nosec G304 -- path is derived from t.TempDir and a validated nonce.
 	if err != nil || string(contents) != nonce+"\n" {
 		t.Fatalf("startup marker = %q, %v", contents, err)
 	}

@@ -199,7 +199,7 @@ func commandedShowtime(rows []providerScheduleRow, command domain.Showtime) (dom
 		ID: command.TheaterID, Name: command.TheaterName,
 	})
 	if err != nil {
-		return domain.Showtime{}, fmt.Errorf("%w: provider showtime display projection is incomplete: %v", ErrUIContractChanged, err)
+		return domain.Showtime{}, fmt.Errorf("%w: provider showtime display projection is incomplete: %w", ErrUIContractChanged, err)
 	}
 	if entry.Showtime.Date != command.Date {
 		return domain.Showtime{}, fmt.Errorf("%w: provider schedule date does not match command", ErrUIContractChanged)

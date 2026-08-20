@@ -84,6 +84,7 @@ Read-only loopback points are `GET /api/state`, `GET /api/status`, `GET /api/acc
 
 ## Browser, proxy, and payment boundaries
 
+- CGV schedule discovery captures successful browser responses from `/api/v1/booking/searchMovScnInfo` and the legacy `/cnm/atkt/searchMovScnInfo`; incomplete or malformed provider rows fail closed instead of creating display-derived identities.
 - Direct networking is valid. Standard HTTP, HTTPS, and SOCKS5 proxies and Soxy are optional, mutually validated choices.
 - Scan work uses a fresh randomized identity/proxy selection. Account and booking work reuse one user session identity. One browser process owns one page, and lifecycle limits rotate disposable browser processes.
 - Booking demand is Client-local and demand-driven: active authenticated monitors request a warm target of two disposable per-slot Playwright drivers, capped at three; no active demand requests zero. Each slot has a distinct profile and is consumed after one logical booking task, while a prepared-payment slot remains exclusively retained until release.

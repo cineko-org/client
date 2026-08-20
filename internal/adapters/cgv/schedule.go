@@ -3,7 +3,6 @@ package cgv
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,21 +12,6 @@ import (
 	"github.com/cineko-org/client/internal/domain"
 	contracts "github.com/cineko-org/contracts/v3"
 )
-
-var schedulePattern = regexp.MustCompile(
-	`^(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\s*(?:(\d+)\s*/\s*(\d+)\s*석|(매진|예매종료))(?:\s*(.*))?$`,
-)
-
-type rawSchedule struct {
-	Label      string `json:"label"`
-	MovieID    string `json:"movieId"`
-	SourceKey  string `json:"sourceKey"`
-	Movie      string `json:"movie"`
-	PosterURL  string `json:"posterUrl"`
-	Group      string `json:"group"`
-	Auditorium string `json:"auditorium"`
-	Disabled   bool   `json:"disabled"`
-}
 
 type scheduleEntry struct {
 	Showtime       domain.Showtime
@@ -370,39 +354,6 @@ func scheduleEntryFromProviderRow(row providerScheduleRow, theater domain.Theate
 		SourceLabel: strings.Join([]string{startClock, endClock, row.MovieTitle, auditoriumName}, " "),
 	}
 	return scheduleEntry{Showtime: showtime, AuditoriumName: auditoriumName, ScreenTypes: screenTypes}, nil
-}
-
-func parseSchedule(item rawSchedule, date string, theater domain.Theater) (scheduleEntry, bool) {
-	match := schedulePattern.FindStringSubmatch(normalize(item.Label))
-	if match == nil {
-		return scheduleEntry{}, false
-	}
-	available, capacity := 0, 0
-	if match[3] != "" {
-		_, _ = fmt.Sscanf(match[3], "%d", &available)
-		_, _ = fmt.Sscanf(match[4], "%d", &capacity)
-	}
-	auditoriumName, screenTypes := parseAuditorium(item.Group, item.Auditorium)
-	if auditoriumName == "" {
-		return scheduleEntry{}, false
-	}
-	movieID := strings.TrimSpace(item.MovieID)
-	sourceKey := strings.TrimSpace(item.SourceKey)
-	if movieID == "" || sourceKey == "" {
-		return scheduleEntry{}, false
-	}
-	showtime := domain.Showtime{
-		ID:         contracts.CatalogID(contracts.ProviderCGV, "showtime", sourceKey),
-		ProviderID: contracts.ProviderCGV, SourceKey: sourceKey,
-		MovieID: movieID, Movie: item.Movie, PosterURL: item.PosterURL,
-		TheaterID: theater.ID, TheaterName: theater.Name,
-		AuditoriumName: auditoriumName, ScreenTypes: screenTypes,
-		Date: date, CivilDate: providerCivilDate(date, match[1]), StartsAt: match[1], EndsAt: match[2],
-		AvailableSeats: available, Capacity: capacity,
-		SoldOut: item.Disabled || match[5] != "", ObservedAt: time.Now(),
-		SourceLabel: normalize(item.Label),
-	}
-	return scheduleEntry{Showtime: showtime, AuditoriumName: auditoriumName, ScreenTypes: screenTypes}, true
 }
 
 func parseAuditorium(group, structuredName string) (string, []string) {

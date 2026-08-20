@@ -11,7 +11,7 @@ import (
 )
 
 func TestAdapterTransportErrorUsesOneFallbackRootReap(t *testing.T) {
-	command := exec.Command("sleep", "30") // #nosec G204 -- fixed lifecycle test command.
+	command := exec.CommandContext(t.Context(), "sleep", "30") // #nosec G204 -- fixed lifecycle test command.
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestAdapterTransportErrorUsesOneFallbackRootReap(t *testing.T) {
 }
 
 func TestAdapterTransportExitErrorDoesNotFallbackAfterDriverReaped(t *testing.T) {
-	command := exec.Command("sleep", "30") // #nosec G204 -- fixed lifecycle test command.
+	command := exec.CommandContext(t.Context(), "sleep", "30") // #nosec G204 -- fixed lifecycle test command.
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}

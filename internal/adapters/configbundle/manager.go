@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -248,7 +247,7 @@ func readEntry(file *zip.File, limit int64) ([]byte, error) {
 	if file == nil {
 		return nil, os.ErrNotExist
 	}
-	if file.UncompressedSize64 > math.MaxInt64 || int64(file.UncompressedSize64) > limit {
+	if limit < 0 || file.UncompressedSize64 > uint64(limit) {
 		return nil, fmt.Errorf("entry %q exceeds %d bytes", file.Name, limit)
 	}
 	reader, err := file.Open()

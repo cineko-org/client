@@ -129,11 +129,6 @@ func providerResponsePath(rawURL string) (string, bool) {
 	}
 }
 
-func scheduleResponseURL(rawURL string) bool {
-	path, ok := providerResponsePath(rawURL)
-	return ok && (path == scheduleResponsePath || path == legacyScheduleResponsePath)
-}
-
 // parseScheduleResponse rejects incomplete provider data before it can become
 // a display-derived showtime identity.
 func parseScheduleResponse(payload []byte) ([]providerScheduleRow, error) {

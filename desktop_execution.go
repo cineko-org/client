@@ -45,8 +45,8 @@ func (worker *desktopExecutionWorker) Run(ctx context.Context) error {
 		}
 		command, err := worker.store.ClaimExecution(ctx, worker.installationID)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+			if contextErr := ctx.Err(); contextErr != nil {
+				return contextErr
 			}
 			if !claimFailureReported {
 				worker.server.RecordLocalSystemEvent(
@@ -223,11 +223,8 @@ func executionShowtime(payload central.ExecutionPayload) (domain.Showtime, error
 	const koreaOffset = 9 * 60 * 60
 	location := time.FixedZone("Asia/Seoul", koreaOffset)
 	value := payload.Showtime
-	if value.ID == "" || value.ProviderID == "" || value.SourceKey == "" || value.TheaterID == "" || value.Movie.ID == "" || value.Movie.Title == "" || value.Auditorium.ID == "" ||
-		value.Auditorium.Name == "" || value.StartsAt.IsZero() || value.EndsAt.IsZero() ||
-		!value.EndsAt.After(value.StartsAt) || payload.ObservedAt.IsZero() ||
-		value.AvailableSeats < 1 || value.Capacity < value.AvailableSeats || value.SoldOut {
-		return domain.Showtime{}, errors.New("central execution showtime is incomplete or unavailable")
+	if err := validateExecutionShowtime(value, payload.ObservedAt); err != nil {
+		return domain.Showtime{}, err
 	}
 	startsAt, endsAt := value.StartsAt.In(location), value.EndsAt.In(location)
 	scheduleDate, err := domain.ScheduleDateFromShowtimeSourceKey(value.SourceKey)
@@ -244,6 +241,28 @@ func executionShowtime(payload central.ExecutionPayload) (domain.Showtime, error
 		EndsAt: endsAt.Format("15:04"), AvailableSeats: value.AvailableSeats,
 		Capacity: value.Capacity, SoldOut: value.SoldOut, ObservedAt: payload.ObservedAt,
 	}, nil
+}
+
+func validateExecutionShowtime(value central.Showtime, observedAt time.Time) error {
+	if executionIdentityMissing(value) || executionTimeInvalid(value, observedAt) || executionAvailabilityInvalid(value) {
+		return errors.New("central execution showtime is incomplete or unavailable")
+	}
+	return nil
+}
+
+func executionIdentityMissing(value central.Showtime) bool {
+	return value.ID == "" || value.ProviderID == "" || value.SourceKey == "" ||
+		value.TheaterID == "" || value.Movie.ID == "" || value.Movie.Title == "" ||
+		value.Auditorium.ID == "" || value.Auditorium.Name == ""
+}
+
+func executionTimeInvalid(value central.Showtime, observedAt time.Time) bool {
+	return value.StartsAt.IsZero() || value.EndsAt.IsZero() ||
+		!value.EndsAt.After(value.StartsAt) || observedAt.IsZero()
+}
+
+func executionAvailabilityInvalid(value central.Showtime) bool {
+	return value.AvailableSeats < 1 || value.Capacity < value.AvailableSeats || value.SoldOut
 }
 
 func executionHeartbeatInterval(expiresAt, now time.Time) time.Duration {

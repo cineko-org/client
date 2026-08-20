@@ -24,9 +24,6 @@ import (
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const updateRequiredExitCode = 75
@@ -119,62 +116,7 @@ func runDesktop() (runErr error) {
 	app.execution = &desktopExecutionWorker{
 		store: store, server: server, installationID: identity.InstallationID, userID: store.UserID(),
 	}
-	eventFailure := make(chan error, 1)
-	startupFailure := make(chan error, 1)
-
-	err = wails.Run(&options.App{
-		Title: "Cineko", Width: 1440, Height: 980, MinWidth: 1120, MinHeight: 760,
-		BackgroundColour: options.NewRGB(10, 11, 14),
-		AssetServer: &assetserver.Options{
-			Assets: webui.Assets(), Handler: server.DesktopHandler(),
-			Middleware: webui.SecurityHeaders,
-		},
-		OnStartup: func(ctx context.Context) {
-			app.startup(ctx)
-			go superviseCentralEvents(ctx, store, func(eventErr error) {
-				server.RecordLocalSystemEvent(store.UserID(), "central.event_stream_failed", domain.EventError,
-					"Cineko 변경 알림 연결이 중지되었습니다. 앱을 다시 시작하세요.")
-				select {
-				case eventFailure <- eventErr:
-				default:
-				}
-				wailsruntime.Quit(ctx)
-			})
-			go superviseEmbeddedProbe(ctx, embeddedProbe, func(probeErr error) {
-				server.RecordLocalSystemEvent(store.UserID(), "probe.runtime_failed", domain.EventError,
-					"분산 좌석 탐색이 중지되었습니다. 앱을 다시 시작하세요.")
-				wailsruntime.Quit(ctx)
-			})
-			if readyErr := signalDesktopStartupReady(dataDir, identity.StartupReadyNonce); readyErr != nil {
-				select {
-				case startupFailure <- readyErr:
-				default:
-				}
-				wailsruntime.Quit(ctx)
-			}
-		},
-		OnDomReady: app.domReady,
-		Bind:       []interface{}{app},
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "io.cineko.desktop",
-			OnSecondInstanceLaunch: app.secondInstance,
-		},
-		Mac: &mac.Options{
-			Appearance: mac.NSAppearanceNameDarkAqua,
-			About:      &mac.AboutInfo{Title: "Cineko", Message: "CGV booking control room"},
-			OnFileOpen: app.openFile,
-		},
-	})
-	select {
-	case startupErr := <-startupFailure:
-		err = errors.Join(err, fmt.Errorf("signal Launcher startup readiness: %w", startupErr))
-	default:
-	}
-	select {
-	case eventErr := <-eventFailure:
-		err = errors.Join(err, eventErr)
-	default:
-	}
+	err = runDesktopWindow(app, server, store, embeddedProbe, dataDir, identity)
 	if app.updateNeeded.Load() {
 		return errors.Join(err, errUpdateRequired)
 	}

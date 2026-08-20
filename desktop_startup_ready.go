@@ -30,6 +30,18 @@ func signalDesktopStartupReady(dataDir, nonce string) error {
 		return err
 	}
 	directory := filepath.Dir(path)
+	if err := validateStartupReadyDirectory(dataDir, directory); err != nil {
+		return err
+	}
+	temporaryPath, err := writeStartupReadyMarker(directory, nonce)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(temporaryPath) }()
+	return publishStartupReadyMarker(temporaryPath, path)
+}
+
+func validateStartupReadyDirectory(dataDir, directory string) error {
 	for _, candidate := range []string{dataDir, filepath.Join(dataDir, "runtime"), directory} {
 		info, err := os.Lstat(candidate)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -43,29 +55,40 @@ func signalDesktopStartupReady(dataDir, nonce string) error {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return errors.New("startup directory is not private")
 	}
+	return nil
+}
+
+func writeStartupReadyMarker(directory, nonce string) (string, error) {
 	temporary, err := os.CreateTemp(directory, ".ready-*")
 	if err != nil {
-		return fmt.Errorf("create startup marker: %w", err)
+		return "", fmt.Errorf("create startup marker: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
 	if runtime.GOOS != "windows" {
 		if err := temporary.Chmod(0o600); err != nil {
 			_ = temporary.Close()
-			return fmt.Errorf("secure startup marker: %w", err)
+			_ = os.Remove(temporaryPath)
+			return "", fmt.Errorf("secure startup marker: %w", err)
 		}
 	}
 	if _, err := temporary.WriteString(nonce + "\n"); err != nil {
 		_ = temporary.Close()
-		return fmt.Errorf("write startup marker: %w", err)
+		_ = os.Remove(temporaryPath)
+		return "", fmt.Errorf("write startup marker: %w", err)
 	}
 	if err := temporary.Sync(); err != nil {
 		_ = temporary.Close()
-		return fmt.Errorf("sync startup marker: %w", err)
+		_ = os.Remove(temporaryPath)
+		return "", fmt.Errorf("sync startup marker: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close startup marker: %w", err)
+		_ = os.Remove(temporaryPath)
+		return "", fmt.Errorf("close startup marker: %w", err)
 	}
+	return temporaryPath, nil
+}
+
+func publishStartupReadyMarker(temporaryPath, path string) error {
 	if _, err := os.Lstat(path); err == nil {
 		return errors.New("startup marker already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
