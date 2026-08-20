@@ -99,7 +99,7 @@ append_release() {
     }' >>"$releases_file"
 }
 
-append_release darwin arm64 tar.gz 'Cineko.app/Contents/MacOS/Cineko'
+append_release darwin arm64 zip 'Cineko.app/Contents/MacOS/Cineko'
 append_release windows amd64 zip 'Cineko.exe'
 append_release linux amd64 tar.gz 'Cineko'
 
