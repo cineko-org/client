@@ -17,13 +17,13 @@ github.com/cespare/xxhash/v2
 # github.com/cineko-org/contracts/v3 v3.3.0
 ## explicit; go 1.26
 github.com/cineko-org/contracts/v3
-# github.com/cineko-org/probe/v2 v2.2.0
+# github.com/cineko-org/probe/v2 v2.3.0
 ## explicit; go 1.26
-github.com/cineko-org/probe/v2/internal/adapters/browserfactory
-github.com/cineko-org/probe/v2/internal/adapters/cgv
-github.com/cineko-org/probe/v2/internal/adapters/egress
 github.com/cineko-org/probe/v2/internal/bootstrap
+github.com/cineko-org/probe/v2/internal/egress
 github.com/cineko-org/probe/v2/internal/protocol
+github.com/cineko-org/probe/v2/internal/provider/cgv
+github.com/cineko-org/probe/v2/internal/provider/cgv/browser
 github.com/cineko-org/probe/v2/internal/telemetry
 github.com/cineko-org/probe/v2/probe
 # github.com/danieljoos/wincred v1.2.3
@@ -269,6 +269,9 @@ go.opentelemetry.io/proto/otlp/resource/v1
 ## explicit; go 1.25.0
 golang.org/x/crypto/acme
 golang.org/x/crypto/acme/autocert
+# golang.org/x/mod v0.40.0
+## explicit; go 1.25.0
+golang.org/x/mod/semver
 # golang.org/x/net v0.57.0
 ## explicit; go 1.25.0
 golang.org/x/net/html

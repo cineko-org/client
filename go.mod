@@ -6,7 +6,7 @@ toolchain go1.26.6
 
 require (
 	github.com/cineko-org/contracts/v3 v3.3.0
-	github.com/cineko-org/probe/v2 v2.2.0
+	github.com/cineko-org/probe/v2 v2.3.0
 	github.com/mxschmitt/playwright-go v0.6201.0
 	github.com/wailsapp/wails/v2 v2.14.0
 	github.com/zalando/go-keyring v0.2.8
@@ -59,6 +59,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/mod v0.40.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
