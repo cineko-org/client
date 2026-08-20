@@ -63,4 +63,19 @@ if PATH="$test_root/bin:$PATH" \
   exit 1
 fi
 [[ "$(wc -l <"$payloads" | tr -d ' ')" == 1 ]]
+
+jq '.playwrightVersion = "1.99.0"' "$compatibility" >"$compatibility.tmp"
+mv "$compatibility.tmp" "$compatibility"
+printf 'linux\n' >"$assets/cineko-client-v2.3.0-linux-amd64.tar.gz"
+if PATH="$test_root/bin:$PATH" \
+  FAKE_PAYLOADS="$payloads" \
+  CINEKO_CENTRAL_URL=https://central.example \
+  CINEKO_RELEASE_PUBLISH_TOKEN=publisher \
+  CINEKO_CLIENT_RELEASE_BASE=https://github.example/releases/download/v2.3.0 \
+  CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON='{"primary":"public-key"}' \
+  scripts/register-client-release.sh 2.3.0 2026-08-19T00:00:00Z "$assets" "$compatibility" >/dev/null 2>&1; then
+  printf 'registration accepted a Playwright target that differs from the locked driver\n' >&2
+  exit 1
+fi
+[[ "$(wc -l <"$payloads" | tr -d ' ')" == 1 ]]
 printf 'Client release registration checks passed\n'

@@ -1,0 +1,158 @@
+name: Playwright Runtime Release
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Git ref containing the locked Playwright dependency
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref containing the locked Playwright dependency
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playwright-runtime-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      exists: ${{ steps.version.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="$(bash scripts/playwright-version.sh driver)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'invalid Playwright driver version: %s\n' "$version" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'tag=playwright-v%s\n' "$version" >> "$GITHUB_OUTPUT"
+          if gh release view "playwright-v${version}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            printf 'exists=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'exists=false\n' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    if: needs.prepare.outputs.exists != 'true'
+    needs: prepare
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-15
+            go_platform: darwin/arm64
+          - platform: windows-amd64
+            runner: windows-2025
+            go_platform: windows/amd64
+          - platform: linux-amd64
+            runner: ubuntu-24.04
+            go_platform: linux/amd64
+    runs-on: ${{ matrix.runner }}
+    env:
+      CINEKO_PLAYWRIGHT_VERSION: ${{ needs.prepare.outputs.version }}
+      CINEKO_PLAYWRIGHT_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      CINEKO_RELEASES_PUBLIC_BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install the locked Playwright driver
+        shell: bash
+        run: go run "github.com/mxschmitt/playwright-go/cmd/playwright@$(bash scripts/playwright-version.sh go)" install chromium
+      - name: Package Playwright runtime
+        shell: bash
+        run: |
+          commit_epoch="$(git show -s --format=%ct HEAD)"
+          export CINEKO_RELEASE_PUBLISHED_AT
+          CINEKO_RELEASE_PUBLISHED_AT="$(node -e 'console.log(new Date(Number(process.argv[1]) * 1000).toISOString())' "$commit_epoch")"
+          if [[ "${{ matrix.platform }}" == "windows-amd64" ]]; then
+            pwsh -File scripts/package-playwright.ps1
+          else
+            bash scripts/package-playwright.sh "${{ matrix.go_platform }}"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: playwright-${{ matrix.platform }}
+          path: build/release/cineko-playwright-${{ needs.prepare.outputs.version }}-*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CINEKO_CENTRAL_URL: ${{ secrets.CINEKO_CENTRAL_URL }}
+      CINEKO_RELEASE_PUBLISH_TOKEN: ${{ secrets.CINEKO_RELEASE_PUBLISH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/download-artifact@v8
+        if: needs.prepare.outputs.exists != 'true'
+        with:
+          pattern: playwright-*
+          path: release-assets
+          merge-multiple: true
+      - name: Download the existing immutable Playwright assets
+        if: needs.prepare.outputs.exists == 'true'
+        env:
+          PLAYWRIGHT_TAG: ${{ needs.prepare.outputs.tag }}
+          PLAYWRIGHT_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p release-assets
+          gh release download "$PLAYWRIGHT_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "cineko-playwright-${PLAYWRIGHT_VERSION}-*" \
+            --dir release-assets
+      - name: Publish immutable Playwright assets
+        env:
+          PLAYWRIGHT_TAG: ${{ needs.prepare.outputs.tag }}
+          PLAYWRIGHT_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          export CINEKO_RELEASE_TARGET_SHA
+          CINEKO_RELEASE_TARGET_SHA="$(git rev-parse HEAD)"
+          scripts/publish-playwright-assets.sh "$PLAYWRIGHT_TAG" "$PLAYWRIGHT_VERSION" release-assets
+      - name: Register the stable Playwright set
+        env:
+          PLAYWRIGHT_TAG: ${{ needs.prepare.outputs.tag }}
+          PLAYWRIGHT_VERSION: ${{ needs.prepare.outputs.version }}
+          CINEKO_PLAYWRIGHT_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag }}
+        run: |
+          published_at="$(gh release view "$PLAYWRIGHT_TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)"
+          scripts/register-playwright-release.sh "$PLAYWRIGHT_VERSION" "$published_at" release-assets
