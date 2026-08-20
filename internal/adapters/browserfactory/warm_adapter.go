@@ -155,6 +155,12 @@ func (factory *Factory) openWarmAdapter(
 	if err != nil {
 		return nil, err
 	}
+	accountProfile, err := sessionProfilePath(factory.base.ProfileDir, task.SessionKey)
+	if err != nil {
+		_ = os.RemoveAll(configuration.ProfileDir)
+		return nil, err
+	}
+	configuration.SessionStatePath = sessionStatePath(accountProfile)
 	if proxy != nil {
 		configuration.Proxy = &cgv.BrowserProxy{Server: proxy.Server, Username: proxy.Username, Password: proxy.Password}
 	}

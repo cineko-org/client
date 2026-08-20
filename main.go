@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
-	"time"
 
 	"github.com/cineko-org/client/internal/adapters/browserfactory"
 	"github.com/cineko-org/client/internal/adapters/cgv"
@@ -67,7 +66,7 @@ func runDesktop() (runErr error) {
 	}
 	defer browsers.Close()
 	credentials := credentialvault.New()
-	warmPool, err := newWarmBookingPool(context.Background(), browsers, credentials, store.UserID())
+	warmPool, err := newWarmBookingPool(context.Background(), browsers, store.UserID())
 	if err != nil {
 		return err
 	}
@@ -168,10 +167,9 @@ func browserTaskForUser(userID string, background bool, purpose webui.Automation
 func newWarmBookingPool(
 	ctx context.Context,
 	factory *browserfactory.Factory,
-	credentials *credentialvault.Vault,
 	userID string,
 ) (*booking.Pool, error) {
-	if factory == nil || credentials == nil || userID == "" {
+	if factory == nil || userID == "" {
 		return nil, errors.New("warm booking pool dependencies are incomplete")
 	}
 	return factory.NewWarmBookingPool(
@@ -179,17 +177,13 @@ func newWarmBookingPool(
 		browserfactory.Task{Purpose: egress.PurposeSession, SessionKey: userID},
 		func(ctx context.Context, adapter *cgv.Adapter) error {
 			authenticated, err := adapter.IsAuthenticated(ctx)
-			if err != nil || authenticated {
-				return err
-			}
-			account, err := credentials.Load(ctx, userID)
-			if errors.Is(err, domain.ErrAccountCredentialsNotFound) {
-				return fmt.Errorf("%w: saved CGV credentials are required", booking.ErrPermanent)
-			}
 			if err != nil {
 				return err
 			}
-			return adapter.AuthenticateSavedUntil(ctx, account, 5*time.Minute)
+			if !authenticated {
+				return fmt.Errorf("%w: manual CGV login is required", booking.ErrPermanent)
+			}
+			return nil
 		},
 	)
 }

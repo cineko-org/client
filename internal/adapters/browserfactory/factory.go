@@ -189,6 +189,9 @@ func (factory *Factory) openInSlot(
 		return nil, err
 	}
 	configuration.ProfileDir = profileDir
+	if task.Purpose == egress.PurposeSession {
+		configuration.SessionStatePath = sessionStatePath(profileDir)
+	}
 	if cleanupProfile != nil {
 		defer cleanupUnlessSucceeded(&succeeded, cleanupProfile)
 	}
@@ -291,15 +294,26 @@ func (factory *Factory) profileForTask(task Task, slot int) (string, func(), err
 		}
 		return path, func() { _ = os.RemoveAll(path) }, nil
 	}
-	profileName, err := sessionProfileName(task.SessionKey)
+	path, err := sessionProfilePath(factory.base.ProfileDir, task.SessionKey)
 	if err != nil {
 		return "", nil, err
 	}
-	path := filepath.Join(isolationRoot, "sessions", profileName)
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", nil, fmt.Errorf("create browser session profile: %w", err)
 	}
 	return path, nil, nil
+}
+
+func sessionProfilePath(base, sessionKey string) (string, error) {
+	profileName, err := sessionProfileName(sessionKey)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base+"-tasks", "sessions", profileName), nil
+}
+
+func sessionStatePath(profileDir string) string {
+	return filepath.Join(profileDir, "cgv-storage-state.json")
 }
 
 func sessionProfileName(sessionKey string) (string, error) {

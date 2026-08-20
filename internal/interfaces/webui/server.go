@@ -315,21 +315,20 @@ func (server *Server) refreshBookingDemand(ctx context.Context) {
 		return
 	}
 	active := false
-	if server.credentials != nil && strings.TrimSpace(server.userID) != "" {
-		if _, err := server.credentials.Load(ctx, server.userID); err == nil {
-			monitors, monitorErr := server.repository.ListMonitorsByUser(ctx, server.userID)
-			if monitorErr != nil {
-				server.recordMaintenanceFailure("booking-demand", monitorErr)
-			} else {
-				for _, monitor := range monitors {
-					if monitor.Status == domain.MonitorPending || monitor.Status == domain.MonitorRunning {
-						active = true
-						break
-					}
+	server.accountMu.RLock()
+	authenticated := server.account.Authenticated && server.account.Status == "authenticated"
+	server.accountMu.RUnlock()
+	if authenticated && strings.TrimSpace(server.userID) != "" {
+		monitors, err := server.repository.ListMonitorsByUser(ctx, server.userID)
+		if err != nil {
+			server.recordMaintenanceFailure("booking-demand", err)
+		} else {
+			for _, monitor := range monitors {
+				if monitor.Status == domain.MonitorPending || monitor.Status == domain.MonitorRunning {
+					active = true
+					break
 				}
 			}
-		} else if !errors.Is(err, domain.ErrAccountCredentialsNotFound) {
-			server.recordMaintenanceFailure("booking-demand-credentials", err)
 		}
 	}
 	server.bookingDemandChanged(active)
@@ -527,9 +526,6 @@ func (server *Server) checkAuthentication() {
 		authenticated, err = automation.IsAuthenticated(ctx)
 	}
 	server.setAccountState(authenticated, err)
-	if err == nil && !authenticated {
-		server.startSavedAuthentication()
-	}
 }
 
 func (server *Server) setAccountState(authenticated bool, err error) {
@@ -559,6 +555,7 @@ func (server *Server) setAccountState(authenticated bool, err error) {
 	if server.accountStateChanged != nil {
 		server.accountStateChanged(authenticated && err == nil)
 	}
+	server.refreshBookingDemand(server.lifetimeContext())
 }
 
 func (server *Server) saveAccountCredentials(writer http.ResponseWriter, request *http.Request) {
@@ -619,7 +616,7 @@ func (server *Server) restoreAuthentication(writer http.ResponseWriter, _ *http.
 		return
 	}
 	if !server.startCredentialAuthentication(credentials) {
-		server.writeJSON(writer, http.StatusConflict, map[string]string{"error": "login is already running"})
+		server.writeJSON(writer, http.StatusConflict, map[string]string{"error": "CGV 로그인 브라우저가 이미 열려 있습니다."})
 		return
 	}
 	server.writeJSON(writer, http.StatusAccepted, map[string]string{"status": "saved login started"})
@@ -676,7 +673,7 @@ func (server *Server) lifetimeContext() context.Context {
 
 func (server *Server) openAuthentication(writer http.ResponseWriter, _ *http.Request) {
 	if !server.beginTask("authentication") {
-		server.writeJSON(writer, http.StatusConflict, map[string]string{"error": "login is already running"})
+		server.writeJSON(writer, http.StatusConflict, map[string]string{"error": "CGV 로그인 브라우저가 이미 열려 있습니다."})
 		return
 	}
 	go func() {

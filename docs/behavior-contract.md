@@ -57,7 +57,7 @@ This inventory records the externally observable Client contract. It omits hosts
 
 ### Account, task, and notification
 
-- Account state is `checking`, then `authenticated`, `unauthenticated`, or `error`. CGV credentials stay in the OS credential vault and never enter Central resources.
+- Account state is `checking`, then `authenticated`, `unauthenticated`, or `error`. CGV credentials stay in the OS credential vault and never enter Central resources. Checks and monitor mutations never start login: CAPTCHA completion always requires an explicit user action in the visible browser.
 - Background UI task state is `running`, then `completed`, `stopped`, or `failed`; duplicate task IDs return conflict.
 - The Client connection is `loading` during startup, `ready` after a successful refresh, `stale` while retaining previously loaded data after a transient failure, and `unavailable` when no usable state exists. A requested catalog backfill can return `waiting` without claiming completion.
 - App events are Central-owned, can be marked read or cleared, and records older than six months are eligible for cleanup.
@@ -68,8 +68,8 @@ The loopback API is same-process only and enforces host/origin and security head
 
 | User action | Local service point / bridge | Submit and success | Error, retry, and rollback |
 | --- | --- | --- | --- |
-| Open/restore CGV login | `POST /api/auth/open`, `POST /api/auth/restore` | Starts one `authentication` task; UI polls status | Duplicate returns conflict; failure becomes account/task error |
-| Save/delete CGV credentials | `PUT /api/account/credentials`, `DELETE /api/account/credentials` | Vault mutation; save starts login and delete clears saved marker | Vault error leaves previous durable value; password is never returned |
+| Open/restore CGV login | `POST /api/auth/open`, `POST /api/auth/restore` | Explicit user action starts one visible `authentication` task; restored credentials only prefill the form and the user completes CAPTCHA | Duplicate reports that the existing login browser is open; failure becomes account/task error |
+| Save/delete CGV credentials | `PUT /api/account/credentials`, `DELETE /api/account/credentials` | Vault mutation; explicit save opens the visible login flow and delete clears saved marker | Vault error leaves previous durable value; password is never returned |
 | Refresh catalog | `POST /api/catalog/sync`, `POST /api/catalog/auditoriums`, `POST /api/catalog/seat-map` | Button is in-flight; successful Central data reloads form choices | Cooldown returns retry guidance; waiting seat map does not block preset save |
 | Create/update/delete preset | `POST /api/presets`, `PUT /api/presets`, `DELETE /api/presets` | Save/delete is in-flight; success reloads and navigates/clears dialog | Conflict reloads authoritative state; failed form remains editable |
 | Create/update/delete/retry monitor | `POST /api/monitors`, `PUT /api/monitors`, `DELETE /api/monitors`, `POST /api/monitors/retry` | Submit/retry/delete state is owned by feature hooks; success reloads | Conflict reloads; delete dialog closes after request; retry failure leaves terminal monitor |
@@ -84,9 +84,9 @@ Read-only loopback points are `GET /api/state`, `GET /api/status`, `GET /api/acc
 
 - CGV schedule discovery captures successful browser responses from `/api/v1/booking/searchMovScnInfo` and the legacy `/cnm/atkt/searchMovScnInfo`; incomplete or malformed provider rows fail closed instead of creating display-derived identities.
 - Direct networking is valid. A user may optionally configure standard HTTP, HTTPS, or SOCKS5 proxies. Managed Soxy inventory belongs only to Central's dedicated Probe infrastructure and is never configured by Client.
-- Scan work uses a fresh randomized identity/proxy selection. Account and booking work reuse one user session identity. One browser process owns one page, and lifecycle limits rotate disposable browser processes.
+- Scan work uses a fresh randomized identity/proxy selection. Account and booking work reuse one user session identity. A successful visible login atomically snapshots owner-only cookies and origin storage; later account and isolated warm-booking profiles restore that snapshot before navigation. Anonymous or failed checks never overwrite it.
 - Booking demand is Client-local and demand-driven: active authenticated monitors request a warm target of two disposable per-slot Playwright drivers, capped at three; no active demand requests zero. Each slot has a distinct profile and is consumed after one logical booking task, while a prepared-payment slot remains exclusively retained until release.
-- Warm readiness requires an explicit authenticated-state check in the isolated slot profile. Driver shutdown is bounded and reaped; a browser/context crash fails its lease closed before a replacement is started.
+- Warm readiness requires an explicit authenticated-state check after restoring the user session snapshot in the isolated slot profile. Missing or expired authentication fails closed and asks for manual login; warm browsers never attempt a background CAPTCHA login. Driver shutdown is bounded and reaped; a browser/context crash fails its lease closed before a replacement is started.
 - Resource blocking is scan-only; interactive login, seat selection, and payment keep required resources.
 - The Client selects seats against the live CGV layout and availability. Central may store layout versions but never owns login cookies, live seat selection, payment authentication, or CGV credentials.
 - The Client stops at the user-visible payment handoff. It does not infer payment success without an authoritative receipt.
