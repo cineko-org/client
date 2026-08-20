@@ -77,7 +77,7 @@ func saveSessionIdentity(config BrowserConfig, identity persistentBrowserIdentit
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close browser session identity: %w", err)
 	}
-	if err := os.Rename(temporaryPath, filepath.Join(config.ProfileDir, sessionIdentityFilename)); err != nil {
+	if err := replaceFileAtomic(temporaryPath, filepath.Join(config.ProfileDir, sessionIdentityFilename)); err != nil {
 		return fmt.Errorf("replace browser session identity: %w", err)
 	}
 	return nil

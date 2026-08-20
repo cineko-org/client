@@ -31,16 +31,17 @@ var (
 )
 
 type BrowserConfig struct {
-	ChromePath     string
-	ProfileDir     string
-	ArtifactsDir   string
-	Headless       bool
-	StartMinimized bool
-	RestoreSession bool
-	BlockResources bool
-	UserAgentMode  UserAgentMode
-	Proxy          *BrowserProxy
-	Capacity       int
+	ChromePath       string
+	ProfileDir       string
+	SessionStatePath string
+	ArtifactsDir     string
+	Headless         bool
+	StartMinimized   bool
+	RestoreSession   bool
+	BlockResources   bool
+	UserAgentMode    UserAgentMode
+	Proxy            *BrowserProxy
+	Capacity         int
 }
 
 // BrowserProxy is the proxy identity assigned to one browser process. Secrets
@@ -85,6 +86,7 @@ type Adapter struct {
 	stopPlaywright     func() error
 	processPID         int
 	profileDir         string
+	sessionStatePath   string
 	processCrashed     chan error
 	processDone        chan struct{}
 	processDoneOnce    sync.Once
@@ -307,10 +309,10 @@ func newAdapter(
 		locale = profilePrimaryLanguage(config.ProfileDir)
 	}
 	options := persistentContextOptions(config, locale)
-	browserContext, err := pw.Chromium.LaunchPersistentContext(config.ProfileDir, options)
+	browserContext, err := launchBrowserContext(pw, config, options)
 	if err != nil {
 		cancelContext()
-		return nil, fmt.Errorf("launch Chrome with Playwright: %w", err)
+		return nil, err
 	}
 	page, err := onlyBrowserPage(browserContext)
 	if err != nil {
@@ -336,7 +338,7 @@ func newAdapter(
 		ctx: adapterContext, cancelContext: cancelContext, browserContext: browserContext, page: page,
 		identitySession: identity.session,
 		stopPlaywright:  stopPlaywright, artifactsDir: config.ArtifactsDir,
-		processPID: pw.Pid(), profileDir: config.ProfileDir,
+		processPID: pw.Pid(), profileDir: config.ProfileDir, sessionStatePath: config.SessionStatePath,
 		processCrashed: make(chan error, 1), processDone: make(chan struct{}),
 		closeAttemptDone: make(chan struct{}), forceWait: make(chan struct{}),
 		processWaitDone:   make(chan struct{}),
@@ -363,6 +365,22 @@ func newAdapter(
 		adapter.Close()
 	}()
 	return adapter, nil
+}
+
+func launchBrowserContext(
+	pw *playwright.Playwright,
+	config BrowserConfig,
+	options playwright.BrowserTypeLaunchPersistentContextOptions,
+) (playwright.BrowserContext, error) {
+	browserContext, err := pw.Chromium.LaunchPersistentContext(config.ProfileDir, options)
+	if err != nil {
+		return nil, fmt.Errorf("launch Chrome with Playwright: %w", err)
+	}
+	if err := restoreSessionState(browserContext, config.SessionStatePath); err != nil {
+		_ = browserContext.Close()
+		return nil, err
+	}
+	return browserContext, nil
 }
 
 func onlyBrowserPage(browserContext playwright.BrowserContext) (playwright.Page, error) {

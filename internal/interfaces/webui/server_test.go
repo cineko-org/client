@@ -80,20 +80,18 @@ type webCredentialVault struct {
 	credentials domain.AccountCredentials
 }
 
-func TestRefreshBookingDemandRequiresSavedCredentialsAndActiveMonitor(t *testing.T) {
+func TestRefreshBookingDemandRequiresAuthenticatedSessionAndActiveMonitor(t *testing.T) {
 	ctx := t.Context()
 	store := memoryrepo.New()
-	vault := &webCredentialVault{}
 	demands := make(chan bool, 4)
 	server := &Server{
-		repository: store, credentials: vault, userID: "user",
+		repository: store, userID: "user",
 		bookingDemandChanged: func(active bool) { demands <- active },
 	}
 	server.refreshBookingDemand(ctx)
 	if active := <-demands; active {
-		t.Fatal("missing credentials created warm demand")
+		t.Fatal("unauthenticated account created warm demand")
 	}
-	vault.credentials = domain.AccountCredentials{ID: "member", Password: "secret"}
 	monitor := domain.MonitorJob{
 		ID: "monitor", UserID: "user", PresetID: "preset", Mode: domain.MonitorModeOpening,
 		MovieID: "movie_1", Movie: "영화", TargetDates: []string{"2026-08-20"}, Status: domain.MonitorPending,
@@ -101,6 +99,7 @@ func TestRefreshBookingDemandRequiresSavedCredentialsAndActiveMonitor(t *testing
 	if err := store.PutMonitor(ctx, monitor); err != nil {
 		t.Fatal(err)
 	}
+	server.account = accountState{Status: "authenticated", Authenticated: true}
 	server.refreshBookingDemand(ctx)
 	if active := <-demands; !active {
 		t.Fatal("active opening monitor did not create warm demand")
@@ -112,6 +111,30 @@ func TestRefreshBookingDemandRequiresSavedCredentialsAndActiveMonitor(t *testing
 	server.refreshBookingDemand(ctx)
 	if active := <-demands; !active {
 		t.Fatal("active cancellation monitor did not create warm demand")
+	}
+}
+
+func TestAccountCheckDoesNotStartStoredLogin(t *testing.T) {
+	t.Parallel()
+	savedLogin := make(chan domain.AccountCredentials, 1)
+	authenticated := false
+	server := &Server{
+		rootContext: t.Context(), clock: webTestClock{time.Date(2026, 8, 21, 7, 0, 0, 0, time.UTC)},
+		credentials: &webCredentialVault{credentials: domain.AccountCredentials{ID: "member", Password: "secret"}},
+		userID:      "user", tasks: make(map[string]taskState), taskCancels: make(map[string]context.CancelFunc),
+		factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
+			return &webProbeAutomation{probes: &atomic.Int32{}, authenticated: &authenticated, savedLogin: savedLogin}, nil
+		},
+	}
+
+	server.checkAuthentication()
+	select {
+	case <-savedLogin:
+		t.Fatal("account check started stored login without user action")
+	default:
+	}
+	if server.account.Status != "unauthenticated" {
+		t.Fatalf("account state = %+v", server.account)
 	}
 }
 

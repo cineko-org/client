@@ -80,7 +80,7 @@ func TestPersistentContextOptionsRestoreOnlyConfiguredSession(t *testing.T) {
 	}
 }
 
-func TestSessionIdentityAndStorageSurviveCleanBrowserRestart(t *testing.T) {
+func TestSessionStateRestoresIntoIsolatedBrowserProfile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires Playwright Chromium")
 	}
@@ -91,7 +91,9 @@ func TestSessionIdentityAndStorageSurviveCleanBrowserRestart(t *testing.T) {
 	defer server.Close()
 
 	config := DefaultBrowserConfig()
+	stateDir := t.TempDir()
 	config.ProfileDir = t.TempDir()
+	config.SessionStatePath = stateDir + "/cgv-storage-state.json"
 	config.ArtifactsDir = t.TempDir()
 	config.RestoreSession = true
 	config.UserAgentMode = UserAgentSession
@@ -112,11 +114,17 @@ func TestSessionIdentityAndStorageSurviveCleanBrowserRestart(t *testing.T) {
 		first.Close()
 		t.Fatalf("write session cookie: %v", err)
 	}
-	firstIdentity := first.userAgent
-	firstMetadata := first.userAgentMetadata
-	firstWebGL := first.webGLIdentity
+	if err := first.saveSessionState(); err != nil {
+		first.Close()
+		t.Fatalf("save session state: %v", err)
+	}
 	first.Close()
 
+	info, err := os.Stat(config.SessionStatePath)
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != sessionStateFileMode {
+		t.Fatalf("session state mode = %v, %v", info, err)
+	}
+	config.ProfileDir = t.TempDir()
 	second, err := NewAdapter(context.Background(), config)
 	if err != nil {
 		t.Fatalf("second NewAdapter() error = %v", err)
@@ -132,11 +140,6 @@ func TestSessionIdentityAndStorageSurviveCleanBrowserRestart(t *testing.T) {
 	cookies, err := second.page.Evaluate(`document.cookie`)
 	if err != nil || !strings.Contains(fmt.Sprint(cookies), "cineko_session=preserved") {
 		t.Fatalf("restored session cookie = %#v, %v", cookies, err)
-	}
-	if !reflect.DeepEqual(second.userAgent, firstIdentity) ||
-		!reflect.DeepEqual(second.userAgentMetadata, firstMetadata) ||
-		!reflect.DeepEqual(second.webGLIdentity, firstWebGL) {
-		t.Fatal("browser identity changed across the clean restart")
 	}
 }
 

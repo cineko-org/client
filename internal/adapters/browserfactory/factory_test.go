@@ -237,6 +237,26 @@ func TestTaskBrowserIdentityPolicy(t *testing.T) {
 	}
 }
 
+func TestSessionStatePathIsSharedByAccountAndWarmProfiles(t *testing.T) {
+	t.Parallel()
+	base := filepath.Join(t.TempDir(), "chrome-profile")
+	accountProfile, err := sessionProfilePath(base, "user-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	warmProfile, err := warmProfileForTask(base, "user-a", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := sessionStatePath(accountProfile)
+	if strings.HasPrefix(statePath, warmProfile) {
+		t.Fatalf("warm profile owns shared session state: %q", statePath)
+	}
+	if filepath.Dir(statePath) != accountProfile {
+		t.Fatalf("session state path = %q, want account profile %q", statePath, accountProfile)
+	}
+}
+
 func TestSessionLeaseStaysFixedAcrossBrowserRestarts(t *testing.T) {
 	t.Parallel()
 	manager, err := egress.New(egress.Config{Proxies: []egress.Proxy{{Server: "http://proxy.test:8080"}}})

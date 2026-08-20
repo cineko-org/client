@@ -24,7 +24,9 @@ export function AccountSettingsView({
         <Stack gap={2}>
           <StatusIndicator label="CGV" color={account.authenticated ? 'green' : 'gray'} muted={!account.authenticated} />
           <Text size="xs" c="dimmed">
-            {account.credentialsSaved ? '로그인이 풀리면 이 기기에서 다시 로그인합니다.' : '로그인하지 않아도 좌석 선택까지 진행할 수 있습니다.'}
+            {account.credentialsSaved
+              ? '저장 정보로 입력을 도와드립니다. CAPTCHA와 로그인은 직접 완료해야 합니다.'
+              : '로그인하지 않아도 좌석 선택까지 진행할 수 있습니다.'}
           </Text>
         </Stack>
         <SecondaryButton onClick={onAuthenticate}>{account.authenticated ? '브라우저에서 확인' : '직접 로그인'}</SecondaryButton>

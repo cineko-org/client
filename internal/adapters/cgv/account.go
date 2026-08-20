@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
@@ -24,6 +23,27 @@ func (adapter *Adapter) AuthenticateManuallyUntil(ctx context.Context, timeout t
 	if timeout <= 0 {
 		return errors.New("manual login timeout must be positive")
 	}
+	authenticated, err := adapter.openAccountHome()
+	if err != nil {
+		return err
+	}
+	if authenticated {
+		if err := adapter.saveSessionState(); err != nil {
+			return err
+		}
+		return adapter.waitForVisibleBrowser(ctx, timeout)
+	}
+	return adapter.waitForManualLogin(ctx, timeout)
+}
+
+func (adapter *Adapter) openAccountHome() (bool, error) {
+	if err := adapter.navigate(homeURL); err != nil {
+		return false, fmt.Errorf("open CGV: %w", err)
+	}
+	return adapter.authenticatedState()
+}
+
+func (adapter *Adapter) waitForManualLogin(ctx context.Context, timeout time.Duration) error {
 	if err := adapter.navigate(loginURL); err != nil {
 		return fmt.Errorf("open CGV login: %w", err)
 	}
@@ -38,6 +58,9 @@ func (adapter *Adapter) AuthenticateManuallyUntil(ctx context.Context, timeout t
 		case <-timer.C:
 			return errors.New("manual CGV login timed out")
 		case <-ticker.C:
+			if adapter.browserContext.IsClosed() {
+				return errors.New("CGV login browser was closed before login completed")
+			}
 			currentURL := adapter.page.URL()
 			parsed, err := url.Parse(currentURL)
 			if err != nil || parsed.Hostname() != "cgv.co.kr" || containsPath(parsed.Path, "/login") {
@@ -48,6 +71,25 @@ func (adapter *Adapter) AuthenticateManuallyUntil(ctx context.Context, timeout t
 				return err
 			}
 			if authenticated {
+				return adapter.saveSessionState()
+			}
+		}
+	}
+}
+
+func (adapter *Adapter) waitForVisibleBrowser(ctx context.Context, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		case <-ticker.C:
+			if adapter.browserContext.IsClosed() {
 				return nil
 			}
 		}
@@ -69,7 +111,10 @@ func (adapter *Adapter) AuthenticateManually(ctx context.Context, prompt Captcha
 	if err := prompt(); err != nil {
 		return err
 	}
-	return adapter.verifyAuthenticatedUnlocked()
+	if err := adapter.verifyAuthenticatedUnlocked(); err != nil {
+		return err
+	}
+	return adapter.saveSessionState()
 }
 
 func (adapter *Adapter) Authenticate(
@@ -94,13 +139,14 @@ func (adapter *Adapter) Authenticate(
 	if err := adapter.submitLogin(); err != nil {
 		return err
 	}
-	return adapter.verifyAuthenticatedUnlocked()
+	if err := adapter.verifyAuthenticatedUnlocked(); err != nil {
+		return err
+	}
+	return adapter.saveSessionState()
 }
 
-// AuthenticateSavedUntil restores a local account session with credentials
-// supplied by the operating system vault. If CGV presents a CAPTCHA or an
-// additional verification page, the headful browser remains open so the user
-// can complete it; Cineko never attempts to bypass the challenge.
+// AuthenticateSavedUntil prefills credentials from the operating system vault
+// and waits for the user to complete CAPTCHA and submit the visible login form.
 func (adapter *Adapter) AuthenticateSavedUntil(
 	ctx context.Context,
 	credentials domain.AccountCredentials,
@@ -123,20 +169,11 @@ func (adapter *Adapter) AuthenticateSavedUntil(
 	if err := adapter.fillLoginForm(credentials); err != nil {
 		return err
 	}
-	captchaVisible, err := adapter.captchaVisible()
-	if err != nil {
-		return err
-	}
 	deadline := time.Now().Add(timeout)
-	if captchaVisible {
-		if err := adapter.waitForCaptchaInput(ctx, deadline); err != nil {
-			return err
-		}
-	}
-	if err := adapter.submitLogin(); err != nil {
+	if err := adapter.waitForAuthenticatedState(ctx, deadline); err != nil {
 		return err
 	}
-	return adapter.waitForAuthenticatedState(ctx, deadline)
+	return adapter.saveSessionState()
 }
 
 func (adapter *Adapter) fillLoginForm(credentials Credentials) error {
@@ -179,36 +216,6 @@ func (adapter *Adapter) captchaVisible() (bool, error) {
 		return false, err
 	}
 	return visible, nil
-}
-
-func (adapter *Adapter) waitForCaptchaInput(ctx context.Context, deadline time.Time) error {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if time.Now().After(deadline) {
-			return errors.New("timed out waiting for CGV verification")
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			input := adapter.page.Locator(`input[placeholder*="자동입력 방지문자"]`)
-			count, err := input.Count()
-			if err != nil {
-				return fmt.Errorf("inspect CGV verification input: %w", err)
-			}
-			if count == 0 {
-				return nil
-			}
-			value, err := input.First().InputValue()
-			if err != nil {
-				return fmt.Errorf("read CGV verification input: %w", err)
-			}
-			if strings.TrimSpace(value) != "" {
-				return nil
-			}
-		}
-	}
 }
 
 func (adapter *Adapter) waitForAuthenticatedState(ctx context.Context, deadline time.Time) error {
@@ -257,7 +264,14 @@ func (adapter *Adapter) IsAuthenticated(ctx context.Context) (bool, error) {
 	if err := adapter.navigate(homeURL); err != nil {
 		return false, err
 	}
-	return adapter.authenticatedState()
+	authenticated, err := adapter.authenticatedState()
+	if err != nil || !authenticated {
+		return authenticated, err
+	}
+	if err := adapter.saveSessionState(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (adapter *Adapter) verifyAuthenticatedUnlocked() error {

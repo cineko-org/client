@@ -93,14 +93,12 @@ func (server *Server) createMonitor(writer http.ResponseWriter, request *http.Re
 		if input.IdempotencyKey != "" {
 			job, err := service.CreateIdempotent(ctx, input.IdempotencyKey, input.applicationRequest())
 			if err == nil {
-				server.startSavedAuthentication()
 				server.refreshBookingDemand(ctx)
 			}
 			return job, err
 		}
 		job, err := service.Create(ctx, input.applicationRequest())
 		if err == nil {
-			server.startSavedAuthentication()
 			server.refreshBookingDemand(ctx)
 		}
 		return job, err
@@ -115,7 +113,6 @@ func (server *Server) updateMonitor(writer http.ResponseWriter, request *http.Re
 			ID: input.ID, CreateMonitorRequest: input.applicationRequest(),
 		})
 		if err == nil {
-			server.startSavedAuthentication()
 			server.refreshBookingDemand(ctx)
 		}
 		return job, err
