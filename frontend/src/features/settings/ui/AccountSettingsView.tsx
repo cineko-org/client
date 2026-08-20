@@ -1,5 +1,5 @@
 import { Group, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { DangerButton, PrimaryButton, SecondaryButton } from '../../../components/core/Actions';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
 import type { AccountState } from '../../../api/types';
@@ -17,8 +17,6 @@ export function AccountSettingsView({
 }: AccountSettingsViewProps) {
   const [id, setId] = useState(account.accountId ?? '');
   const [password, setPassword] = useState('');
-
-  useEffect(() => setId(account.accountId ?? ''), [account.accountId]);
 
   return (
     <Stack gap="md">

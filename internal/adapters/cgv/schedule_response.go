@@ -57,7 +57,7 @@ func (adapter *Adapter) captureProviderResponse(response playwright.Response) {
 	}
 	captured := capturedProviderResponse{path: path, status: response.Status()}
 	if captured.status < 200 || captured.status > 299 {
-		captured.err = fmt.Errorf("CGV provider response returned HTTP %d", captured.status)
+		captured.err = providerHTTPError(captured.status)
 	} else {
 		captured.body, captured.err = response.Body()
 		if captured.err == nil && len(captured.body) > maxScheduleResponseBytes {

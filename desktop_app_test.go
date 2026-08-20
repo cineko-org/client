@@ -4,12 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/cineko-org/client/internal/adapters/configbundle"
 	"github.com/cineko-org/client/internal/adapters/egress"
 	"github.com/cineko-org/client/internal/adapters/eventhook"
 	"github.com/cineko-org/client/internal/application"
@@ -18,12 +15,6 @@ import (
 type recordingEgressConfigurator struct {
 	configs []egress.Config
 	err     error
-}
-
-type recordingBundles struct {
-	imported string
-	report   configbundle.Report
-	err      error
 }
 
 type recordingHookConfigurator struct {
@@ -86,9 +77,9 @@ func (repository *memoryDesktopSettings) PutSettings(_ context.Context, input an
 func TestDesktopSettingsRetryConflictWithoutLosingConcurrentFields(t *testing.T) {
 	clearNetworkEnvironment(t)
 	repository := &memoryDesktopSettings{conflicts: 1}
-	app := newDesktopApp(nil, nil, repository, &recordingEgressConfigurator{}, nil)
+	app := newDesktopApp(nil, repository, &recordingEgressConfigurator{})
 	skipEgressHealth(app)
-	if _, err := app.SaveNetworkSettings(NetworkSettingsInput{SoxySessionTTL: "30m"}); err != nil {
+	if _, err := app.SaveNetworkSettings(NetworkSettingsInput{Mode: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if repository.putCalls != 2 || repository.settings == nil || repository.settings.Network == nil ||
@@ -109,18 +100,6 @@ func skipEgressHealth(app *DesktopApp) {
 	app.validateEgress = func(context.Context, egress.Config) error { return nil }
 }
 
-func (bundles *recordingBundles) Export(context.Context, string, string) (configbundle.Report, error) {
-	return bundles.report, bundles.err
-}
-
-func (bundles *recordingBundles) Import(_ context.Context, source string, userID string) (configbundle.Report, error) {
-	bundles.imported = source
-	if bundles.report.UserID != userID {
-		return configbundle.Report{}, errors.New("backup user mismatch")
-	}
-	return bundles.report, bundles.err
-}
-
 func (configurator *recordingEgressConfigurator) ConfigureEgress(config egress.Config) error {
 	if configurator.err != nil {
 		return configurator.err
@@ -129,46 +108,27 @@ func (configurator *recordingEgressConfigurator) ConfigureEgress(config egress.C
 	return nil
 }
 
-func TestDesktopNetworkSettingsSwitchBetweenDirectAndSoxy(t *testing.T) {
+func TestDesktopNetworkSettingsRejectsClientManagedSoxy(t *testing.T) {
 	clearNetworkEnvironment(t)
 	settings := &memoryDesktopSettings{}
 	configurator := &recordingEgressConfigurator{}
-	app := newDesktopApp(nil, nil, settings, configurator, nil)
+	app := newDesktopApp(nil, settings, configurator)
 	skipEgressHealth(app)
 
 	if _, err := app.SaveNetworkSettings(NetworkSettingsInput{
-		SoxyURL: "https://soxy.example.test", SoxySessionTTL: "30m",
+		Mode: "soxy", SoxyURL: "https://soxy.example.test", SoxyAPIToken: "local-value",
 	}); err == nil {
-		t.Fatal("SaveNetworkSettings() without token error = nil")
+		t.Fatal("SaveNetworkSettings(Soxy) error = nil")
 	}
-	state, err := app.SaveNetworkSettings(NetworkSettingsInput{
-		SoxyURL: " https://soxy.example.test ", SoxyAPIToken: " local-value ", SoxySessionTTL: "1h",
-	})
-	if err != nil {
-		t.Fatalf("SaveNetworkSettings(Soxy) error = %v", err)
-	}
-	if state.Mode != "soxy" || state.SoxyURL != "https://soxy.example.test" ||
-		state.SoxySessionTTL != "1h" || !state.HasAPIToken || len(configurator.configs) != 1 {
-		t.Fatalf("Soxy state = %+v, configurations = %+v", state, configurator.configs)
-	}
-
-	state, err = app.SaveNetworkSettings(NetworkSettingsInput{
-		SoxyURL: "https://soxy.example.test", SoxySessionTTL: "1h",
-	})
-	if err != nil || !state.HasAPIToken || len(configurator.configs) != 2 {
-		t.Fatalf("preserve token state = %+v, error = %v", state, err)
-	}
-
-	state, err = app.SaveNetworkSettings(NetworkSettingsInput{SoxySessionTTL: "30m"})
+	state, err := app.SaveNetworkSettings(NetworkSettingsInput{Mode: "direct"})
 	if err != nil {
 		t.Fatalf("SaveNetworkSettings(Direct) error = %v", err)
 	}
-	if state.Mode != "direct" || state.HasAPIToken || configurator.configs[2].SoxyURL != "" {
-		t.Fatalf("Direct state = %+v, configuration = %+v", state, configurator.configs[2])
+	if state.Mode != "direct" || len(configurator.configs) != 1 || len(configurator.configs[0].Proxies) != 0 {
+		t.Fatalf("Direct state = %+v, configurations = %+v", state, configurator.configs)
 	}
-
 	if settings.settings == nil || settings.settings.Network == nil || settings.settings.Network.SoxyAPIToken != "" {
-		t.Fatalf("disabled Soxy credential remained in Central settings: %+v", settings.settings)
+		t.Fatalf("client settings retained a Soxy credential: %+v", settings.settings)
 	}
 }
 
@@ -176,7 +136,7 @@ func TestDesktopStandardProxyValidationPrecedesPersistence(t *testing.T) {
 	clearNetworkEnvironment(t)
 	settings := &memoryDesktopSettings{}
 	configurator := &recordingEgressConfigurator{}
-	app := newDesktopApp(nil, nil, settings, configurator, nil)
+	app := newDesktopApp(nil, settings, configurator)
 	validationErr := errors.New("proxy offline")
 	app.validateEgress = func(_ context.Context, config egress.Config) error {
 		if len(config.Proxies) != 2 || config.Proxies[0].Username != "user" || config.Proxies[0].Password != "password" {
@@ -186,7 +146,7 @@ func TestDesktopStandardProxyValidationPrecedesPersistence(t *testing.T) {
 	}
 	input := NetworkSettingsInput{
 		Mode: "proxy", ProxyURLs: []string{" socks5://127.0.0.1:1080 ", "https://127.0.0.1:8443"},
-		ProxyUsername: " user ", ProxyPassword: "password", SoxySessionTTL: "30m",
+		ProxyUsername: " user ", ProxyPassword: "password",
 	}
 	if _, err := app.SaveNetworkSettings(input); !errors.Is(err, validationErr) {
 		t.Fatalf("SaveNetworkSettings(invalid) error = %v", err)
@@ -200,7 +160,7 @@ func TestDesktopStandardProxyValidationPrecedesPersistence(t *testing.T) {
 		t.Fatalf("state = %+v, error = %v", state, err)
 	}
 	state, err = app.SaveNetworkSettings(NetworkSettingsInput{
-		Mode: "proxy", ProxyURLs: input.ProxyURLs, ProxyUsername: "user", SoxySessionTTL: "30m",
+		Mode: "proxy", ProxyURLs: input.ProxyURLs, ProxyUsername: "user",
 	})
 	if err != nil || !state.HasProxyPassword {
 		t.Fatalf("preserved password state = %+v, error = %v", state, err)
@@ -210,7 +170,7 @@ func TestDesktopStandardProxyValidationPrecedesPersistence(t *testing.T) {
 func TestDesktopHookSettingsPreserveSecretsAndRejectInvalidConfiguration(t *testing.T) {
 	settings := &memoryDesktopSettings{}
 	hooks := &recordingHookConfigurator{}
-	app := newDesktopApp(nil, nil, settings, &recordingEgressConfigurator{}, nil, hooks)
+	app := newDesktopApp(nil, settings, &recordingEgressConfigurator{}, hooks)
 	input := HookSettingsInput{Targets: []HookTargetInput{{
 		ID: "discord", Name: "Discord", Kind: eventhook.KindDiscord,
 		URL: "https://discord.com/api/webhooks/1/token", Secret: "secret", Enabled: true,
@@ -236,31 +196,25 @@ func TestDesktopHookSettingsPreserveSecretsAndRejectInvalidConfiguration(t *test
 	}
 }
 
-func TestDesktopNetworkSettingsUseEnvironmentTokenWithoutPersistingIt(t *testing.T) {
+func TestDesktopNetworkSettingsIgnoreSoxyEnvironment(t *testing.T) {
 	clearNetworkEnvironment(t)
 	t.Setenv("CINEKO_SOXY_URL", "https://environment.example.test")
 	t.Setenv("CINEKO_SOXY_API_TOKEN", "environment-value")
 	settings := &memoryDesktopSettings{}
 	configurator := &recordingEgressConfigurator{}
-	app := newDesktopApp(nil, nil, settings, configurator, nil)
+	app := newDesktopApp(nil, settings, configurator)
 	skipEgressHealth(app)
 
-	state, err := app.SaveNetworkSettings(NetworkSettingsInput{
-		SoxyURL: "https://app.example.test", SoxySessionTTL: "30m",
-	})
+	state, err := app.SaveNetworkSettings(NetworkSettingsInput{Mode: "direct"})
 	if err != nil {
 		t.Fatalf("SaveNetworkSettings() error = %v", err)
 	}
-	if state.Mode != "soxy" || !state.HasAPIToken || configurator.configs[0].SoxyToken != "environment-value" {
+	if state.Mode != "direct" || len(configurator.configs[0].Proxies) != 0 {
 		t.Fatalf("state = %+v, configuration = %+v", state, configurator.configs[0])
 	}
-	if settings.settings.Network.SoxyAPIToken != "" {
-		t.Fatal("environment token was persisted")
-	}
-
-	reloaded := newDesktopApp(nil, nil, settings, &recordingEgressConfigurator{}, nil)
+	reloaded := newDesktopApp(nil, settings, &recordingEgressConfigurator{})
 	reloadedState, err := reloaded.GetNetworkSettings()
-	if err != nil || reloadedState.Mode != "soxy" || !reloadedState.HasAPIToken || reloadedState.Source != "settings" {
+	if err != nil || reloadedState.Mode != "direct" || reloadedState.Source != "settings" {
 		t.Fatalf("reloaded state = %+v, error = %v", reloadedState, err)
 	}
 }
@@ -268,11 +222,11 @@ func TestDesktopNetworkSettingsUseEnvironmentTokenWithoutPersistingIt(t *testing
 func TestDesktopSettingsBelongToAuthenticatedCentralUser(t *testing.T) {
 	clearNetworkEnvironment(t)
 	settings := &memoryDesktopSettings{}
-	app := newDesktopApp(nil, nil, settings, &recordingEgressConfigurator{}, nil)
+	app := newDesktopApp(nil, settings, &recordingEgressConfigurator{})
 	app.setUserID("user-1")
 	skipEgressHealth(app)
 	if _, err := app.SaveNetworkSettings(NetworkSettingsInput{
-		SoxyURL: "https://soxy.example.test", SoxyAPIToken: "local-value", SoxySessionTTL: "30m",
+		Mode: "proxy", ProxyURLs: []string{"http://127.0.0.1:8080"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +234,7 @@ func TestDesktopSettingsBelongToAuthenticatedCentralUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Network == nil || stored.Network.SoxyAPIToken != "local-value" {
+	if stored.Network == nil || stored.Network.Mode != "proxy" || len(stored.Network.ProxyURLs) != 1 {
 		t.Fatalf("settings = %+v", stored)
 	}
 	userID, err := app.GetUserID()
@@ -296,21 +250,21 @@ func TestApplySavedNetworkSettingsAndValidationFailures(t *testing.T) {
 	}}
 	repository := &memoryDesktopSettings{settings: &settings}
 	configurator := &recordingEgressConfigurator{}
-	app := newDesktopApp(nil, nil, repository, configurator, nil)
+	app := newDesktopApp(nil, repository, configurator)
 	if err := app.applySavedNetworkSettings(); err != nil {
 		t.Fatalf("applySavedNetworkSettings() error = %v", err)
 	}
-	if len(configurator.configs) != 1 || configurator.configs[0].SessionTTL != 30*time.Minute {
+	if len(configurator.configs) != 1 || len(configurator.configs[0].Proxies) != 0 {
 		t.Fatalf("configurations = %+v", configurator.configs)
 	}
 
-	settings.Network.SoxySessionTTL = "later"
+	settings.Network.Mode = "unsupported"
 	repository.settings = &settings
 	if err := app.applySavedNetworkSettings(); err == nil {
-		t.Fatal("applySavedNetworkSettings(invalid TTL) error = nil")
+		t.Fatal("applySavedNetworkSettings(invalid mode) error = nil")
 	}
 	configurator.err = errors.New("closed")
-	settings.Network.SoxySessionTTL = "30m"
+	settings.Network.Mode = "direct"
 	repository.settings = &settings
 	if err := app.applySavedNetworkSettings(); !errors.Is(err, configurator.err) {
 		t.Fatalf("applySavedNetworkSettings(configurator failure) error = %v", err)
@@ -319,60 +273,25 @@ func TestApplySavedNetworkSettingsAndValidationFailures(t *testing.T) {
 
 func TestGetNetworkSettingsDefaultsToEnvironmentOrDirect(t *testing.T) {
 	clearNetworkEnvironment(t)
-	app := newDesktopApp(nil, nil, &memoryDesktopSettings{}, &recordingEgressConfigurator{}, nil)
+	app := newDesktopApp(nil, &memoryDesktopSettings{}, &recordingEgressConfigurator{})
 	state, err := app.GetNetworkSettings()
-	if err != nil || state.Mode != "direct" || state.Source != "environment" || state.SoxySessionTTL != "30m" {
+	if err != nil || state.Mode != "direct" || state.Source != "environment" {
 		t.Fatalf("direct state = %+v, error = %v", state, err)
 	}
 	t.Setenv("CINEKO_SOXY_URL", "https://soxy.example.test")
 	t.Setenv("CINEKO_SOXY_API_TOKEN", "environment-value")
 	state, err = app.GetNetworkSettings()
-	if err != nil || state.Mode != "soxy" || !state.HasAPIToken {
+	if err != nil || state.Mode != "direct" {
 		t.Fatalf("environment state = %+v, error = %v", state, err)
 	}
 }
 
-func TestDesktopUserAndInitialBundleDefaults(t *testing.T) {
-	app := newDesktopApp(nil, nil, &memoryDesktopSettings{}, &recordingEgressConfigurator{}, []string{
-		"--ignored", "/tmp/backup.CNK", "/tmp/later.cnk",
-	})
+func TestDesktopUserIdentity(t *testing.T) {
+	app := newDesktopApp(nil, &memoryDesktopSettings{}, &recordingEgressConfigurator{})
 	app.setUserID("user-1")
 	userID, err := app.GetUserID()
 	if err != nil || userID != "user-1" {
 		t.Fatalf("GetUserID() = %q, %v", userID, err)
-	}
-	if path := app.initialBundlePath(); path != "/tmp/backup.CNK" {
-		t.Fatalf("initialBundlePath() = %q", path)
-	}
-}
-
-func TestImportConfigurationDoesNotChangeAuthenticatedUserAndEmitsReload(t *testing.T) {
-	source := filepath.Join(t.TempDir(), "backup.cnk")
-	bundles := &recordingBundles{report: configbundle.Report{
-		Path: source, UserID: "current-user", Presets: 2, Monitors: 3,
-	}}
-	app := newDesktopApp(nil, bundles, &memoryDesktopSettings{}, &recordingEgressConfigurator{}, nil)
-	app.setUserID("current-user")
-	app.ctx = context.Background()
-	var eventName string
-	var eventData []any
-	app.emitEvent = func(name string, data ...any) {
-		eventName, eventData = name, data
-	}
-
-	report, err := app.importConfiguration(source)
-	if err != nil {
-		t.Fatalf("importConfiguration() error = %v", err)
-	}
-	if report.UserID != "current-user" || bundles.imported != source {
-		t.Fatalf("report = %+v, imported = %q", report, bundles.imported)
-	}
-	userID, err := app.GetUserID()
-	if err != nil || userID != "current-user" {
-		t.Fatalf("GetUserID() = %q, %v", userID, err)
-	}
-	if eventName != "data:changed" || len(eventData) != 1 {
-		t.Fatalf("event = %q, data = %#v", eventName, eventData)
 	}
 }
 

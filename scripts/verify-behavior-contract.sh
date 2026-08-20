@@ -4,7 +4,9 @@ set -euo pipefail
 readonly document="docs/behavior-contract.md"
 sources=()
 while IFS= read -r source; do
-	sources+=("$source")
+	if [[ -f "$source" ]]; then
+		sources+=("$source")
+	fi
 done < <(git ls-files '*.go' '*.ts' '*.tsx' | grep -Ev '(^|/)vendor/|/assets/')
 
 while IFS= read -r value; do

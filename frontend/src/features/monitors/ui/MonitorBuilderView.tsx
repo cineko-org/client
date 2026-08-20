@@ -5,6 +5,7 @@ import { NumberField, SelectField } from '../../../components/core/Fields';
 import type { CatalogMovie, Preset } from '../../../api/types';
 import type { MonitorForm } from '../model';
 import { ScheduleView } from './ScheduleView';
+import { MoviePicker } from './MoviePicker';
 
 export interface MonitorBuilderViewProps {
   movies: CatalogMovie[];
@@ -21,20 +22,8 @@ export function MonitorBuilderView(props: MonitorBuilderViewProps) {
   return (
       <Box component="form" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
         <Stack gap="xl">
-          <Columns>
-            <SelectField
-              label="영화"
-              placeholder="영화를 선택하세요"
-              required
-              data={movies.map((movie) => ({ value: movie.id, label: movie.title }))}
-              value={form.movieId}
-              onChange={(movieId) => {
-                const selected = movies.find((movie) => movie.id === movieId);
-                onChange({ ...form, movieId: movieId || '', movie: selected?.title || '' });
-              }}
-            />
-            <SelectField label="좌석 프리셋" placeholder="좌석 프리셋을 선택하세요" required data={presets.map((preset) => ({ value: preset.id, label: preset.name }))} value={form.presetId} onChange={(presetId) => onChange({ ...form, presetId: presetId || '' })} />
-          </Columns>
+          <MoviePicker movies={movies} value={form.movieId} onChange={(movie) => onChange({ ...form, movieId: movie.id, movie: movie.title })} />
+          <SelectField label="좌석 프리셋" placeholder="좌석 프리셋을 선택하세요" required data={presets.map((preset) => ({ value: preset.id, label: preset.name }))} value={form.presetId} onChange={(presetId) => onChange({ ...form, presetId: presetId || '' })} />
           <Stack gap="xs">
             <Text fw={600}>확인 간격</Text>
             <Columns>
@@ -45,7 +34,7 @@ export function MonitorBuilderView(props: MonitorBuilderViewProps) {
           </Stack>
           <ScheduleView form={form} onChange={onChange} />
           <Group justify="flex-end" align="center">
-            <PrimaryButton type="submit" color={editing ? 'cineko' : 'red'} loading={submitting}>{editing ? '변경 저장' : '모니터 시작'}</PrimaryButton>
+            <PrimaryButton w={{ base: '100%', sm: 'auto' }} size="md" type="submit" color={editing ? 'cineko' : 'red'} loading={submitting}>{editing ? '변경 저장' : '모니터 시작'}</PrimaryButton>
           </Group>
         </Stack>
       </Box>

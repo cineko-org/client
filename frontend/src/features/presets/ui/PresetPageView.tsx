@@ -7,6 +7,7 @@ import { PageHeader } from '../../../components/core/PageHeader';
 import { Section } from '../../../components/core/Section';
 import type { Auditorium, CatalogIndex, SeatMap, SeatType } from '../../../api/types';
 import type { PresetForm } from '../model';
+import { catalogRegions, catalogTheaters } from '../model';
 import { SeatMapView } from './SeatMapView';
 
 export interface PresetPageViewProps {
@@ -48,8 +49,8 @@ export function PresetPageView(props: PresetPageViewProps) {
     onSave, onReset,
   } = props;
   const theaters = catalog.theaters;
-  const regions = [...new Set(theaters.map((item) => item.region))];
-  const theaterOptions = theaters.filter((item) => !region || item.region === region).map((item) => item.name);
+  const regions = catalogRegions(theaters);
+  const theaterOptions = catalogTheaters(theaters, region);
   const selectedAuditorium = auditoriums.find((item) => item.id === auditoriumId);
 
   return (
@@ -77,7 +78,6 @@ export function PresetPageView(props: PresetPageViewProps) {
           <Group align="flex-end" wrap="wrap">
             <TextField style={{ flex: 1 }} label="미리보기 날짜" description="좌석 미리보기에만 사용합니다. 비우면 가까운 회차를 찾습니다." placeholder="2026-08-20" value={catalogDates} onChange={(event) => onCatalogDatesChange(event.currentTarget.value)} />
             <PrimaryButton loading={loadingCatalog} onClick={onDiscover}>상영관 불러오기</PrimaryButton>
-            <SecondaryButton disabled={!auditoriumId || loadingCatalog} onClick={() => onCapture(false)}>좌석 미리보기</SecondaryButton>
             {seatMap ? <SecondaryButton disabled={loadingCatalog} onClick={() => onForceCaptureChange(true)}>미리보기 새로고침</SecondaryButton> : null}
           </Group>
           {catalogMessage ? <Text size="sm" c="dimmed">{catalogMessage}</Text> : null}
@@ -88,6 +88,11 @@ export function PresetPageView(props: PresetPageViewProps) {
               pickedSeats={pickedSeats}
               auditoriumName={selectedAuditorium?.name}
               reportedCapacity={selectedAuditorium?.capacity}
+              emptyMessage={!auditoriumId
+                ? '상영관을 선택하면 좌석 배치를 불러옵니다.'
+                : loadingCatalog
+                  ? '좌석 배치를 불러오는 중입니다.'
+                  : '좌석 배치 분석을 기다리고 있습니다.'}
               onToggleSeat={onToggleSeat}
               onClear={onClearSeats}
             />
@@ -113,7 +118,7 @@ export function PresetPageView(props: PresetPageViewProps) {
                       ? '선택한 후보 좌석을 순서대로 확인합니다.'
                       : `선택한 후보 안에서 붙어 있는 ${form.seatCount}석만 찾습니다.`}
                 </Text>
-                <Group justify="flex-end"><SecondaryButton type="button" onClick={onReset}>새로 작성</SecondaryButton><PrimaryButton type="submit" loading={saving}>좌석 프리셋 저장</PrimaryButton></Group>
+                <Group justify="flex-end"><SecondaryButton type="button" onClick={onReset}>새로 작성</SecondaryButton><PrimaryButton type="submit" loading={saving} disabled={!seatMap || loadingCatalog}>좌석 프리셋 저장</PrimaryButton></Group>
               </Stack>
             </Box>
           </Columns>

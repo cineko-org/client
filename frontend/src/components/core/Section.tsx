@@ -13,18 +13,18 @@ export function Section({ title, description, actions, children, subtle = false 
   return (
     <Box
       py="lg"
-      px={subtle ? 0 : 'md'}
-      style={{ borderTop: '1px solid var(--mantine-color-dark-4)' }}
+      px={subtle ? 0 : { base: 0, sm: 'md' }}
+      style={{ borderTop: '1px solid var(--mantine-color-dark-4)', minWidth: 0 }}
     >
-      <Stack gap="lg">
+      <Stack gap="lg" style={{ minWidth: 0 }}>
         <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
           <Box style={{ minWidth: 0 }}>
             <Text component="h2" size="lg" fw={700} m={0}>{title}</Text>
             {description ? <Text size="sm" c="dimmed" mt={2}>{description}</Text> : null}
           </Box>
-          {actions ? <Group gap="xs">{actions}</Group> : null}
+          {actions ? <Group gap="xs" w={{ base: '100%', sm: 'auto' }}>{actions}</Group> : null}
         </Group>
-        {children}
+        <Box style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{children}</Box>
       </Stack>
     </Box>
   );

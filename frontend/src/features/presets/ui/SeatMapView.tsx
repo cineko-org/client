@@ -14,6 +14,7 @@ export interface SeatMapViewProps {
   reportedCapacity?: number;
   layoutAspectRatio?: number;
   seatSizeRatio?: number;
+  emptyMessage?: string;
 }
 
 function median(values: number[]): number {
@@ -59,7 +60,7 @@ function seatBackground(seat: Seat, selected: boolean): string {
 
 export function SeatMapView({
   seatMap, pickedSeats, onToggleSeat, onClear, auditoriumName, reportedCapacity, layoutAspectRatio,
-  seatSizeRatio,
+  seatSizeRatio, emptyMessage = '상영관을 선택하면 좌석 배치를 불러옵니다.',
 }: SeatMapViewProps) {
   const picked = new Set(pickedSeats);
   const metrics = useMemo(
@@ -99,7 +100,7 @@ export function SeatMapView({
             <Text size="xs" c="dimmed">screen</Text>
             <Box w="72%" h={16} style={{ borderTop: '2px solid var(--mantine-color-orange-8)', borderRadius: '50% 50% 0 0' }} />
           </Stack>
-          {!seatMap ? <EmptyState>좌석 미리보기는 선택 사항입니다. 예매할 때 최신 좌석을 확인합니다.</EmptyState> : (
+          {!seatMap ? <EmptyState>{emptyMessage}</EmptyState> : (
             <Box pos="relative" w="100%" style={{ aspectRatio: metrics.aspectRatio }}>
               {seatMap.seats.map((seat) => {
                 const title = `${seat.label} · ${seat.zoneName || '존 미지정'} · ${seat.saleFormName || seat.type}`;

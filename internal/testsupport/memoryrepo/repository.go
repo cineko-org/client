@@ -337,24 +337,6 @@ func (*Repository) RecoverInterruptedWork(context.Context, time.Time) ([]domain.
 	return nil, nil
 }
 
-func (repository *Repository) SnapshotConfiguration(_ context.Context, userID string) (domain.Configuration, error) {
-	repository.mu.RLock()
-	defer repository.mu.RUnlock()
-	configuration := domain.Configuration{
-		Presets:  filteredValues(repository.presets, func(value domain.Preset) bool { return value.UserID == userID }, func(value domain.Preset) time.Time { return value.CreatedAt }),
-		Monitors: filteredValues(repository.monitors, func(value domain.MonitorJob) bool { return value.UserID == userID }, func(value domain.MonitorJob) time.Time { return value.CreatedAt }),
-	}
-	return configuration, nil
-}
-
-func (repository *Repository) ReplaceConfiguration(_ context.Context, value domain.Configuration) error {
-	repository.mu.Lock()
-	defer repository.mu.Unlock()
-	repository.presets = keyed(value.Presets, func(value domain.Preset) string { return value.ID })
-	repository.monitors = keyed(value.Monitors, func(value domain.MonitorJob) string { return value.ID })
-	return nil
-}
-
 func upsertCatalog[T any](values []T, value T, key func(T) string) []T {
 	for index := range values {
 		if key(values[index]) == key(value) {
@@ -363,14 +345,6 @@ func upsertCatalog[T any](values []T, value T, key func(T) string) []T {
 		}
 	}
 	return append(values, clone(value))
-}
-
-func keyed[T any](values []T, key func(T) string) map[string]T {
-	result := make(map[string]T, len(values))
-	for _, value := range values {
-		result[key(value)] = clone(value)
-	}
-	return result
 }
 
 func sortedValues[T any](values map[string]T, key func(T) string) []T {

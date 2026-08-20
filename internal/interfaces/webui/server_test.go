@@ -80,7 +80,7 @@ type webCredentialVault struct {
 	credentials domain.AccountCredentials
 }
 
-func TestRefreshBookingDemandRequiresSavedCredentialsAndOpeningMonitor(t *testing.T) {
+func TestRefreshBookingDemandRequiresSavedCredentialsAndActiveMonitor(t *testing.T) {
 	ctx := t.Context()
 	store := memoryrepo.New()
 	vault := &webCredentialVault{}
@@ -110,8 +110,8 @@ func TestRefreshBookingDemandRequiresSavedCredentialsAndOpeningMonitor(t *testin
 		t.Fatal(err)
 	}
 	server.refreshBookingDemand(ctx)
-	if active := <-demands; active {
-		t.Fatal("cancellation monitor created booking warm demand")
+	if active := <-demands; !active {
+		t.Fatal("active cancellation monitor did not create warm demand")
 	}
 }
 

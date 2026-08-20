@@ -32,7 +32,7 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
     <Stack gap="xl">
       <PageHeader
         title={monitor.movie}
-        description={monitor.mode === 'cancellation' ? '취소표 모니터' : '예매 오픈 모니터'}
+        description={monitor.mode === 'cancellation' ? '취소표 전용 모니터' : '예매 오픈·취소표 모니터'}
         actions={(
           <Group gap="xs">
             <SecondaryButton onClick={onBack}>목록</SecondaryButton>
@@ -62,7 +62,11 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
         <Stack gap="xs">
           <Text>{monitorScheduleLabel(monitor)}</Text>
           <Text size="sm" c="dimmed">선호 시간 · {monitorTimeLabel(monitor)}</Text>
-          {awaitingPayment ? <Text size="sm" c="orange.4">결제는 열린 브라우저에서 마치세요. 다시 찾으려면 위 버튼을 누르세요.</Text> : null}
+          {awaitingPayment ? (
+            <Text size="sm" c="orange.4" lh={1.55} style={{ wordBreak: 'keep-all', overflowWrap: 'anywhere' }}>
+              열린 브라우저에서 결제를 마치세요. 다시 찾으려면 위의 버튼을 누르세요.
+            </Text>
+          ) : null}
           {paymentUnknown ? <Text size="sm" c="orange.4">중복 예매를 막기 위해 자동으로 다시 실행하지 않았습니다.</Text> : null}
           {monitor.lastError ? <Text size="sm" c="red">최근 실행에서 오류가 발생했습니다.</Text> : null}
         </Stack>

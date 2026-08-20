@@ -4,6 +4,21 @@ import type { AppState, Auditorium, Preset, SeatMap } from '../../api/types';
 import type { Notify } from '../../components/core/feedback';
 import { csv } from './model';
 
+interface ActiveCatalogRequest {
+  current: AbortController | null;
+}
+
+/** Completes only the catalog request that still owns the loading state. */
+function finishCatalogRequest(
+  activeRequest: ActiveCatalogRequest,
+  request: AbortController,
+  setLoading: (loading: boolean) => void,
+) {
+  if (activeRequest.current !== request) return;
+  activeRequest.current = null;
+  setLoading(false);
+}
+
 export function usePresetCatalog(state: AppState, reload: () => Promise<AppState>, notify: Notify) {
   const [region, setRegionValue] = useState('');
   const [theater, setTheaterValue] = useState('');
@@ -11,6 +26,7 @@ export function usePresetCatalog(state: AppState, reload: () => Promise<AppState
   const [auditoriumId, setAuditoriumIdValue] = useState('');
   const [auditoriums, setAuditoriums] = useState<Auditorium[]>([]);
   const [seatMap, setSeatMap] = useState<SeatMap | null>(null);
+  const seatMapVersion = seatMap?.version;
   const [pickedSeats, setPickedSeats] = useState<string[]>([]);
   const [catalogDates, setCatalogDates] = useState('');
   const [catalogMessage, setCatalogMessage] = useState('');
@@ -31,12 +47,6 @@ export function usePresetCatalog(state: AppState, reload: () => Promise<AppState
     activeRequest.current = request;
     setLoadingCatalog(false);
     return request;
-  }, []);
-
-  const finishRequest = useCallback((request: AbortController) => {
-    if (activeRequest.current !== request) return;
-    activeRequest.current = null;
-    setLoadingCatalog(false);
   }, []);
 
   useEffect(() => () => activeRequest.current?.abort(), []);
@@ -78,7 +88,7 @@ export function usePresetCatalog(state: AppState, reload: () => Promise<AppState
     if (!selectedTheater) {
       setAuditoriums([]);
       setCatalogMessage(value ? '상영관 목록이 없습니다. 가져오기를 실행하세요.' : '');
-      finishRequest(request);
+      finishCatalogRequest(activeRequest, request, setLoadingCatalog);
       return;
     }
     setLoadingCatalog(true);
@@ -94,44 +104,51 @@ export function usePresetCatalog(state: AppState, reload: () => Promise<AppState
     } catch (error) {
       if (!request.signal.aborted) notify(errorMessage(error), { tone: 'error' });
     } finally {
-      finishRequest(request);
+      finishCatalogRequest(activeRequest, request, setLoadingCatalog);
     }
-  }, [beginRequest, finishRequest, notify, region, state.catalog.theaters]);
+  }, [beginRequest, notify, region, state.catalog.theaters]);
 
   const loadSeatMap = useCallback(async (
     id: string,
-    values = auditoriums,
     existingRequest?: AbortController,
   ) => {
     const request = existingRequest ?? beginRequest();
     setAuditoriumIdValue(id);
     setSeatMap(null);
     if (!id) {
-      finishRequest(request);
-      return;
-    }
-    const auditorium = values.find((item) => item.id === id);
-    if (!auditorium?.seatMapVersion) {
-      setPickedSeats([]);
-      setCatalogMessage('좌석을 미리 고르지 않아도 저장할 수 있습니다. 예매 시 CGV의 최신 좌석에서 자동으로 찾습니다.');
-      finishRequest(request);
+      finishCatalogRequest(activeRequest, request, setLoadingCatalog);
       return;
     }
     setLoadingCatalog(true);
+    setCatalogMessage('저장된 좌석 배치를 불러옵니다. 없으면 수집을 시작합니다.');
     try {
-      const value = await api<SeatMap>(`/api/seat-map?auditoriumId=${encodeURIComponent(id)}`, {
+      const response = await api<SeatMap | { status: 'waiting'; auditoriumId: string }>('/api/catalog/seat-map', {
+        method: 'POST',
         signal: request.signal,
+        body: { region, theater, auditoriumId: id, dates: csv(catalogDates), headful: false, force: false },
       });
       if (request.signal.aborted) return;
+      if (!('seats' in response)) {
+        setPickedSeats([]);
+        setCatalogMessage('좌석 배치를 수집 중입니다. 완료되면 자동으로 불러옵니다.');
+        return;
+      }
+      const value = response;
       setSeatMap(value);
       setPickedSeats((current) => current.filter((label) => value.seats.some((seat) => seat.label === label)));
       setCatalogMessage('저장된 좌석 배치를 불러왔습니다.');
     } catch (error) {
       if (!request.signal.aborted) notify(errorMessage(error), { tone: 'error' });
     } finally {
-      finishRequest(request);
+      finishCatalogRequest(activeRequest, request, setLoadingCatalog);
     }
-  }, [auditoriums, beginRequest, finishRequest, notify]);
+  }, [beginRequest, catalogDates, notify, region, theater]);
+
+  const catalogSeatMapVersion = state.catalog.auditoriums.find((item) => item.id === auditoriumId)?.seatMapVersion;
+  useEffect(() => {
+    if (!auditoriumId || !catalogSeatMapVersion || seatMapVersion === catalogSeatMapVersion) return;
+    queueMicrotask(() => void loadSeatMap(auditoriumId));
+  }, [auditoriumId, catalogSeatMapVersion, loadSeatMap, seatMapVersion]);
 
   const discoverAuditoriums = useCallback(async () => {
     if (!region || !theater) {
@@ -162,9 +179,9 @@ export function usePresetCatalog(state: AppState, reload: () => Promise<AppState
         notify(errorMessage(error), { tone: 'error', important: true });
       }
     } finally {
-      finishRequest(request);
+      finishCatalogRequest(activeRequest, request, setLoadingCatalog);
     }
-  }, [beginRequest, catalogDates, finishRequest, notify, region, reload, theater]);
+  }, [beginRequest, catalogDates, notify, region, reload, theater]);
 
   const captureSeatMap = useCallback(async (force = false) => {
     setForceCapture(false);
@@ -184,12 +201,12 @@ export function usePresetCatalog(state: AppState, reload: () => Promise<AppState
       if (request.signal.aborted) return;
       if (!('seats' in response)) {
         setSeatMap(null);
-        setCatalogMessage('좌석 배치를 확인할 수 있는 회차를 기다리고 있습니다. 프리셋 저장과 예매 감시는 계속할 수 있습니다.');
+        setCatalogMessage('좌석 배치를 확인할 수 있는 회차를 기다리고 있습니다. 분석이 끝나면 프리셋을 저장할 수 있습니다.');
         notify('좌석 배치 확인을 요청했습니다.', { important: true });
         return;
       }
       const value = response;
-      const previousVersion = seatMap?.version;
+      const previousVersion = seatMapVersion;
       setSeatMap(value);
       const nextAuditoriums = await api<Auditorium[]>(`/api/auditoriums?theaterId=${encodeURIComponent(activeTheaterId)}`, {
         signal: request.signal,
@@ -210,9 +227,9 @@ export function usePresetCatalog(state: AppState, reload: () => Promise<AppState
         notify(errorMessage(error), { tone: 'error', important: true });
       }
     } finally {
-      finishRequest(request);
+      finishCatalogRequest(activeRequest, request, setLoadingCatalog);
     }
-  }, [activeTheaterId, auditoriumId, beginRequest, catalogDates, finishRequest, notify, region, reload, seatMap?.version, theater]);
+  }, [activeTheaterId, auditoriumId, beginRequest, catalogDates, notify, region, reload, seatMapVersion, theater]);
 
   const loadPreset = useCallback((preset: Preset) => {
     const request = beginRequest();
@@ -230,14 +247,14 @@ export function usePresetCatalog(state: AppState, reload: () => Promise<AppState
         });
         if (request.signal.aborted) return;
         setAuditoriums(values);
-        await loadSeatMap(preset.auditoriumId, values, request);
+        await loadSeatMap(preset.auditoriumId, request);
       } catch (error) {
         if (!request.signal.aborted) notify(errorMessage(error), { tone: 'error' });
       } finally {
-        finishRequest(request);
+        finishCatalogRequest(activeRequest, request, setLoadingCatalog);
       }
     })();
-  }, [beginRequest, finishRequest, loadSeatMap, notify, state.catalog.theaters]);
+  }, [beginRequest, loadSeatMap, notify, state.catalog.theaters]);
 
   const toggleSeat = useCallback((label: string) => {
     setPickedSeats((current) => current.includes(label)

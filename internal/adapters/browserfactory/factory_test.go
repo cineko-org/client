@@ -300,7 +300,7 @@ func TestFactoryReconfiguresFutureEgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer factory.Close()
-	if err := factory.ConfigureEgress(egress.Config{SoxyURL: "https://soxy.test"}); err == nil {
+	if err := factory.ConfigureEgress(egress.Config{Proxies: []egress.Proxy{{Server: "ftp://invalid:21"}}}); err == nil {
 		t.Fatal("ConfigureEgress(invalid) error = nil")
 	}
 	if err := factory.ConfigureEgress(egress.Config{}); err != nil {

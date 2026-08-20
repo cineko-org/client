@@ -1,6 +1,15 @@
-import type { ReactNode } from 'react';
-import { Alert, AppShell, Box, Center, Group, Indicator, Loader, Notification, Stack, Text, UnstyledButton } from '@mantine/core';
-import { IconBell, IconDoorExit, IconFileExport, IconFileImport, IconSettings } from '@tabler/icons-react';
+import { useState, type ReactNode } from 'react';
+import { ActionIcon, Alert, AppShell, Box, Center, Divider, Group, Indicator, Loader, NavLink, Notification, SimpleGrid, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
+import {
+  IconBell,
+  IconBookmark,
+  IconDoorExit,
+  IconHome,
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarRightCollapse,
+  IconRadar,
+  IconSettings,
+} from '@tabler/icons-react';
 import { IconAction, SecondaryButton } from '../../../components/core/Actions';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
 import type { AccountState, ApplicationConnection, NetworkSettings } from '../../../api/types';
@@ -21,8 +30,6 @@ export interface AppShellViewProps {
   feedback: ShellFeedback | null;
   children: ReactNode;
   onNavigate: (section: MainSection) => void;
-  onImport: () => void;
-  onExport: () => void;
   onExit: () => void;
   onOpenNotifications: () => void;
   onOpenSettings: () => void;
@@ -34,34 +41,118 @@ export type MainSection = 'home' | 'monitors' | 'presets';
 
 const feedbackColor = { info: 'blue', success: 'green', warning: 'yellow', error: 'red' } as const;
 
+const navigation = [
+  { section: 'home', label: '홈', icon: IconHome },
+  { section: 'monitors', label: '예매 모니터', icon: IconRadar },
+  { section: 'presets', label: '프리셋', icon: IconBookmark },
+] as const;
+
+interface ShellNavigationProps {
+  activeSection: MainSection | null;
+  collapsed: boolean;
+  onNavigate: (section: MainSection) => void;
+}
+
+/** Renders the same navigation contract for expanded and icon-only sidebars. */
+function ShellNavigation({ activeSection, collapsed, onNavigate }: ShellNavigationProps) {
+  return (
+    <Stack gap={4} align={collapsed ? 'center' : 'stretch'}>
+      {navigation.map(({ section, label, icon: Icon }) => {
+        const active = activeSection === section;
+        if (collapsed) {
+          return (
+            <Tooltip
+              key={section}
+              label={label}
+              position="right"
+              events={{ hover: true, focus: true, touch: false }}
+            >
+              <ActionIcon
+                aria-label={label}
+                aria-current={active ? 'page' : undefined}
+                color="gray"
+                radius={0}
+                size={48}
+                variant={active ? 'filled' : 'subtle'}
+                onClick={() => onNavigate(section)}
+              >
+                <Icon size={20} stroke={1.8} />
+              </ActionIcon>
+            </Tooltip>
+          );
+        }
+        return (
+          <NavLink
+            key={section}
+            component="button"
+            type="button"
+            aria-label={label}
+            active={active}
+            label={label}
+            leftSection={<Icon size={20} stroke={1.8} />}
+            onClick={() => onNavigate(section)}
+            color="gray"
+            variant="filled"
+            mih={48}
+          />
+        );
+      })}
+    </Stack>
+  );
+}
+
+/** Keeps the three primary destinations reachable with one thumb on phones. */
+function MobileNavigation({ activeSection, onNavigate }: Omit<ShellNavigationProps, 'collapsed'>) {
+  return (
+    <SimpleGrid cols={3} h="100%" spacing={0} aria-label="주요 화면">
+      {navigation.map(({ section, label, icon: Icon }) => {
+        const active = activeSection === section;
+        return (
+          <UnstyledButton
+            key={section}
+            aria-label={label}
+            aria-current={active ? 'page' : undefined}
+            onClick={() => onNavigate(section)}
+            style={{ minWidth: 0 }}
+          >
+            <Stack h="100%" gap={2} align="center" justify="center">
+              <Icon size={21} stroke={active ? 2.1 : 1.7} />
+              <Text size="xs" fw={active ? 700 : 500} c={active ? 'gray.0' : 'gray.6'} truncate>{label}</Text>
+            </Stack>
+          </UnstyledButton>
+        );
+      })}
+    </SimpleGrid>
+  );
+}
+
 export function AppShellView(props: AppShellViewProps) {
   const {
     activeSection, loading, connection, account, network, desktopAvailable, unreadNotices, feedback,
-    children, onNavigate, onImport, onExport, onExit,
+    children, onNavigate, onExit,
     onOpenNotifications, onOpenSettings, onDismissFeedback, onRetryConnection,
   } = props;
+  const [navigationCollapsed, setNavigationCollapsed] = useState(false);
   return (
-    <AppShell header={{ height: 64 }} withBorder={false} bg="dark.9">
-      <AppShell.Header bg="dark.9" px={{ base: 'md', md: 32, xl: 48 }} withBorder>
+    <AppShell
+      header={{ height: { base: 56, sm: 64 } }}
+      navbar={{ width: navigationCollapsed ? 76 : 244, breakpoint: 'sm', collapsed: { mobile: true } }}
+      footer={{ height: { base: 64, sm: 0 } }}
+      withBorder={false}
+      bg="dark.9"
+    >
+      <AppShell.Header bg="dark.9" px={{ base: 12, sm: 'md', md: 32, xl: 48 }} withBorder>
         <Group h="100%" justify="space-between" wrap="nowrap">
-          <Group gap="xl" wrap="nowrap" aria-label="주요 화면">
-            {([['home', '홈'], ['monitors', '예매 모니터'], ['presets', '프리셋']] as const).map(([value, label]) => {
-              const active = activeSection === value;
-              return (
-              <UnstyledButton key={value} onClick={() => onNavigate(value)} aria-current={active ? 'page' : undefined}>
-                <Text size="sm" fw={active ? 700 : 500} c={active ? 'gray.0' : 'gray.6'}>{label}</Text>
-              </UnstyledButton>
-              );
-            })}
+          <Group gap="sm" wrap="nowrap">
+            <Text fw={800} lts="0.08em" tt="uppercase" size="sm">Cineko</Text>
+            <Text size="xs" c="dimmed" tt="uppercase" fw={700} lts="0.08em" visibleFrom="xs">Client</Text>
           </Group>
-          <Group gap="xl" wrap="nowrap">
+          <Group gap="md" wrap="nowrap">
             <Group gap="md" wrap="nowrap" visibleFrom="md">
               <StatusIndicator label="프록시" color={network.mode !== 'direct' ? 'green' : 'gray'} muted={network.mode === 'direct'} />
               <StatusIndicator label="CGV" color={account.authenticated ? 'green' : 'gray'} muted={!account.authenticated} />
             </Group>
             <Group gap={4} wrap="nowrap">
-              {desktopAvailable ? <IconAction label="가져오기" icon={<IconFileImport size={19} />} onClick={onImport} /> : null}
-              {desktopAvailable ? <IconAction label="내보내기" icon={<IconFileExport size={19} />} onClick={onExport} /> : null}
               <Indicator
                 disabled={unreadNotices === 0}
                 label={Math.min(unreadNotices, 9)}
@@ -78,13 +169,25 @@ export function AppShellView(props: AppShellViewProps) {
           </Group>
         </Group>
       </AppShell.Header>
+      <AppShell.Navbar bg="dark.9" withBorder p={navigationCollapsed ? 12 : 'md'}>
+        <ShellNavigation activeSection={activeSection} collapsed={navigationCollapsed} onNavigate={onNavigate} />
+        <Box mt="auto">
+          <Divider mb="sm" />
+          <Group justify={navigationCollapsed ? 'center' : 'flex-end'}>
+            <IconAction
+              label={navigationCollapsed ? '사이드바 펼치기' : '사이드바 접기'}
+              icon={navigationCollapsed ? <IconLayoutSidebarRightCollapse size={20} /> : <IconLayoutSidebarLeftCollapse size={20} />}
+              onClick={() => setNavigationCollapsed((value) => !value)}
+            />
+          </Group>
+        </Box>
+      </AppShell.Navbar>
       <AppShell.Main
         bg="dark.9"
-        pt="calc(64px + var(--mantine-spacing-xl))"
-        px={{ base: 'md', md: 32, xl: 48 }}
-        pb={{ base: 32, xl: 48 }}
+        pt={{ base: 'calc(56px + 20px)', sm: 'calc(64px + 32px)' }}
+        pb={{ base: 'calc(64px + 24px)', sm: 40, xl: 56 }}
       >
-        <Box maw={1440} mx="auto" aria-busy={loading || connection.retrying}>
+        <Box maw={1680} mx="auto" px={{ base: 16, sm: 24, md: 40, xl: 56 }} aria-busy={loading || connection.retrying}>
           {loading ? (
             <Center mih="calc(100dvh - 64px - var(--mantine-spacing-xl) - 48px)">
               <Stack gap="sm" align="center">
@@ -118,16 +221,18 @@ export function AppShellView(props: AppShellViewProps) {
           )}
         </Box>
       </AppShell.Main>
+      <AppShell.Footer bg="dark.9" withBorder hiddenFrom="sm">
+        <MobileNavigation activeSection={activeSection} onNavigate={onNavigate} />
+      </AppShell.Footer>
       {feedback ? (
         <Notification
           pos="fixed"
-          right={24}
-          bottom={24}
-          w={380}
+          right={16}
+          bottom="calc(var(--app-shell-footer-offset, 0px) + 16px)"
           color={feedbackColor[feedback.tone]}
           onClose={onDismissFeedback}
           withCloseButton
-          style={{ zIndex: 500 }}
+          style={{ zIndex: 500, width: 'min(380px, calc(100vw - 32px))' }}
         >
           {feedback.message}
         </Notification>

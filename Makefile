@@ -1,4 +1,4 @@
-.PHONY: behavior-contract-check check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security test workflow-check
+.PHONY: behavior-contract-check check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security storybook storybook-build test workflow-check
 
 WAILS ?= $(shell go env GOPATH)/bin/wails
 WAILS_DEV_SERVER ?= 127.0.0.1:34116
@@ -44,6 +44,12 @@ test: install-playwright
 
 frontend-check:
 	$(NPM) --prefix frontend run check
+
+storybook:
+	$(NPM) --prefix frontend run storybook
+
+storybook-build:
+	$(NPM) --prefix frontend run storybook:build
 
 workflow-check:
 	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml

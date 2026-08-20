@@ -2,10 +2,24 @@ package cgv
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/cineko-org/client/internal/domain"
 )
+
+func TestProviderHTTPErrorClassifiesProtectionResponses(t *testing.T) {
+	if err := providerHTTPError(403); !errors.Is(err, ErrProviderAccessBlocked) {
+		t.Fatalf("403 = %v", err)
+	}
+	if err := providerHTTPError(429); !errors.Is(err, ErrProviderThrottled) {
+		t.Fatalf("429 = %v", err)
+	}
+	if err := providerHTTPError(503); errors.Is(err, ErrProviderAccessBlocked) ||
+		errors.Is(err, ErrProviderThrottled) {
+		t.Fatalf("503 misclassified = %v", err)
+	}
+}
 
 func TestParseScheduleResponseKeepsProviderTupleWhenDisplayChanges(t *testing.T) {
 	rows, err := parseScheduleResponse([]byte(`{

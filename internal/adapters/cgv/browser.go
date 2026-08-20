@@ -26,6 +26,8 @@ var (
 	ErrAuthenticationRequired = errors.New("CGV authentication is required")
 	ErrUIContractChanged      = errors.New("CGV UI contract changed")
 	ErrCaptchaRequired        = errors.New("manual CAPTCHA entry is required")
+	ErrProviderThrottled      = errors.New("CGV temporarily limited requests")
+	ErrProviderAccessBlocked  = errors.New("CGV blocked the current request")
 )
 
 type BrowserConfig struct {
@@ -648,16 +650,28 @@ func (adapter *Adapter) routeRequest(route playwright.Route) {
 }
 
 func (adapter *Adapter) handleResponse(response playwright.Response) {
-	if response.Status() != 200 {
+	if !strings.Contains(response.URL(), seatDataPath) {
 		return
 	}
-	if !strings.Contains(response.URL(), seatDataPath) {
+	if response.Status() < 200 || response.Status() > 299 {
+		adapter.publishSeatResponse(seatNetworkResponse{err: providerHTTPError(response.Status())})
 		return
 	}
 	go func() {
 		body, err := response.Body()
 		adapter.publishSeatResponse(seatNetworkResponse{body: body, err: err})
 	}()
+}
+
+func providerHTTPError(status int) error {
+	switch status {
+	case 403:
+		return fmt.Errorf("%w: HTTP %d", ErrProviderAccessBlocked, status)
+	case 429:
+		return fmt.Errorf("%w: HTTP %d", ErrProviderThrottled, status)
+	default:
+		return fmt.Errorf("CGV provider response returned HTTP %d", status)
+	}
 }
 
 func (adapter *Adapter) publishSeatResponse(response seatNetworkResponse) {

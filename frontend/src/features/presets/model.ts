@@ -1,4 +1,23 @@
-import type { Preset, Seat, SeatType } from '../../api/types';
+import type { Preset, Seat, SeatType, Theater } from '../../api/types';
+
+export function catalogRegions(theaters: Theater[]): string[] {
+  return [...new Set(theaters.map((theater) => theater.region.trim()).filter(Boolean))]
+    // The spread creates a new array, so sorting cannot mutate caller state.
+    // oxlint-disable-next-line unicorn/no-array-sort
+    .sort((left, right) => left.localeCompare(right, 'ko'));
+}
+
+export function catalogTheaters(theaters: Theater[], region: string): string[] {
+  const selectedRegion = region.trim();
+  if (!selectedRegion) return [];
+  return [...new Set(theaters
+    .filter((theater) => theater.region.trim() === selectedRegion)
+    .map((theater) => theater.name.trim())
+    .filter(Boolean))]
+    // The spread creates a new array, so sorting cannot mutate caller state.
+    // oxlint-disable-next-line unicorn/no-array-sort
+    .sort((left, right) => left.localeCompare(right, 'ko'));
+}
 
 export interface SeatTypePresentation {
   color: string;

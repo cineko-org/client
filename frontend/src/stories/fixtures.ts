@@ -52,13 +52,15 @@ export const catalog: CatalogIndex = {
   generation: 42,
   providers: [{ id: 'cgv', name: 'CGV' }],
   movies: [
-    { id: 'movie-avengers', providerId: 'cgv', sourceKey: '어벤져스: 시크릿 워즈', title: '어벤져스: 시크릿 워즈' },
-    { id: 'movie-dune', providerId: 'cgv', sourceKey: '듄: 메시아', title: '듄: 메시아' },
-    { id: 'movie-hail-mary', providerId: 'cgv', sourceKey: '프로젝트 헤일메리', title: '프로젝트 헤일메리' },
+    { id: 'movie-dune', providerId: 'cgv', sourceKey: '듄: 메시아', title: '듄: 메시아', posterUrl: '/storybook/poster-dune.svg' },
+    { id: 'movie-avengers', providerId: 'cgv', sourceKey: '어벤져스: 시크릿 워즈', title: '어벤져스: 시크릿 워즈', posterUrl: '/storybook/poster-avengers.svg' },
+    { id: 'movie-hail-mary', providerId: 'cgv', sourceKey: '프로젝트 헤일메리', title: '프로젝트 헤일메리', posterUrl: '/storybook/poster-hail-mary.svg' },
   ],
   theaters: [
     { id: 'cgv-yongsan', providerId: 'cgv', sourceKey: '서울/용산아이파크몰', region: '서울', name: '용산아이파크몰' },
     { id: 'cgv-yeouido', providerId: 'cgv', sourceKey: '서울/여의도', region: '서울', name: '여의도' },
+    { id: 'cgv-centum', providerId: 'cgv', sourceKey: '부산/센텀시티', region: '부산', name: '센텀시티' },
+    { id: 'cgv-pangyo', providerId: 'cgv', sourceKey: '경기/판교', region: '경기', name: '판교' },
   ],
   auditoriums: [],
 };

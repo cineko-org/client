@@ -31,7 +31,12 @@ export function useNetworkSettings(opened: boolean, notify: Notify) {
   }, [bridge, notify]);
 
   useEffect(() => {
-    if (opened) void load();
+    if (!opened) return undefined;
+    let active = true;
+    queueMicrotask(() => {
+      if (active) void load();
+    });
+    return () => { active = false; };
   }, [load, opened]);
 
   const save = useCallback(async (next: NetworkForm = form) => {

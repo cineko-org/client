@@ -85,11 +85,6 @@ type GlobalCatalogRepository interface {
 	GetCatalog(context.Context) (contracts.CatalogIndex, error)
 }
 
-type ConfigurationRepository interface {
-	SnapshotConfiguration(context.Context, string) (domain.Configuration, error)
-	ReplaceConfiguration(context.Context, domain.Configuration) error
-}
-
 type TheaterRef struct {
 	Region string
 	Name   string
@@ -127,4 +122,11 @@ type BookingGateway interface {
 	PreparePayment(context.Context, domain.Showtime, []string) (domain.BookingDraft, error)
 	PrepareCancellation(context.Context, domain.Reservation) (domain.CancellationDraft, error)
 	CommitCancellation(context.Context) error
+}
+
+// LiveSeatSelectionRefresher refreshes the already-open seat page without
+// repeating cinema, date, or showtime navigation. Booking gateways that do not
+// support this capability continue to use the single-attempt contract above.
+type LiveSeatSelectionRefresher interface {
+	RefreshSeatSelection(context.Context, domain.Showtime) (domain.SeatSelection, error)
 }

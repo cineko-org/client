@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Box } from '@mantine/core';
+import { useState } from 'react';
 import { HomePage } from '../app/HomePage';
 import { MonitorsPage } from '../app/pages/MonitorsPage';
 import { SettingsPage } from '../app/pages/SettingsPage';
@@ -9,6 +10,8 @@ import { MonitorEditorPageView } from '../features/monitors/ui/MonitorEditorPage
 import { PresetPageView } from '../features/presets/ui/PresetPageView';
 import { initialMonitorForm } from '../features/monitors/model';
 import { initialPresetForm } from '../features/presets/model';
+import type { MonitorForm } from '../features/monitors/model';
+import type { PresetForm } from '../features/presets/model';
 import { auditoriums, catalog, monitors, noop, presets, reservations, seatMap } from './fixtures';
 import { imaxSeatMapFixture } from './liveSeatMaps';
 
@@ -45,23 +48,30 @@ export const AwaitingPaymentMonitor: Story = {
   render: () => <Canvas><MonitorDetailPageView monitor={monitors[1]} mutating={false} onBack={noop} onEdit={noop} onRetry={noop} /></Canvas>,
 };
 
+export const MobileAwaitingPaymentMonitor: Story = {
+  globals: { viewport: { value: 'phone', isRotated: false } },
+  render: () => <Canvas><MonitorDetailPageView monitor={monitors[1]} mutating={false} onBack={noop} onEdit={noop} onRetry={noop} /></Canvas>,
+};
+
 export const UnknownPaymentResult: Story = {
   render: () => <Canvas><MonitorDetailPageView monitor={monitors[2]} mutating={false} onBack={noop} onEdit={noop} onRetry={noop} /></Canvas>,
 };
 
 export const NewMonitor: Story = {
-  render: () => (
-    <Canvas>
-      <MonitorEditorPageView
-        onBack={noop}
-        builder={{
-          movies: catalog.movies, presets, form: { ...initialMonitorForm, movieId: catalog.movies[0].id, movie: catalog.movies[0].title, presetId: presets[0].id, dates: ['2026-08-20'] },
-          submitting: false, onChange: noop, onSubmit: noop,
-        }}
-      />
-    </Canvas>
-  ),
+  render: () => <NewMonitorStory />,
 };
+
+export const MobileNewMonitor: Story = {
+  globals: { viewport: { value: 'phone', isRotated: false } },
+  render: () => <NewMonitorStory />,
+};
+
+function NewMonitorStory() {
+  const [form, setForm] = useState<MonitorForm>({ ...initialMonitorForm, presetId: presets[0].id, dates: ['2026-08-20'] });
+  return (
+    <Canvas><MonitorEditorPageView onBack={noop} builder={{ movies: catalog.movies, presets, form, submitting: false, onChange: setForm, onSubmit: noop }} /></Canvas>
+  );
+}
 
 export const EditMonitor: Story = {
   render: () => (
@@ -78,20 +88,35 @@ export const Presets: Story = {
 };
 
 export const NewPreset: Story = {
-  render: () => (
-    <Canvas>
-      <PresetPageView
-        catalog={catalog} form={{ ...initialPresetForm, name: '용산 IMAX 중앙 2석', seatCount: 2, preferredRows: 'H, I' }}
-        region="서울" theater="용산아이파크몰" auditoriumId={imaxSeatMapFixture.seatMap.auditoriumId} auditoriums={auditoriums}
-        seatMap={seatMap} pickedSeats={imaxSeatMapFixture.pickedSeats} catalogDates="" catalogMessage="좌석 배치를 불러왔습니다."
-        loadingCatalog={false} saving={false} forceCapture={false}
-        onBack={noop} onRefreshCatalog={noop} onFormChange={noop} onRegionChange={noop} onTheaterChange={noop}
-        onAuditoriumChange={noop} onCatalogDatesChange={noop} onDiscover={noop} onCapture={noop}
-        onForceCaptureChange={noop} onToggleSeat={noop} onClearSeats={noop} onSave={noop} onReset={noop}
-      />
-    </Canvas>
-  ),
+  render: () => <NewPresetStory />,
 };
+
+export const MobileNewPreset: Story = {
+  globals: { viewport: { value: 'phone', isRotated: false } },
+  render: () => <NewPresetStory />,
+};
+
+function NewPresetStory() {
+  const [form, setForm] = useState<PresetForm>({ ...initialPresetForm, name: '용산 IMAX 중앙 2석', seatCount: 2, preferredRows: 'H, I' });
+  const [region, setRegion] = useState('');
+  const [theater, setTheater] = useState('');
+  const [auditoriumId, setAuditoriumId] = useState('');
+  const [pickedSeats, setPickedSeats] = useState<string[]>([]);
+  const availableAuditoriums = theater === '용산아이파크몰' ? auditoriums : [];
+  return (
+    <Canvas><PresetPageView
+      catalog={catalog} form={form} region={region} theater={theater} auditoriumId={auditoriumId}
+      auditoriums={availableAuditoriums} seatMap={auditoriumId ? seatMap : null} pickedSeats={pickedSeats}
+      catalogDates="" catalogMessage={theater && availableAuditoriums.length === 0 ? '이 Story에서는 용산아이파크몰 좌석만 준비되어 있습니다.' : ''}
+      loadingCatalog={false} saving={false} forceCapture={false} onBack={noop} onRefreshCatalog={noop}
+      onFormChange={setForm} onRegionChange={(value) => { setRegion(value); setTheater(''); setAuditoriumId(''); }}
+      onTheaterChange={(value) => { setTheater(value); setAuditoriumId(''); }} onAuditoriumChange={setAuditoriumId}
+      onCatalogDatesChange={noop} onDiscover={noop} onCapture={noop} onForceCaptureChange={noop}
+      onToggleSeat={(label) => setPickedSeats((current) => current.includes(label) ? current.filter((item) => item !== label) : [...current, label])}
+      onClearSeats={() => setPickedSeats([])} onSave={noop} onReset={() => { setForm(initialPresetForm); setPickedSeats([]); }}
+    /></Canvas>
+  );
+}
 
 export const EditPreset: Story = {
   render: () => (
@@ -111,8 +136,8 @@ export const Settings: Story = {
     <Canvas>
       <SettingsPage
         available account={{ status: 'authenticated', authenticated: true }}
-        settings={{ mode: 'soxy', soxyUrl: 'https://proxy.example.com', hasApiToken: true, soxySessionTtl: '30m' }}
-        form={{ mode: 'soxy', proxyUrls: '', proxyUsername: '', proxyPassword: '', soxyUrl: 'https://proxy.example.com', soxyToken: '', sessionTtl: '30m' }}
+        settings={{ mode: 'direct' }}
+        form={{ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '' }}
         loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} onAuthenticate={noop}
         onSaveAccountCredentials={noop} onRestoreAuthentication={noop} onDeleteAccountCredentials={noop}
         hookAvailable hookLoadState="ready" hookSaving={false} onHookAdd={noop} onHookReload={noop} onHookChange={noop} onHookRemove={noop} onHookSave={noop}
@@ -127,7 +152,7 @@ export const StandardProxySettings: Story = {
     <Canvas><SettingsPage
       available account={{ status: 'unauthenticated', authenticated: false }}
       settings={{ mode: 'proxy', proxyUrls: ['socks5://127.0.0.1:1080'], hasProxyPassword: true }}
-      form={{ mode: 'proxy', proxyUrls: 'socks5://127.0.0.1:1080', proxyUsername: 'cineko', proxyPassword: '', soxyUrl: '', soxyToken: '', sessionTtl: '30m' }}
+      form={{ mode: 'proxy', proxyUrls: 'socks5://127.0.0.1:1080', proxyUsername: 'cineko', proxyPassword: '' }}
       loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} onAuthenticate={noop}
       onSaveAccountCredentials={noop} onRestoreAuthentication={noop} onDeleteAccountCredentials={noop}
       hookAvailable hookForms={[]} hookLoadState="ready" hookSaving={false} onHookAdd={noop} onHookReload={noop} onHookChange={noop} onHookRemove={noop} onHookSave={noop}
@@ -139,7 +164,7 @@ export const SettingsLoading: Story = {
   render: () => (
     <Canvas><SettingsPage
       available account={{ status: 'checking', authenticated: false }} settings={{ mode: 'direct' }}
-      form={{ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '', soxyUrl: '', soxyToken: '', sessionTtl: '30m' }}
+      form={{ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '' }}
       loadState="loading" saving={false} onChange={noop} onReload={noop} onSave={noop} onAuthenticate={noop}
       onSaveAccountCredentials={noop} onRestoreAuthentication={noop} onDeleteAccountCredentials={noop}
       hookAvailable hookForms={[]} hookLoadState="loading" hookSaving={false} onHookAdd={noop} onHookReload={noop}
@@ -152,7 +177,7 @@ export const SettingsLoadFailed: Story = {
   render: () => (
     <Canvas><SettingsPage
       available account={{ status: 'error', authenticated: false }} settings={{ mode: 'direct' }}
-      form={{ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '', soxyUrl: '', soxyToken: '', sessionTtl: '30m' }}
+      form={{ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '' }}
       loadState="error" saving={false} onChange={noop} onReload={noop} onSave={noop} onAuthenticate={noop}
       onSaveAccountCredentials={noop} onRestoreAuthentication={noop} onDeleteAccountCredentials={noop}
       hookAvailable hookForms={[]} hookLoadState="error" hookSaving={false} onHookAdd={noop} onHookReload={noop}

@@ -5,11 +5,20 @@ not create or retain browser processes.
 
 ## Capacity and ownership
 
-- An active, authenticated `opening` monitor requests two warm slots.
-- Three is the hard process cap. With no active opening monitor or no saved CGV
+- An active, authenticated booking monitor requests two warm slots. One monitor
+  covers both opening detection and later cancellation-seat availability.
+- Three is the hard process cap. With no active booking monitor or no saved CGV
   credentials, demand is zero and no browser is started.
 - Every slot has one Playwright driver process, one persistent profile, one
   page, and one logical booking task. Slots are acquired exclusively.
+- A Central-leased showtime opens one seat page. If preferred seats are not yet
+  available, that same page may refresh for at most 45 seconds and 20 requests,
+  with a randomized 1.5-2.5 second interval. A second warm slot remains a
+  failure standby and never races the same showtime.
+- HTTP 403, HTTP 429, a CAPTCHA, a page-identity mismatch, or any refresh error
+  stops the same-page loop immediately. Cineko does not solve challenges,
+  rotate identity mid-session, or continue sending requests after protection
+  is observed.
 - A prepared reservation changes the lease to payment-retained. It is released
   only when payment is completed, abandoned, expires, or the browser fails.
 
@@ -35,5 +44,8 @@ Before this capability, a booking request opened a fresh Playwright adapter in
 the command hot path. After this capability, the hot path acquires an already
 ready slot and starts zero new browser processes (`internal/booking` tests
 assert no factory call at zero demand and distinct ready process/profile
-leases). Real CGV end-to-end latency is intentionally unmeasured here because
-this test environment has no authenticated live CGV booking run.
+leases). For two preferred-seat misses followed by success, the previous
+Central rearm path required three seat-page opens; same-page refresh requires
+one, reducing full seat-page navigation by 66.7%. Real CGV end-to-end latency is
+intentionally unmeasured here because this test environment has no authenticated
+live CGV booking run.

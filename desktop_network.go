@@ -12,16 +12,16 @@ import (
 	"github.com/cineko-org/client/internal/domain"
 )
 
-const defaultSoxyLeaseTTL = 30 * time.Minute
-
 type desktopNetworkSettings struct {
-	Mode           string   `json:"mode,omitempty"`
-	ProxyURLs      []string `json:"proxyUrls,omitempty"`
-	ProxyUsername  string   `json:"proxyUsername,omitempty"`
-	ProxyPassword  string   `json:"proxyPassword,omitempty"`
-	SoxyURL        string   `json:"soxyUrl"`
-	SoxyAPIToken   string   `json:"soxyApiToken,omitempty"`
-	SoxySessionTTL string   `json:"soxySessionTtl"`
+	Mode          string   `json:"mode,omitempty"`
+	ProxyURLs     []string `json:"proxyUrls,omitempty"`
+	ProxyUsername string   `json:"proxyUsername,omitempty"`
+	ProxyPassword string   `json:"proxyPassword,omitempty"`
+	// Retired Soxy fields are read only so legacy Central settings can be
+	// sanitized without ever configuring managed infrastructure in Client.
+	SoxyURL        string `json:"soxyUrl,omitempty"`
+	SoxyAPIToken   string `json:"soxyApiToken,omitempty"`
+	SoxySessionTTL string `json:"soxySessionTtl,omitempty"`
 }
 
 type NetworkSettings struct {
@@ -29,9 +29,6 @@ type NetworkSettings struct {
 	ProxyURLs        []string `json:"proxyUrls,omitempty"`
 	ProxyUsername    string   `json:"proxyUsername,omitempty"`
 	HasProxyPassword bool     `json:"hasProxyPassword"`
-	SoxyURL          string   `json:"soxyUrl"`
-	SoxySessionTTL   string   `json:"soxySessionTtl"`
-	HasAPIToken      bool     `json:"hasApiToken"`
 	Source           string   `json:"source"`
 }
 
@@ -64,7 +61,7 @@ func (app *DesktopApp) GetNetworkSettings() (NetworkSettings, error) {
 		}
 		return networkSettingsState(environment, "environment"), nil
 	}
-	config, err := resolveDesktopNetwork(*settings.Network, environment)
+	config, err := resolveDesktopNetwork(*settings.Network)
 	if err != nil {
 		return NetworkSettings{}, err
 	}
@@ -72,6 +69,10 @@ func (app *DesktopApp) GetNetworkSettings() (NetworkSettings, error) {
 }
 
 func (app *DesktopApp) SaveNetworkSettings(input NetworkSettingsInput) (NetworkSettings, error) {
+	if strings.EqualFold(strings.TrimSpace(input.Mode), "soxy") || strings.TrimSpace(input.SoxyURL) != "" ||
+		strings.TrimSpace(input.SoxyAPIToken) != "" {
+		return NetworkSettings{}, errors.New("managed Soxy belongs to the Central observation infrastructure")
+	}
 	environment, err := egress.ConfigFromEnvironment()
 	if err != nil {
 		return NetworkSettings{}, err
@@ -81,13 +82,13 @@ func (app *DesktopApp) SaveNetworkSettings(input NetworkSettingsInput) (NetworkS
 		return NetworkSettings{}, readErr
 	}
 	stored := prepareDesktopNetworkSettings(input, settings.Network)
-	nextConfig, err := resolveDesktopNetwork(stored, environment)
+	nextConfig, err := resolveDesktopNetwork(stored)
 	if err != nil {
 		return NetworkSettings{}, err
 	}
 	previousConfig := environment
 	if settings.Network != nil {
-		previousConfig, err = resolveDesktopNetwork(*settings.Network, environment)
+		previousConfig, err = resolveDesktopNetwork(*settings.Network)
 		if err != nil {
 			return NetworkSettings{}, fmt.Errorf("기존 프록시 설정을 확인할 수 없습니다: %w", err)
 		}
@@ -104,7 +105,6 @@ func (app *DesktopApp) SaveNetworkSettings(input NetworkSettingsInput) (NetworkS
 	if err := app.egress.ConfigureEgress(nextConfig); err != nil {
 		return NetworkSettings{}, err
 	}
-	stored.SoxySessionTTL = formatSessionTTL(nextConfig.SessionTTL)
 	if err := app.updateSettings(func(settings *desktopSettings) error {
 		settings.Network = &stored
 		return nil
@@ -118,21 +118,13 @@ func prepareDesktopNetworkSettings(input NetworkSettingsInput, previous *desktop
 	stored := desktopNetworkSettings{
 		Mode: strings.TrimSpace(input.Mode), ProxyURLs: cleanStrings(input.ProxyURLs),
 		ProxyUsername: strings.TrimSpace(input.ProxyUsername), ProxyPassword: input.ProxyPassword,
-		SoxyURL: strings.TrimSpace(input.SoxyURL), SoxyAPIToken: strings.TrimSpace(input.SoxyAPIToken),
-		SoxySessionTTL: strings.TrimSpace(input.SoxySessionTTL),
 	}
 	stored.Mode = desktopNetworkMode(stored)
-	if stored.SoxySessionTTL == "" {
-		stored.SoxySessionTTL = defaultSoxyLeaseTTL.String()
-	}
 	if previous == nil {
 		return stored
 	}
 	if stored.Mode == "proxy" && stored.ProxyPassword == "" {
 		stored.ProxyPassword = previous.ProxyPassword
-	}
-	if stored.Mode == "soxy" && stored.SoxyAPIToken == "" {
-		stored.SoxyAPIToken = previous.SoxyAPIToken
 	}
 	return stored
 }
@@ -148,11 +140,7 @@ func (app *DesktopApp) applySavedNetworkSettings() error {
 	if settings.Network == nil {
 		return nil
 	}
-	environment, err := egress.ConfigFromEnvironment()
-	if err != nil {
-		return err
-	}
-	config, err := resolveDesktopNetwork(*settings.Network, environment)
+	config, err := resolveDesktopNetwork(*settings.Network)
 	if err != nil {
 		return err
 	}
@@ -162,29 +150,16 @@ func (app *DesktopApp) applySavedNetworkSettings() error {
 	return app.egress.ConfigureEgress(config)
 }
 
-func resolveDesktopNetwork(stored desktopNetworkSettings, environment egress.Config) (egress.Config, error) {
-	ttlText := strings.TrimSpace(stored.SoxySessionTTL)
-	if ttlText == "" {
-		ttlText = defaultSoxyLeaseTTL.String()
-	}
-	ttl, err := time.ParseDuration(ttlText)
-	if err != nil {
-		return egress.Config{}, fmt.Errorf("세션 유지 시간을 확인하세요: %w", err)
-	}
-	config := egress.Config{SessionTTL: ttl}
+func resolveDesktopNetwork(stored desktopNetworkSettings) (egress.Config, error) {
+	config := egress.Config{}
 	mode := desktopNetworkMode(stored)
 	switch mode {
 	case "direct":
 	case "proxy":
+		var err error
 		config.Proxies, err = parseDesktopProxies(stored)
 		if err != nil {
 			return egress.Config{}, err
-		}
-	case "soxy":
-		config.SoxyURL = strings.TrimSpace(stored.SoxyURL)
-		config.SoxyToken = strings.TrimSpace(stored.SoxyAPIToken)
-		if config.SoxyToken == "" {
-			config.SoxyToken = environment.SoxyToken
 		}
 	default:
 		return egress.Config{}, fmt.Errorf("지원하지 않는 프록시 모드 %q", mode)
@@ -197,11 +172,12 @@ func resolveDesktopNetwork(stored desktopNetworkSettings, environment egress.Con
 
 func desktopNetworkMode(stored desktopNetworkSettings) string {
 	if mode := strings.TrimSpace(stored.Mode); mode != "" {
+		if mode == "soxy" {
+			return "direct"
+		}
 		return mode
 	}
 	switch {
-	case strings.TrimSpace(stored.SoxyURL) != "":
-		return "soxy"
 	case len(stored.ProxyURLs) > 0:
 		return "proxy"
 	default:
@@ -230,14 +206,11 @@ func parseDesktopProxies(stored desktopNetworkSettings) ([]egress.Proxy, error) 
 
 func networkSettingsState(config egress.Config, source string) NetworkSettings {
 	mode := "direct"
-	if strings.TrimSpace(config.SoxyURL) != "" {
-		mode = "soxy"
-	} else if len(config.Proxies)+len(config.ScanProxies) > 0 {
+	if len(config.Proxies)+len(config.ScanProxies) > 0 {
 		mode = "proxy"
 	}
 	state := NetworkSettings{
-		Mode: mode, SoxyURL: strings.TrimSpace(config.SoxyURL),
-		SoxySessionTTL: formatSessionTTL(config.SessionTTL), HasAPIToken: config.SoxyToken != "", Source: source,
+		Mode: mode, Source: source,
 	}
 	proxies := append(append([]egress.Proxy(nil), config.Proxies...), config.ScanProxies...)
 	for _, proxy := range proxies {
@@ -286,27 +259,13 @@ func (app *DesktopApp) checkSavedNetworkHealth(ctx context.Context) {
 	if settings.Network == nil {
 		return
 	}
-	environment, err := egress.ConfigFromEnvironment()
+	config, err := resolveDesktopNetwork(*settings.Network)
 	if err == nil {
-		var config egress.Config
-		config, err = resolveDesktopNetwork(*settings.Network, environment)
-		if err == nil {
-			healthContext, cancel := context.WithTimeout(ctx, 15*time.Second)
-			err = app.validateEgress(healthContext, config)
-			cancel()
-		}
+		healthContext, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err = app.validateEgress(healthContext, config)
+		cancel()
 	}
 	if err != nil {
 		app.server.RecordSystemEvent(app.activeUserID(), "network.health_failed", domain.EventError, "저장된 프록시가 동작하지 않습니다. 설정을 확인하세요.")
 	}
-}
-
-func formatSessionTTL(ttl time.Duration) string {
-	if ttl > 0 && ttl%time.Hour == 0 {
-		return fmt.Sprintf("%dh", ttl/time.Hour)
-	}
-	if ttl > 0 && ttl%time.Minute == 0 {
-		return fmt.Sprintf("%dm", ttl/time.Minute)
-	}
-	return ttl.String()
 }
