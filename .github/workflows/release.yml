@@ -78,7 +78,9 @@ jobs:
           npm ci --prefix frontend
       - name: Install Wails
         shell: bash
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.14.0
+        run: |
+          wails_version="$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@${wails_version}"
       - name: Build Client
         shell: bash
         run: |

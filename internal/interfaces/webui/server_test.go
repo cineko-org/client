@@ -419,6 +419,54 @@ func TestSecureAcceptsLoopbackSameOriginJSON(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersBindMantineStylesToDocumentNonce(t *testing.T) {
+	t.Parallel()
+
+	handler := SecurityHeaders(http.NotFoundHandler())
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first application page status = %d, body = %s", first.Code, first.Body.String())
+	}
+	firstNonce := applicationStyleNonce(t, first.Body.String())
+	policy := first.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "style-src 'self' 'nonce-"+firstNonce+"'") {
+		t.Fatalf("CSP does not authorize the application nonce: %q", policy)
+	}
+	if !strings.Contains(policy, "style-src-attr 'unsafe-inline'") {
+		t.Fatalf("CSP does not authorize Mantine style properties: %q", policy)
+	}
+	if strings.Contains(first.Body.String(), styleNoncePlaceholder) {
+		t.Fatal("application page still contains the nonce placeholder")
+	}
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/index.html", nil))
+	secondNonce := applicationStyleNonce(t, second.Body.String())
+	if firstNonce == secondNonce {
+		t.Fatal("application pages reused a CSP nonce")
+	}
+}
+
+func applicationStyleNonce(t *testing.T, page string) string {
+	t.Helper()
+	const marker = `name="cineko-style-nonce" content="`
+	start := strings.Index(page, marker)
+	if start < 0 {
+		t.Fatal("application page is missing the style nonce metadata")
+	}
+	start += len(marker)
+	end := strings.Index(page[start:], `"`)
+	if end < 0 {
+		t.Fatal("application style nonce metadata is malformed")
+	}
+	nonce := page[start : start+end]
+	if nonce == "" {
+		t.Fatal("application style nonce is empty")
+	}
+	return nonce
+}
+
 func TestEmbeddedUIContainsMantineApplication(t *testing.T) {
 	t.Parallel()
 
@@ -426,7 +474,7 @@ func TestEmbeddedUIContainsMantineApplication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read embedded index: %v", err)
 	}
-	for _, required := range []string{`id="root"`, `/app.css`, `/app.js`} {
+	for _, required := range []string{`id="root"`, `/app.css`, `/app.js`, `name="cineko-style-nonce"`} {
 		if !strings.Contains(string(page), required) {
 			t.Fatalf("embedded UI is missing %s", required)
 		}

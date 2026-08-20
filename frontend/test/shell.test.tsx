@@ -16,7 +16,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('application shell', () => {
-	it('keeps the desktop sidebar above the phone breakpoint', () => {
+	it('keeps one navigation model across desktop and mobile surfaces', () => {
 		const noop = vi.fn<() => void>();
 		const { container } = render(
 			<MantineProvider theme={cinekoTheme}>
@@ -42,6 +42,9 @@ describe('application shell', () => {
 		);
 
 		expect(screen.getByRole('navigation')).not.toBeNull();
-		expect(container.querySelector('footer')?.classList.contains('mantine-hidden-from-xs')).toBe(true);
+		expect(container.querySelector('footer')?.classList.contains('mantine-hidden-from-sm')).toBe(true);
+		expect(screen.getAllByRole('button', { name: '홈' })).toHaveLength(2);
+		expect(screen.getAllByRole('button', { name: '예매 모니터' })).toHaveLength(2);
+		expect(screen.getAllByRole('button', { name: '프리셋' })).toHaveLength(2);
 	});
 });

@@ -1,8 +1,11 @@
 package webui
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -386,15 +389,65 @@ func (server *Server) secure(next http.Handler) http.Handler {
 
 func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		if strings.HasPrefix(request.URL.Path, "/api/") {
 			writer.Header().Set("Cache-Control", "no-store")
 		}
+		if request.Method == http.MethodGet && (request.URL.Path == "/" || request.URL.Path == "/index.html") {
+			styleNonce, err := newStyleNonce()
+			if err != nil {
+				http.Error(writer, "cannot prepare application", http.StatusInternalServerError)
+				return
+			}
+			writer.Header().Set("Content-Security-Policy", contentSecurityPolicy(styleNonce))
+			serveApplicationPage(writer, styleNonce)
+			return
+		}
+		writer.Header().Set("Content-Security-Policy", contentSecurityPolicy(""))
 		next.ServeHTTP(writer, request)
 	})
+}
+
+const styleNoncePlaceholder = "__CINEKO_STYLE_NONCE__"
+
+// newStyleNonce creates the per-document nonce used by Mantine style tags.
+func newStyleNonce() (string, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("create style nonce: %w", err)
+	}
+	return base64.RawStdEncoding.EncodeToString(random), nil
+}
+
+// contentSecurityPolicy keeps scripts strict while allowing Mantine style properties.
+func contentSecurityPolicy(styleNonce string) string {
+	styleSources := "style-src 'self'"
+	if styleNonce != "" {
+		styleSources += " 'nonce-" + styleNonce + "'"
+	}
+	return "default-src 'self'; img-src 'self' data:; " + styleSources +
+		"; style-src-attr 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+}
+
+// serveApplicationPage binds the document CSP nonce to Mantine's generated styles.
+func serveApplicationPage(writer http.ResponseWriter, styleNonce string) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		http.Error(writer, "cannot load application", http.StatusInternalServerError)
+		return
+	}
+	placeholder := []byte(styleNoncePlaceholder)
+	if !bytes.Contains(page, placeholder) {
+		http.Error(writer, "application security metadata is missing", http.StatusInternalServerError)
+		return
+	}
+	page = bytes.ReplaceAll(page, placeholder, []byte(styleNonce))
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(page)
 }
 
 func sameOrigin(request *http.Request) bool {

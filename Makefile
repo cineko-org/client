@@ -1,6 +1,7 @@
 .PHONY: behavior-contract-check check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security storybook storybook-build test workflow-check
 
 WAILS ?= $(shell go env GOPATH)/bin/wails
+WAILS_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)
 WAILS_DEV_SERVER ?= 127.0.0.1:34116
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOVULNCHECK_VERSION ?= v1.6.0
@@ -10,8 +11,8 @@ VERSION ?= $(shell cat VERSION)
 GO_FILES := $(shell find . -maxdepth 1 -name '*.go' -type f) $(shell find internal -name '*.go' -type f)
 
 install-wails:
-	@test -x "$(WAILS)" && "$(WAILS)" version | grep -q 'v2.14.0' || \
-		go install github.com/wailsapp/wails/v2/cmd/wails@v2.14.0
+	@test -x "$(WAILS)" && "$(WAILS)" version | grep -q '$(WAILS_VERSION)' || \
+		go install github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)
 
 install-playwright:
 	go run github.com/mxschmitt/playwright-go/cmd/playwright@$$(bash scripts/playwright-version.sh go) install chromium
