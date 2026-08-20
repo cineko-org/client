@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.5.0](https://github.com/cineko-org/client/compare/v2.4.0...v2.5.0) (2026-08-20)
+
+
+### Features
+
+* ship catalog experience and direct client networking ([#8](https://github.com/cineko-org/client/issues/8)) ([2e267fb](https://github.com/cineko-org/client/commit/2e267fb18ab90db71602ec7af738e30e6d50189b))
+
+
+### Bug Fixes
+
+* **release:** publish locked browser runtime ([#7](https://github.com/cineko-org/client/issues/7)) ([5df7c10](https://github.com/cineko-org/client/commit/5df7c10389c81c79b09a9328ac5ed55d7741b1ac))
+* **release:** publish locked Playwright runtime ([#5](https://github.com/cineko-org/client/issues/5)) ([725893e](https://github.com/cineko-org/client/commit/725893eadc8dc30ce5bfd8ec068597ca6b5cb240))
+
 ## [2.4.0](https://github.com/cineko-org/client/compare/v2.3.0...v2.4.0) (2026-08-20)
 
 
