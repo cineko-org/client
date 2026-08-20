@@ -25,7 +25,9 @@ jobs:
 
   build:
     if: needs.release.outputs.created == 'true'
-    needs: release
+    needs:
+      - release
+      - playwright
     name: Build ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -160,3 +162,11 @@ jobs:
             "$published_at" \
             release-assets \
             release-compatibility.json
+
+  playwright:
+    if: needs.release.outputs.created == 'true'
+    needs: release
+    uses: ./.github/workflows/playwright-release.yml
+    with:
+      source_ref: ${{ needs.release.outputs.tag }}
+    secrets: inherit

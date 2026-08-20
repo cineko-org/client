@@ -47,8 +47,10 @@ frontend-check:
 
 workflow-check:
 	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
-	bash -n scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh scripts/register-client-release.sh scripts/test-register-client-release.sh
-	shellcheck scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh scripts/register-client-release.sh scripts/test-register-client-release.sh
+	bash -n scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh scripts/publish-playwright-assets.sh scripts/register-client-release.sh scripts/register-playwright-release.sh scripts/test-publish-playwright-assets.sh scripts/test-register-client-release.sh scripts/test-register-playwright-release.sh
+	shellcheck scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh scripts/publish-playwright-assets.sh scripts/register-client-release.sh scripts/register-playwright-release.sh scripts/test-publish-playwright-assets.sh scripts/test-register-client-release.sh scripts/test-register-playwright-release.sh
+	scripts/test-publish-playwright-assets.sh
+	scripts/test-register-playwright-release.sh
 	bash scripts/test-register-client-release.sh
 	node --test scripts/release-metadata.test.mjs
 
