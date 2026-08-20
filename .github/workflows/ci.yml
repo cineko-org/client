@@ -12,20 +12,35 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Validate Release Please metadata
+        if: startsWith(github.head_ref, 'release-please--')
+        run: >-
+          bash scripts/verify-release-please-pr.sh
+          '${{ github.event.pull_request.base.sha }}'
+          '${{ github.event.pull_request.head.sha }}'
       - uses: actions/setup-go@v7
+        if: ${{ !startsWith(github.head_ref, 'release-please--') }}
         with:
           go-version-file: go.mod
           cache: true
       - uses: actions/setup-node@v7
+        if: ${{ !startsWith(github.head_ref, 'release-please--') }}
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: npm install --global npm@12.0.2
+      - if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+        run: npm install --global npm@12.0.2
       - name: Configure Ubuntu package mirror
+        if: ${{ !startsWith(github.head_ref, 'release-please--') }}
         run: bash scripts/configure-ubuntu-mirror.sh
-      - run: npm ci
+      - if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+        run: npm ci
         working-directory: frontend
       - name: Install Playwright runtime dependencies
+        if: ${{ !startsWith(github.head_ref, 'release-please--') }}
         run: go run "github.com/mxschmitt/playwright-go/cmd/playwright@$(bash scripts/playwright-version.sh go)" install --with-deps chromium
-      - run: make check
+      - if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+        run: make check
