@@ -38,6 +38,15 @@ jq -e '
   (.playwrightVersion | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
   (.protocol | numbers | . > 0)
 ' "$compatibility_file" >/dev/null
+locked_playwright_version="$(bash scripts/playwright-version.sh driver)"
+readonly locked_playwright_version
+requested_playwright_version="$(jq -er '.playwrightVersion' "$compatibility_file")"
+readonly requested_playwright_version
+if [[ "$requested_playwright_version" != "$locked_playwright_version" ]]; then
+  printf 'Client Playwright target %s does not match the locked driver %s\n' \
+    "$requested_playwright_version" "$locked_playwright_version" >&2
+  exit 1
+fi
 jq -e 'type == "object" and length > 0 and all(to_entries[]; (.key | length > 0) and (.value | type == "string" and length > 0))' \
   <<<"$CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON" >/dev/null
 
