@@ -5,7 +5,7 @@ readonly document="docs/behavior-contract.md"
 sources=()
 while IFS= read -r source; do
 	sources+=("$source")
-done < <(rg --files -g '*.go' -g '*.ts' -g '*.tsx' -g '!vendor/**' -g '!**/assets/**')
+done < <(git ls-files '*.go' '*.ts' '*.tsx' | grep -Ev '(^|/)vendor/|/assets/')
 
 while IFS= read -r value; do
 	case "$value" in
@@ -19,7 +19,7 @@ while IFS= read -r value; do
 		printf 'Client behavior contract is missing service point %s\n' "$value" >&2
 		exit 1
 	}
-done < <(rg -o --no-filename '/(api|v1)/[A-Za-z0-9_./:-]*' "${sources[@]}" | sort -u)
+done < <(grep -Eho '/(api|v1)/[A-Za-z0-9_./:-]*' "${sources[@]}" | sort -u)
 
 readonly templates=(
 	'/v1/devices/{installationId}'
@@ -53,7 +53,7 @@ grep -Fq 'const executionReadyEventType = "'"$execution_event"'"' internal/adapt
 }
 
 readonly installation_header='X-Cineko-Installation-Id'
-rg -q 'installationIDHeader[[:space:]]*=[[:space:]]*"'"$installation_header"'"' internal/adapters/storage/centralhttp/store.go || {
+grep -Eq 'installationIDHeader[[:space:]]*=[[:space:]]*"'"$installation_header"'"' internal/adapters/storage/centralhttp/store.go || {
 	printf 'Client catalog store is missing canonical installation header %s\n' "$installation_header" >&2
 	exit 1
 }
@@ -72,9 +72,10 @@ while IFS= read -r value; do
 		exit 1
 	}
 done < <({
-	rg -o --no-filename '[A-Za-z]+Status = "[a-z_]+"' internal/domain | sed -E 's/.*"([a-z_]+)"/\1/'
-	rg -o --no-filename "status: '[a-z_]+'( \| '[a-z_]+')*" frontend/src/api/types.ts |
-		rg -o "'[a-z_]+'" | tr -d "'"
-	rg -o --no-filename 'Status(:| =)[[:space:]]*"[a-z_]+"' --glob '*.go' --glob '!vendor/**' --glob '!*_test.go' |
+	git grep -Eho '[A-Za-z]+Status = "[a-z_]+"' -- 'internal/domain/*.go' 'internal/domain/**/*.go' |
+		sed -E 's/.*"([a-z_]+)"/\1/'
+	grep -Eo "status: '[a-z_]+'( \| '[a-z_]+')*" frontend/src/api/types.ts |
+		grep -Eo "'[a-z_]+'" | tr -d "'"
+	git grep -Eho 'Status(:| =)[[:space:]]*"[a-z_]+"' -- '*.go' ':!vendor/**' ':!*_test.go' |
 		sed -E 's/.*"([a-z_]+)"/\1/'
 } | sort -u)
