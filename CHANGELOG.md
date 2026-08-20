@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/cineko-org/client/compare/v2.5.0...v2.5.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* stabilize Client shell breakpoints ([#9](https://github.com/cineko-org/client/issues/9)) ([7cbf9fa](https://github.com/cineko-org/client/commit/7cbf9fa1da62d44824a73f589e9bae9c221856da))
+
 ## [2.5.0](https://github.com/cineko-org/client/compare/v2.4.0...v2.5.0) (2026-08-20)
 
 
