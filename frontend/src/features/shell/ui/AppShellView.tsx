@@ -135,9 +135,14 @@ export function AppShellView(props: AppShellViewProps) {
   const [navigationCollapsed, setNavigationCollapsed] = useState(false);
   return (
     <AppShell
-      header={{ height: { base: 56, sm: 64 } }}
-      navbar={{ width: navigationCollapsed ? 76 : 244, breakpoint: 'sm', collapsed: { mobile: true } }}
-      footer={{ height: { base: 64, sm: 0 } }}
+      padding={{ base: 16, xs: 24, md: 40, xl: 56 }}
+      header={{ height: { base: 56, xs: 64 } }}
+      navbar={{
+        width: navigationCollapsed ? 76 : { xs: 220, md: 244 },
+        breakpoint: 'xs',
+        collapsed: { mobile: true },
+      }}
+      footer={{ height: { base: 64, xs: 0 } }}
       withBorder={false}
       bg="dark.9"
     >
@@ -182,12 +187,8 @@ export function AppShellView(props: AppShellViewProps) {
           </Group>
         </Box>
       </AppShell.Navbar>
-      <AppShell.Main
-        bg="dark.9"
-        pt={{ base: 'calc(56px + 20px)', sm: 'calc(64px + 32px)' }}
-        pb={{ base: 'calc(64px + 24px)', sm: 40, xl: 56 }}
-      >
-        <Box maw={1680} mx="auto" px={{ base: 16, sm: 24, md: 40, xl: 56 }} aria-busy={loading || connection.retrying}>
+      <AppShell.Main bg="dark.9">
+        <Box maw={1680} mx="auto" aria-busy={loading || connection.retrying}>
           {loading ? (
             <Center mih="calc(100dvh - 64px - var(--mantine-spacing-xl) - 48px)">
               <Stack gap="sm" align="center">
@@ -221,7 +222,7 @@ export function AppShellView(props: AppShellViewProps) {
           )}
         </Box>
       </AppShell.Main>
-      <AppShell.Footer bg="dark.9" withBorder hiddenFrom="sm">
+      <AppShell.Footer bg="dark.9" withBorder hiddenFrom="xs">
         <MobileNavigation activeSection={activeSection} onNavigate={onNavigate} />
       </AppShell.Footer>
       {feedback ? (
