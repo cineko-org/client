@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.3](https://github.com/cineko-org/client/compare/v2.5.2...v2.5.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **release:** sign and notarize macOS Client ([#13](https://github.com/cineko-org/client/issues/13)) ([08314a7](https://github.com/cineko-org/client/commit/08314a75eee8e26b9e02c3505d678c60243e3834))
+
 ## [2.5.2](https://github.com/cineko-org/client/compare/v2.5.1...v2.5.2) (2026-08-20)
 
 
