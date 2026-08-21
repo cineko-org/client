@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.6](https://github.com/cineko-org/client/compare/v2.5.5...v2.5.6) (2026-08-21)
+
+
+### Bug Fixes
+
+* resolve seat maps through Central ([#20](https://github.com/cineko-org/client/issues/20)) ([73749be](https://github.com/cineko-org/client/commit/73749be5e0cc6eae18ec276edf492ae75a457593))
+
 ## [2.5.5](https://github.com/cineko-org/client/compare/v2.5.4...v2.5.5) (2026-08-21)
 
 
