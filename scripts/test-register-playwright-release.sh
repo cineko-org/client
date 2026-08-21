@@ -56,5 +56,5 @@ if PATH="$test_root/bin:$PATH" \
   printf 'registration accepted an incomplete Playwright release\n' >&2
   exit 1
 fi
-[[ "$(wc -l <"$payloads" | tr -d ' ')" == 1 ]]
+jq -se 'length == 1' "$payloads" >/dev/null
 printf 'Playwright release registration checks passed\n'
