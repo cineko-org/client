@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.5](https://github.com/cineko-org/client/compare/v2.5.4...v2.5.5) (2026-08-21)
+
+
+### Bug Fixes
+
+* **presets:** preserve theater selection ([#18](https://github.com/cineko-org/client/issues/18)) ([ccd23e0](https://github.com/cineko-org/client/commit/ccd23e0428973ef6b034d7e56d8d853d885c5780))
+
 ## [2.5.4](https://github.com/cineko-org/client/compare/v2.5.3...v2.5.4) (2026-08-20)
 
 
