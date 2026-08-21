@@ -23,7 +23,7 @@ export function usePresets(
     pickedSeats,
     seatMap,
     ...catalog
-  } = usePresetCatalog(state, reload, notify);
+  } = usePresetCatalog(state, notify);
 
   const reset = useCallback(() => {
     setForm(initialPresetForm);

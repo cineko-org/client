@@ -27,9 +27,8 @@ import (
 )
 
 const (
-	maximumResponseBody  = 8 << 20
-	sessionRefreshSkew   = time.Minute
-	installationIDHeader = "X-Cineko-Installation-Id"
+	maximumResponseBody = 8 << 20
+	sessionRefreshSkew  = time.Minute
 )
 
 var errCentralUnauthorized = errors.New("central session is unauthorized")
@@ -65,11 +64,10 @@ type LaunchConfig struct {
 }
 
 type Store struct {
-	baseURL        string
-	userID         string
-	installationID string
-	client         *http.Client
-	clock          func() time.Time
+	baseURL string
+	userID  string
+	client  *http.Client
+	clock   func() time.Time
 
 	authMu           sync.Mutex
 	token            string
@@ -137,7 +135,6 @@ func Open(ctx context.Context, config Config) (*Store, error) {
 	}
 	config.UserID = strings.TrimSpace(config.UserID)
 	config.AccessToken = strings.TrimSpace(config.AccessToken)
-	store.installationID = strings.TrimSpace(config.InstallationID)
 	if config.UserID == "" || config.AccessToken == "" {
 		return nil, errors.New("central user ID and access token are required")
 	}
@@ -162,7 +159,6 @@ func OpenLaunched(ctx context.Context, config LaunchConfig) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	store.installationID = config.InstallationID
 	store.releaseGeneration.Store(config.ReleaseGeneration)
 	var auth central.AuthExchangeResponse
 	if err := store.request(
@@ -419,13 +415,6 @@ func (store *Store) CompleteExecution(
 	)
 }
 
-func (store *Store) PutTheater(ctx context.Context, value domain.Theater) error {
-	return store.PublishCatalogSnapshot(ctx, central.CatalogSnapshot{
-		Provider: central.Provider{ID: value.ProviderID, Name: strings.ToUpper(value.ProviderID)},
-		Theaters: []central.Theater{toContractTheater(value)}, ObservedAt: value.ObservedAt,
-	})
-}
-
 func (store *Store) GetTheater(ctx context.Context, id string) (domain.Theater, error) {
 	catalog, err := store.GetCatalog(ctx)
 	if err != nil {
@@ -449,18 +438,6 @@ func (store *Store) ListTheaters(ctx context.Context) ([]domain.Theater, error) 
 		values = append(values, fromContractTheater(value))
 	}
 	return values, nil
-}
-
-func (store *Store) PutAuditorium(ctx context.Context, value domain.Auditorium) error {
-	theater, err := store.GetTheater(ctx, value.TheaterID)
-	if err != nil {
-		return fmt.Errorf("read auditorium theater from Central: %w", err)
-	}
-	return store.PublishCatalogSnapshot(ctx, central.CatalogSnapshot{
-		Provider:    central.Provider{ID: central.ProviderCGV, Name: "CGV"},
-		Theaters:    []central.Theater{toContractTheater(theater)},
-		Auditoriums: []central.Auditorium{toContractAuditorium(value)}, ObservedAt: value.ObservedAt,
-	})
 }
 
 func (store *Store) GetAuditorium(ctx context.Context, id string) (domain.Auditorium, error) {
@@ -490,43 +467,6 @@ func (store *Store) ListAuditoriumsByTheater(ctx context.Context, theaterID stri
 	return values, nil
 }
 
-func (store *Store) PutSeatMap(ctx context.Context, value domain.SeatMap) error {
-	if store.installationID == "" {
-		return errors.New("catalog mutation requires an installation identity")
-	}
-	layout, err := json.Marshal(struct {
-		Seats  []domain.Seat        `json:"seats"`
-		Zones  []domain.LayoutZone  `json:"zones"`
-		Blocks []domain.LayoutBlock `json:"blocks"`
-	}{Seats: value.Seats, Zones: value.Zones, Blocks: value.Blocks})
-	if err != nil {
-		return fmt.Errorf("encode seat map layout: %w", err)
-	}
-	var decoded any
-	if err := json.Unmarshal(layout, &decoded); err != nil {
-		return fmt.Errorf("normalize seat map layout: %w", err)
-	}
-	layout, err = json.Marshal(decoded)
-	if err != nil {
-		return fmt.Errorf("encode normalized seat map layout: %w", err)
-	}
-	digest := sha256.Sum256(layout)
-	layoutHash := hex.EncodeToString(digest[:])
-	version := central.SeatMapVersion{
-		ID:           central.SeatMapVersionID(value.AuditoriumID, layoutHash),
-		AuditoriumID: value.AuditoriumID, LayoutHash: layoutHash,
-		Capacity: len(value.Seats), Layout: layout,
-		ObservedAt: value.ObservedAt,
-	}
-	return store.request(ctx, http.MethodPut,
-		"/v1/catalog/seat-map-versions/"+url.PathEscape(version.ID), true,
-		map[string]string{
-			"Content-Type":       "application/json",
-			"Idempotency-Key":    version.ID,
-			installationIDHeader: store.installationID,
-		}, version, nil)
-}
-
 func (store *Store) GetSeatMap(ctx context.Context, auditoriumID string) (domain.SeatMap, error) {
 	var version central.SeatMapVersion
 	if err := store.request(ctx, http.MethodGet,
@@ -534,6 +474,10 @@ func (store *Store) GetSeatMap(ctx context.Context, auditoriumID string) (domain
 		nil, nil, &version); err != nil {
 		return domain.SeatMap{}, err
 	}
+	return seatMapFromVersion(version)
+}
+
+func seatMapFromVersion(version central.SeatMapVersion) (domain.SeatMap, error) {
 	var layout struct {
 		Seats  []domain.Seat        `json:"seats"`
 		Zones  []domain.LayoutZone  `json:"zones"`
@@ -549,10 +493,23 @@ func (store *Store) GetSeatMap(ctx context.Context, auditoriumID string) (domain
 	}, nil
 }
 
-func (store *Store) RequestSeatMapBackfill(ctx context.Context, auditoriumID string) error {
-	return store.request(ctx, http.MethodPost,
-		"/v1/catalog/auditoriums/"+url.PathEscape(auditoriumID)+"/seat-map:request", true,
-		nil, nil, nil)
+// ResolveSeatMap asks Central for its current layout without exposing whether
+// Central used stored data or scheduled a Probe capture.
+func (store *Store) ResolveSeatMap(ctx context.Context, auditoriumID string) (domain.SeatMap, bool, error) {
+	var resolution central.SeatMapResolution
+	if err := store.request(ctx, http.MethodPost,
+		"/v1/catalog/auditoriums/"+url.PathEscape(auditoriumID)+"/seat-map:resolve", true,
+		nil, nil, &resolution); err != nil {
+		return domain.SeatMap{}, false, err
+	}
+	if resolution.Status == central.SeatMapResolutionWaiting && resolution.SeatMap == nil {
+		return domain.SeatMap{}, false, nil
+	}
+	if resolution.Status != central.SeatMapResolutionReady || resolution.SeatMap == nil {
+		return domain.SeatMap{}, false, errors.New("central returned an invalid seat-map resolution")
+	}
+	value, err := seatMapFromVersion(*resolution.SeatMap)
+	return value, err == nil, err
 }
 
 func (store *Store) PutPreset(ctx context.Context, value domain.Preset) error {
@@ -658,18 +615,6 @@ func (store *Store) PutExternalOperation(ctx context.Context, value domain.Exter
 	return store.put(ctx, "external-operations", value.ID, value)
 }
 
-func (store *Store) PublishCatalogSnapshot(ctx context.Context, value central.CatalogSnapshot) error {
-	if store.installationID == "" {
-		return errors.New("catalog mutation requires an installation identity")
-	}
-	return store.request(ctx, http.MethodPost, "/v1/catalog/snapshots", true,
-		map[string]string{
-			"Content-Type":       "application/json",
-			"Idempotency-Key":    catalogSnapshotKey(value),
-			installationIDHeader: store.installationID,
-		}, value, nil)
-}
-
 func (store *Store) GetCatalog(ctx context.Context) (central.CatalogIndex, error) {
 	var catalog central.CatalogIndex
 	if err := store.request(ctx, http.MethodGet, "/v1/catalog", true, nil, nil, &catalog); err != nil {
@@ -678,31 +623,10 @@ func (store *Store) GetCatalog(ctx context.Context) (central.CatalogIndex, error
 	return catalog, nil
 }
 
-func catalogSnapshotKey(value central.CatalogSnapshot) string {
-	payload, _ := json.Marshal(value)
-	digest := sha256.Sum256(payload)
-	return "catalog-snapshot-" + hex.EncodeToString(digest[:])
-}
-
-func toContractTheater(value domain.Theater) central.Theater {
-	return central.Theater{
-		ID: value.ID, ProviderID: value.ProviderID, SourceKey: value.SourceKey,
-		Region: value.Region, Name: value.Name,
-	}
-}
-
 func fromContractTheater(value central.Theater) domain.Theater {
 	return domain.Theater{
 		ID: value.ID, ProviderID: value.ProviderID, SourceKey: value.SourceKey,
 		Region: value.Region, Name: value.Name,
-	}
-}
-
-func toContractAuditorium(value domain.Auditorium) central.Auditorium {
-	return central.Auditorium{
-		ID: value.ID, TheaterID: value.TheaterID, SourceKey: value.SourceKey,
-		Name: value.Name, ScreenTypes: value.ScreenTypes, Capacity: value.Capacity,
-		SeatMapVersion: value.SeatMapVersion,
 	}
 }
 

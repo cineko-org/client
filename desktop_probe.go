@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cineko-org/client/internal/adapters/browserfactory"
 	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
 	"github.com/cineko-org/client/internal/interfaces/webui"
 	central "github.com/cineko-org/contracts/v3"
@@ -103,11 +102,9 @@ func startEmbeddedProbe(
 	store *centralstore.Store,
 	dataDir string,
 	identity desktopRuntimeIdentity,
-	browsers *browserfactory.Factory,
-	capabilityState *seatMapCapabilityState,
 ) (*embeddedProbe, error) {
 	if identity.InstallationID == "" || identity.DeviceID == "" || identity.ClientVersion == "" ||
-		identity.BrowserRevision == "" || browsers == nil || capabilityState == nil {
+		identity.BrowserRevision == "" {
 		return nil, errors.New("embedded Probe runtime identity is incomplete")
 	}
 	registration := central.RegisterProbeRequest{
@@ -116,7 +113,6 @@ func startEmbeddedProbe(
 		Capabilities: []string{
 			central.CapabilityCGVCatalogCapture,
 			central.CapabilityCGVScheduleCapture,
-			central.CapabilityCGVSeatMapCapture,
 		},
 		MaxConcurrency: 1,
 		Runtime: central.Runtime{
@@ -137,13 +133,11 @@ func startEmbeddedProbe(
 		return nil, err
 	}
 	probeRuntime, err := probe.NewBrowserRuntime(probe.BrowserRuntimeConfig{
-		CentralURL:      os.Getenv("CINEKO_CENTRAL_URL"),
-		DataDir:         filepath.Join(dataDir, "probe"),
-		HTTPClient:      &http.Client{Timeout: 20 * time.Second},
-		Credentials:     credentials,
-		Registration:    registration,
-		SeatMapExecutor: &clientSeatMapExecutor{browsers: browsers, userID: store.UserID(), state: capabilityState},
-		Runtime:         probe.Config{AvailableCapabilities: capabilityState.AvailableCapabilities},
+		CentralURL:   os.Getenv("CINEKO_CENTRAL_URL"),
+		DataDir:      filepath.Join(dataDir, "probe"),
+		HTTPClient:   &http.Client{Timeout: 20 * time.Second},
+		Credentials:  credentials,
+		Registration: registration,
 	})
 	if err != nil {
 		return nil, err

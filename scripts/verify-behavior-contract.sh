@@ -11,9 +11,10 @@ done < <(git ls-files '*.go' '*.ts' '*.tsx' | grep -Ev '(^|/)vendor/|/assets/')
 
 while IFS= read -r value; do
 	case "$value" in
-		/api/|/api/client|/api/types|/api/collections|/api/data|/api/seats|/api/test|/api/v1/booking/searchIfSeatData|/api/webhooks/*|/v1/slots|/v1/sessions*|/v1/devices/*|/v1/executions/*|/v1/catalog/auditoriums/*|/v1/catalog/seat-map-versions/*|/v1/)
+		/api/|/api/client|/api/types|/api/collections|/api/data|/api/seats|/api/test|/api/catalog/sync|/api/catalog/auditoriums|/api/v1/booking/searchIfSeatData|/api/webhooks/*|/v1/slots|/v1/sessions*|/v1/devices/*|/v1/executions/*|/v1/catalog/auditoriums/*|/v1/)
 			# Implementation-only upstream paths and dynamic Central path prefixes
-			# are verified below as exact external templates where applicable.
+			# are verified below as exact external templates where applicable. The
+			# retired local catalog scan paths occur only in negative route tests.
 			continue
 			;;
 	esac
@@ -28,8 +29,7 @@ readonly templates=(
 	'/v1/executions/{executionId}/heartbeat'
 	'/v1/executions/{executionId}/result'
 	'/v1/catalog/auditoriums/{auditoriumId}/seat-map'
-	'/v1/catalog/auditoriums/{auditoriumId}/seat-map:request'
-	'/v1/catalog/seat-map-versions/{versionId}'
+	'/v1/catalog/auditoriums/{auditoriumId}/seat-map:resolve'
 	'/v1/presets'
 	'/v1/presets/{id}'
 	'/v1/monitors'
@@ -54,15 +54,6 @@ grep -Fq 'const executionReadyEventType = "'"$execution_event"'"' internal/adapt
 	exit 1
 }
 
-readonly installation_header='X-Cineko-Installation-Id'
-grep -Eq 'installationIDHeader[[:space:]]*=[[:space:]]*"'"$installation_header"'"' internal/adapters/storage/centralhttp/store.go || {
-	printf 'Client catalog store is missing canonical installation header %s\n' "$installation_header" >&2
-	exit 1
-}
-grep -Fq "\`$installation_header\`" "$document" || {
-	printf 'Client behavior contract is missing catalog header %s\n' "$installation_header" >&2
-	exit 1
-}
 grep -Fq "\`$execution_event\`" "$document" || {
 	printf 'Client behavior contract is missing event type %s\n' "$execution_event" >&2
 	exit 1

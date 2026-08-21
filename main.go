@@ -71,10 +71,7 @@ func runDesktop() (runErr error) {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, warmPool.Close()) }()
-	seatMapCapabilities := &seatMapCapabilityState{}
-	embeddedProbe, err := startEmbeddedProbe(
-		context.Background(), store, dataDir, identity, browsers, seatMapCapabilities,
-	)
+	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, identity)
 	if err != nil {
 		return err
 	}
@@ -86,8 +83,7 @@ func runDesktop() (runErr error) {
 		Repository: store,
 		Factory:    newAutomationFactory(browsers, warmPool, embeddedProbe, store.UserID()),
 		IDs:        platform.IDGenerator{}, Clock: platform.Clock{}, Waiter: platform.Waiter{}, Events: hooks,
-		AccountStateChanged: seatMapCapabilities.SetAuthenticated,
-		Credentials:         credentials, UserID: store.UserID(),
+		Credentials: credentials, UserID: store.UserID(),
 		BookingDemandChanged: func(active bool) {
 			if active {
 				warmPool.SetDesired(booking.DefaultWarmBrowserCapacity)
