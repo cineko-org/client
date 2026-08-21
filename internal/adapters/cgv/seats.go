@@ -2,11 +2,8 @@ package cgv
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -22,46 +19,6 @@ type rawSeat struct {
 	X        float64  `json:"x"`
 	Y        float64  `json:"y"`
 	Disabled bool     `json:"disabled"`
-}
-
-func (adapter *Adapter) CaptureSeatMap(
-	ctx context.Context,
-	auditorium domain.Auditorium,
-	showtime domain.Showtime,
-) (domain.SeatMap, error) {
-	selection, err := adapter.openSeats(ctx, showtime, 1)
-	if err != nil {
-		return domain.SeatMap{}, err
-	}
-	for index := range selection.snapshot.Seats {
-		selection.snapshot.Seats[index].AuditoriumID = auditorium.ID
-	}
-	screenshotPath, err := adapter.Capture("seat-map-" + auditorium.Name)
-	if err != nil {
-		return domain.SeatMap{}, fmt.Errorf("capture auditorium evidence: %w", err)
-	}
-	// #nosec G304 -- Capture returns a generated path rooted in the configured artifacts directory.
-	screenshot, err := os.ReadFile(screenshotPath)
-	if err != nil {
-		return domain.SeatMap{}, fmt.Errorf("read auditorium evidence: %w", err)
-	}
-	evidenceHash := sha256.Sum256(screenshot)
-	return domain.SeatMap{
-		AuditoriumID: auditorium.ID,
-		Version: seatMapVersion(
-			selection.snapshot.Seats, selection.snapshot.Zones, selection.snapshot.Blocks,
-		),
-		Seats:  selection.snapshot.Seats,
-		Zones:  selection.snapshot.Zones,
-		Blocks: selection.snapshot.Blocks,
-		Evidence: domain.LayoutEvidence{
-			ScreenshotPath: screenshotPath, ScreenshotSHA256: hex.EncodeToString(evidenceHash[:]),
-			SnapshotSHA256: selection.snapshot.Hash, SourceShowtimeID: showtime.ID,
-			DOMSeatCount: selection.domSeatCount, SnapshotSeatCount: len(selection.snapshot.Seats),
-			CaptureTrigger: "refresh-button", CapturedAt: selection.snapshot.Captured,
-		},
-		ObservedAt: selection.snapshot.Captured,
-	}, nil
 }
 
 func (adapter *Adapter) OpenSeatSelection(
@@ -590,60 +547,4 @@ func inferSeatType(source string, classes []string) domain.SeatType {
 		return domain.SeatTypeStandard
 	}
 	return domain.SeatTypeUnknown
-}
-
-func seatMapVersion(
-	seats []domain.Seat,
-	zones []domain.LayoutZone,
-	blocks []domain.LayoutBlock,
-) string {
-	sorted := append([]domain.Seat(nil), seats...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Label < sorted[j].Label })
-	hash := sha256.New()
-	for _, seat := range sorted {
-		_, _ = fmt.Fprintf(
-			hash, "seat|%s|%s|%d|%.6f|%.6f|%s|%s|%s|%s|%s|%t|%t|%s|%s|%s|%s\n",
-			seat.Label, seat.Row, seat.Number, seat.X, seat.Y, seat.Type, seat.ZoneName,
-			seat.ZoneKind, seat.SaleFormCode, seat.SaleFormName, seat.LeftAisle, seat.RightAisle,
-			seat.SourceLabel, seat.SourceSeatKindCode, seat.SourceSeatKindName,
-			canonicalStrings(append(append([]string(nil), seat.Features...), seat.SourceClasses...)),
-		)
-	}
-	sortedZones := append([]domain.LayoutZone(nil), zones...)
-	sort.Slice(sortedZones, func(i, j int) bool {
-		if sortedZones[i].Code == sortedZones[j].Code {
-			return sortedZones[i].Name < sortedZones[j].Name
-		}
-		return sortedZones[i].Code < sortedZones[j].Code
-	})
-	for _, zone := range sortedZones {
-		_, _ = fmt.Fprintf(
-			hash, "zone|%s|%s|%s|%s|%.6f|%.6f|%.6f|%.6f|%d\n",
-			zone.Code, zone.Name, zone.KindCode, zone.KindName,
-			zone.MinX, zone.MaxX, zone.MinY, zone.MaxY, zone.Capacity,
-		)
-	}
-	sortedBlocks := append([]domain.LayoutBlock(nil), blocks...)
-	sort.Slice(sortedBlocks, func(i, j int) bool {
-		if sortedBlocks[i].Code == sortedBlocks[j].Code {
-			if sortedBlocks[i].MinY == sortedBlocks[j].MinY {
-				return sortedBlocks[i].MinX < sortedBlocks[j].MinX
-			}
-			return sortedBlocks[i].MinY < sortedBlocks[j].MinY
-		}
-		return sortedBlocks[i].Code < sortedBlocks[j].Code
-	})
-	for _, block := range sortedBlocks {
-		_, _ = fmt.Fprintf(
-			hash, "block|%s|%s|%s|%s|%.6f|%.6f|%.6f|%.6f\n",
-			block.Code, block.Name, block.KindCode, block.KindName,
-			block.MinX, block.MaxX, block.MinY, block.MaxY,
-		)
-	}
-	return hex.EncodeToString(hash.Sum(nil)[:16])
-}
-
-func canonicalStrings(values []string) string {
-	sort.Strings(values)
-	return strings.Join(values, "\x1f")
 }

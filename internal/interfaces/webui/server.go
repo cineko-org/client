@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,19 +29,18 @@ type Repository interface {
 	application.TheaterRepository
 	application.AuditoriumRepository
 	application.SeatMapRepository
+	application.CatalogRepository
 	application.PresetRepository
 	application.MonitorRepository
 	application.ReservationRepository
 	application.ExternalOperationRepository
-	application.GlobalCatalogRepository
 }
 
-type seatMapBackfillRequester interface {
-	RequestSeatMapBackfill(context.Context, string) error
+type seatMapResolver interface {
+	ResolveSeatMap(context.Context, string) (domain.SeatMap, bool, error)
 }
 
 type Automation interface {
-	application.CatalogGateway
 	application.ShowtimeGateway
 	application.BookingGateway
 	AuthenticateManuallyUntil(context.Context, time.Duration) error
@@ -112,12 +110,6 @@ type accountState struct {
 	CheckedAt        time.Time `json:"checkedAt,omitempty"`
 }
 
-const (
-	auditoriumDiscoveryCooldown = 2 * time.Minute
-	seatMapCaptureCooldown      = 30 * time.Second
-	maxCatalogDates             = 7
-)
-
 type Server struct {
 	repository               Repository
 	factory                  AutomationFactory
@@ -139,8 +131,6 @@ type Server struct {
 	taskCancels     map[string]context.CancelFunc
 	accountMu       sync.RWMutex
 	account         accountState
-	catalogMu       sync.Mutex
-	catalogLast     map[string]time.Time
 	paymentMu       sync.Mutex
 	paymentSessions map[string]*paymentSession
 }
@@ -162,7 +152,7 @@ func New(dependencies Dependencies) (*Server, error) {
 		bookingCapacityAvailable: dependencies.BookingCapacityAvailable,
 		executionReady:           make(chan struct{}, 1),
 		tasks:                    make(map[string]taskState), taskCancels: make(map[string]context.CancelFunc),
-		catalogLast: make(map[string]time.Time), paymentSessions: make(map[string]*paymentSession),
+		paymentSessions: make(map[string]*paymentSession),
 	}, nil
 }
 
@@ -224,9 +214,7 @@ func (server *Server) apiRoutes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/account/credentials", server.deleteAccountCredentials)
 	mux.HandleFunc("POST /api/auth/open", server.openAuthentication)
 	mux.HandleFunc("POST /api/auth/restore", server.restoreAuthentication)
-	mux.HandleFunc("POST /api/catalog/sync", server.syncCatalog)
-	mux.HandleFunc("POST /api/catalog/auditoriums", server.discoverAuditoriums)
-	mux.HandleFunc("POST /api/catalog/seat-map", server.captureAuditoriumSeatMap)
+	mux.HandleFunc("POST /api/catalog/seat-map", server.resolveAuditoriumSeatMap)
 	mux.HandleFunc("GET /api/auditoriums", server.auditoriums)
 	mux.HandleFunc("GET /api/seat-map", server.seatMap)
 	mux.HandleFunc("POST /api/presets", server.createPreset)
@@ -690,42 +678,10 @@ func (server *Server) openAuthentication(writer http.ResponseWriter, _ *http.Req
 	server.writeJSON(writer, http.StatusAccepted, map[string]string{"status": "login browser opened"})
 }
 
-type catalogSyncRequest struct {
-	Region       string   `json:"region"`
-	Theater      string   `json:"theater"`
-	AuditoriumID string   `json:"auditoriumId"`
-	Dates        []string `json:"dates"`
-	Headful      bool     `json:"headful"`
-	Force        bool     `json:"force"`
-}
-
-func (server *Server) discoverAuditoriums(writer http.ResponseWriter, request *http.Request) {
-	var input catalogSyncRequest
-	if !server.decode(writer, request, &input) {
-		return
+func (server *Server) resolveAuditoriumSeatMap(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		AuditoriumID string `json:"auditoriumId"`
 	}
-	if strings.TrimSpace(input.Region) == "" || strings.TrimSpace(input.Theater) == "" {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "region and theater are required"})
-		return
-	}
-	requestKey := "auditoriums:" + strings.ToLower(strings.TrimSpace(input.Region)+"/"+strings.TrimSpace(input.Theater))
-	if retryAfter, allowed := server.reserveCatalogRequest(requestKey, auditoriumDiscoveryCooldown); !allowed {
-		server.writeCatalogRateLimit(writer, retryAfter)
-		return
-	}
-	input.Dates = server.catalogDates(input.Dates)
-	server.withAutomation(writer, request.Context(), true, AutomationScan, func(automation Automation) (any, error) {
-		result, err := application.NewCatalogService(
-			server.repository, server.repository, server.repository, automation, server.clock,
-		).DiscoverAuditoriums(
-			request.Context(), application.TheaterRef{Region: input.Region, Name: input.Theater}, input.Dates,
-		)
-		return result, err
-	})
-}
-
-func (server *Server) captureAuditoriumSeatMap(writer http.ResponseWriter, request *http.Request) {
-	var input catalogSyncRequest
 	if !server.decode(writer, request, &input) {
 		return
 	}
@@ -733,128 +689,22 @@ func (server *Server) captureAuditoriumSeatMap(writer http.ResponseWriter, reque
 		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "auditorium is required"})
 		return
 	}
-	if !input.Force {
-		seatMap, err := server.repository.GetSeatMap(request.Context(), input.AuditoriumID)
-		if err == nil {
-			server.writeJSON(writer, http.StatusOK, seatMap)
-			return
-		}
-		if !errors.Is(err, application.ErrNotFound) {
-			server.writeError(writer, err)
-			return
-		}
-	}
-	requestKey := "seat-map:" + strings.ToLower(strings.TrimSpace(input.AuditoriumID))
-	if retryAfter, allowed := server.reserveCatalogRequest(requestKey, seatMapCaptureCooldown); !allowed {
-		server.writeCatalogRateLimit(writer, retryAfter)
-		return
-	}
-	requester, supported := server.repository.(seatMapBackfillRequester)
+	resolver, supported := server.repository.(seatMapResolver)
 	if !supported {
-		server.writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "seat-map backfill is unavailable"})
+		server.writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "seat-map resolution is unavailable"})
 		return
 	}
-	if err := requester.RequestSeatMapBackfill(request.Context(), input.AuditoriumID); err != nil {
+	seatMap, ready, err := resolver.ResolveSeatMap(request.Context(), input.AuditoriumID)
+	if err != nil {
 		server.writeError(writer, err)
+		return
+	}
+	if ready {
+		server.writeJSON(writer, http.StatusOK, seatMap)
 		return
 	}
 	server.writeJSON(writer, http.StatusAccepted, map[string]string{
 		"status": "waiting", "auditoriumId": input.AuditoriumID,
-	})
-}
-
-func (server *Server) catalogDates(values []string) []string {
-	now := server.clock.Now()
-	if len(values) == 0 {
-		result := make([]string, maxCatalogDates)
-		for offset := range result {
-			result[offset] = now.AddDate(0, 0, offset).Format("2006-01-02")
-		}
-		return result
-	}
-	seen := make(map[string]struct{}, min(len(values), maxCatalogDates))
-	result := make([]string, 0, min(len(values), maxCatalogDates))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if _, exists := seen[value]; value == "" || exists {
-			continue
-		}
-		if _, err := time.Parse("2006-01-02", value); err != nil {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-		if len(result) == maxCatalogDates {
-			break
-		}
-	}
-	return result
-}
-
-func (server *Server) reserveCatalogRequest(key string, cooldown time.Duration) (time.Duration, bool) {
-	now := server.clock.Now()
-	server.catalogMu.Lock()
-	defer server.catalogMu.Unlock()
-	if server.catalogLast == nil {
-		server.catalogLast = make(map[string]time.Time)
-	}
-	if previous, exists := server.catalogLast[key]; exists {
-		if retryAfter := previous.Add(cooldown).Sub(now); retryAfter > 0 {
-			return retryAfter, false
-		}
-	}
-	server.catalogLast[key] = now
-	return 0, true
-}
-
-func (server *Server) writeCatalogRateLimit(writer http.ResponseWriter, retryAfter time.Duration) {
-	seconds := int((retryAfter + time.Second - 1) / time.Second)
-	writer.Header().Set("Retry-After", strconv.Itoa(seconds))
-	server.writeJSON(writer, http.StatusTooManyRequests, map[string]string{
-		"error": fmt.Sprintf("반복 조회를 막았습니다. %d초 후 다시 시도하세요.", seconds),
-	})
-}
-
-func (server *Server) syncCatalog(writer http.ResponseWriter, request *http.Request) {
-	var input catalogSyncRequest
-	if !server.decode(writer, request, &input) {
-		return
-	}
-	if strings.TrimSpace(input.Region) == "" || strings.TrimSpace(input.Theater) == "" {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "region and theater are required"})
-		return
-	}
-	ref := application.TheaterRef{Region: input.Region, Name: input.Theater}
-	service := application.NewCatalogService(
-		server.repository, server.repository, server.repository, nil, server.clock,
-	)
-	if !input.Force {
-		cached, found, err := service.Cached(request.Context(), ref)
-		if err != nil {
-			server.writeError(writer, err)
-			return
-		}
-		if found {
-			server.writeJSON(writer, http.StatusOK, cached)
-			return
-		}
-	}
-	if len(input.Dates) == 0 {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "저장된 좌석 배치가 없습니다. 조회 날짜를 입력하세요"})
-		return
-	}
-	server.withAutomation(writer, request.Context(), true, AutomationScan, func(automation Automation) (any, error) {
-		service := application.NewCatalogService(
-			server.repository, server.repository, server.repository, automation, server.clock,
-		)
-		var result application.CatalogSyncResult
-		var err error
-		if input.Force {
-			result, err = service.Sync(request.Context(), ref, input.Dates)
-		} else {
-			result, err = service.Ensure(request.Context(), ref, input.Dates)
-		}
-		return result, err
 	})
 }
 
@@ -1120,16 +970,6 @@ func (server *Server) cancelReservation(writer http.ResponseWriter, request *htt
 		}
 		return result, err
 	})
-}
-
-func (server *Server) withAutomation(
-	writer http.ResponseWriter,
-	ctx context.Context,
-	background bool,
-	purpose AutomationPurpose,
-	action func(Automation) (any, error),
-) {
-	server.withAutomationKey(writer, ctx, background, purpose, "", action)
 }
 
 func (server *Server) withAutomationKey(

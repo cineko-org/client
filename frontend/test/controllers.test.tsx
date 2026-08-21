@@ -11,6 +11,7 @@ import { useHookSettings } from '../src/features/settings/useHookSettings';
 import { useNetworkSettings } from '../src/features/settings/useNetworkSettings';
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	delete window.go;
 });
@@ -196,9 +197,8 @@ describe('preset catalog controller', () => {
 				],
 			},
 		};
-		const reload = vi.fn<() => Promise<AppState>>().mockResolvedValue(state);
 		const notify = vi.fn<(message: string) => void>();
-		const { result } = renderHook(() => usePresetCatalog(state, reload, notify));
+		const { result } = renderHook(() => usePresetCatalog(state, notify));
 		act(() => result.current.setRegion('서울'));
 		let first: Promise<void>;
 		act(() => { first = result.current.setTheater('A'); });
@@ -210,23 +210,29 @@ describe('preset catalog controller', () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
-	it('clears catalog loading immediately when reset aborts discovery', async () => {
-		const fetchMock = vi.fn<typeof fetch>((_input, init) => new Promise<Response>((_resolve, reject) => {
-			init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
-		}));
+	it('waits only for the selected auditorium until Central returns its stored seat map', async () => {
+		vi.useFakeTimers();
+		const fetchMock = vi.fn<typeof fetch>()
+			.mockResolvedValueOnce(response({ status: 'waiting', auditoriumId: 'auditorium-1' }))
+			.mockResolvedValueOnce(response({
+				auditoriumId: 'auditorium-1', version: 'layout-1', seats: [], zones: [],
+			}));
 		vi.stubGlobal('fetch', fetchMock);
-		const reload = vi.fn<() => Promise<AppState>>().mockResolvedValue(emptyAppState);
 		const notify = vi.fn<(message: string) => void>();
-		const { result } = renderHook(() => usePresetCatalog(emptyAppState, reload, notify));
-		act(() => result.current.setRegion('서울'));
-		await act(async () => result.current.setTheater('용산'));
-		let discovery: Promise<void>;
-		act(() => { discovery = result.current.discoverAuditoriums(); });
-		await waitFor(() => expect(result.current.loadingCatalog).toBe(true));
-		act(() => result.current.reset());
-		expect(result.current.loadingCatalog).toBe(false);
-		await act(async () => discovery!);
-		expect(result.current.catalogMessage).toBe('');
+		const { result } = renderHook(() => usePresetCatalog(emptyAppState, notify));
+		let pending: Promise<void>;
+		act(() => { pending = result.current.setAuditorium('auditorium-1'); });
+		await act(async () => { await Promise.resolve(); });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(result.current.catalogMessage).toBe('Central에서 좌석 배치를 준비 중입니다.');
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(2_000);
+			await pending!;
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(result.current.seatMap?.version).toBe('layout-1');
+		expect(result.current.catalogMessage).toBe('저장된 좌석 배치를 불러왔습니다.');
 		expect(notify).not.toHaveBeenCalled();
 	});
+
 });

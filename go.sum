@@ -6,10 +6,10 @@ github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1x
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
-github.com/cineko-org/contracts/v3 v3.3.0 h1:MwHLY8nB/oImPiypR9lkD/OUiwuxJrHncTEod/oRIyY=
-github.com/cineko-org/contracts/v3 v3.3.0/go.mod h1:lxka6g+t0iYq97BcuSlrJXStheV90sD0sqgi4Yapirk=
-github.com/cineko-org/probe/v2 v2.3.1 h1:EASIM8eR5XLhkfwcbyd6IUc3c26voaUrk9ldvAnXUaQ=
-github.com/cineko-org/probe/v2 v2.3.1/go.mod h1:5SFWJgBj0cxomSBOKNSg8fauxkkUNn/2zgG5msD+VJE=
+github.com/cineko-org/contracts/v3 v3.4.0 h1:sHwKWPmRpnkE6jR+niE6ITtL28Kom6wQYGsvNX0d+rU=
+github.com/cineko-org/contracts/v3 v3.4.0/go.mod h1:lxka6g+t0iYq97BcuSlrJXStheV90sD0sqgi4Yapirk=
+github.com/cineko-org/probe/v2 v2.5.0 h1:8o/vkcAbKspRualpqGGJXDWBXQVZdA+1+qDqMAHR+QQ=
+github.com/cineko-org/probe/v2 v2.5.0/go.mod h1:BH9hPMwtRJ3nmkx+ba/K1ND7I2lOmzqoHXvOnn2Vgtk=
 github.com/danieljoos/wincred v1.2.3 h1:v7dZC2x32Ut3nEfRH+vhoZGvN72+dQ/snVXo/vMFLdQ=
 github.com/danieljoos/wincred v1.2.3/go.mod h1:6qqX0WNrS4RzPZ1tnroDzq9kY3fu1KwE7MRLQK4X0bs=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=

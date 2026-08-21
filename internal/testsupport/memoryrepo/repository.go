@@ -3,6 +3,7 @@ package memoryrepo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -118,7 +119,16 @@ func (repository *Repository) GetSeatMap(_ context.Context, auditoriumID string)
 	return clone(value), nil
 }
 
-func (*Repository) RequestSeatMapBackfill(context.Context, string) error { return nil }
+func (repository *Repository) ResolveSeatMap(
+	ctx context.Context,
+	auditoriumID string,
+) (domain.SeatMap, bool, error) {
+	value, err := repository.GetSeatMap(ctx, auditoriumID)
+	if errors.Is(err, application.ErrNotFound) {
+		return domain.SeatMap{}, false, nil
+	}
+	return value, err == nil, err
+}
 
 func (repository *Repository) PutPreset(_ context.Context, value domain.Preset) error {
 	repository.mu.Lock()
@@ -252,23 +262,6 @@ func (repository *Repository) PutExternalOperation(_ context.Context, value doma
 	return nil
 }
 
-func (repository *Repository) PublishCatalogSnapshot(_ context.Context, value contracts.CatalogSnapshot) error {
-	repository.mu.Lock()
-	defer repository.mu.Unlock()
-	repository.catalog.Providers = upsertCatalog(repository.catalog.Providers, value.Provider, func(item contracts.Provider) string { return item.ID })
-	for _, item := range value.Theaters {
-		repository.catalog.Theaters = upsertCatalog(repository.catalog.Theaters, item, func(item contracts.Theater) string { return item.ID })
-	}
-	for _, item := range value.Movies {
-		repository.catalog.Movies = upsertCatalog(repository.catalog.Movies, item, func(item contracts.Movie) string { return item.ID })
-	}
-	for _, item := range value.Auditoriums {
-		repository.catalog.Auditoriums = upsertCatalog(repository.catalog.Auditoriums, item, func(item contracts.Auditorium) string { return item.ID })
-	}
-	repository.catalog.Generation++
-	return nil
-}
-
 func (repository *Repository) GetCatalog(context.Context) (contracts.CatalogIndex, error) {
 	repository.mu.RLock()
 	defer repository.mu.RUnlock()
@@ -335,16 +328,6 @@ func (repository *Repository) DeleteAppEventsBefore(_ context.Context, cutoff ti
 
 func (*Repository) RecoverInterruptedWork(context.Context, time.Time) ([]domain.AppEvent, error) {
 	return nil, nil
-}
-
-func upsertCatalog[T any](values []T, value T, key func(T) string) []T {
-	for index := range values {
-		if key(values[index]) == key(value) {
-			values[index] = clone(value)
-			return values
-		}
-	}
-	return append(values, clone(value))
 }
 
 func sortedValues[T any](values map[string]T, key func(T) string) []T {

@@ -15,7 +15,6 @@ import (
 	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
-	contracts "github.com/cineko-org/contracts/v3"
 )
 
 func TestListenLoopbackRejectsPublicBinding(t *testing.T) {
@@ -234,9 +233,8 @@ func TestSeatMapRequestReturnsWaitingWithoutOpeningBrowser(t *testing.T) {
 	t.Parallel()
 	var browserOpens atomic.Int32
 	server := &Server{
-		repository:  memoryrepo.New(),
-		clock:       webTestClock{time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)},
-		catalogLast: make(map[string]time.Time),
+		repository: memoryrepo.New(),
+		clock:      webTestClock{time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)},
 		factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
 			browserOpens.Add(1)
 			return &webProbeAutomation{probes: &atomic.Int32{}}, nil
@@ -244,7 +242,7 @@ func TestSeatMapRequestReturnsWaitingWithoutOpeningBrowser(t *testing.T) {
 	}
 	request := httptest.NewRequestWithContext(
 		t.Context(), http.MethodPost, "/api/catalog/seat-map",
-		strings.NewReader(`{"auditoriumId":"auditorium","force":false}`),
+		strings.NewReader(`{"auditoriumId":"auditorium"}`),
 	)
 	response := httptest.NewRecorder()
 	server.apiRoutes().ServeHTTP(response, request)
@@ -253,6 +251,52 @@ func TestSeatMapRequestReturnsWaitingWithoutOpeningBrowser(t *testing.T) {
 	}
 	if browserOpens.Load() != 0 {
 		t.Fatalf("seat-map request opened %d local browsers", browserOpens.Load())
+	}
+}
+
+func TestSeatMapRequestReturnsCentralStoredLayoutWithoutOpeningBrowser(t *testing.T) {
+	t.Parallel()
+	var browserOpens atomic.Int32
+	repository := memoryrepo.New()
+	want := domain.SeatMap{
+		AuditoriumID: "auditorium", Version: "layout-hash",
+		Seats: []domain.Seat{{ID: "seat-1", AuditoriumID: "auditorium", Label: "A1"}},
+	}
+	if err := repository.PutSeatMap(t.Context(), want); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		repository: repository,
+		clock:      webTestClock{time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)},
+		factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
+			browserOpens.Add(1)
+			return &webProbeAutomation{probes: &atomic.Int32{}}, nil
+		},
+	}
+	request := httptest.NewRequestWithContext(
+		t.Context(), http.MethodPost, "/api/catalog/seat-map",
+		strings.NewReader(`{"auditoriumId":"auditorium"}`),
+	)
+	response := httptest.NewRecorder()
+	server.apiRoutes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"version":"layout-hash"`) {
+		t.Fatalf("seat-map request = %d, %s", response.Code, response.Body.String())
+	}
+	if browserOpens.Load() != 0 {
+		t.Fatalf("seat-map request opened %d local browsers", browserOpens.Load())
+	}
+}
+
+func TestRemovedClientCatalogScanRoutesAreUnavailable(t *testing.T) {
+	t.Parallel()
+	server := &Server{repository: memoryrepo.New()}
+	for _, path := range []string{"/api/catalog/sync", "/api/catalog/auditoriums"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, nil)
+		server.apiRoutes().ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("POST %s status = %d", path, response.Code)
+		}
 	}
 }
 
@@ -276,15 +320,6 @@ type webProbeAutomation struct {
 	savedLogin    chan domain.AccountCredentials
 }
 
-func (*webProbeAutomation) ResolveTheater(context.Context, application.TheaterRef) (domain.Theater, error) {
-	return domain.Theater{}, nil
-}
-func (*webProbeAutomation) DiscoverAuditoriums(context.Context, domain.Theater, []string) ([]application.AuditoriumObservation, error) {
-	return nil, nil
-}
-func (*webProbeAutomation) CaptureSeatMap(context.Context, domain.Auditorium, domain.Showtime) (domain.SeatMap, error) {
-	return domain.SeatMap{}, nil
-}
 func (automation *webProbeAutomation) FindShowtimes(context.Context, application.ShowtimeQuery) ([]domain.Showtime, error) {
 	automation.probes.Add(1)
 	return nil, nil
@@ -534,89 +569,6 @@ func TestConfigurationTransferDetectsActiveTasks(t *testing.T) {
 	server.tasks["scan"] = taskState{Status: "completed"}
 	if server.HasActiveTasks() {
 		t.Fatal("completed task still blocks transfer")
-	}
-}
-
-func TestCatalogDatesAreDeduplicatedAndCapped(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, time.August, 9, 9, 0, 0, 0, time.UTC)
-	server := &Server{clock: webTestClock{now}}
-
-	defaults := server.catalogDates(nil)
-	if len(defaults) != maxCatalogDates || defaults[0] != "2026-08-09" || defaults[6] != "2026-08-15" {
-		t.Fatalf("default dates = %v", defaults)
-	}
-	values := server.catalogDates([]string{
-		"2026-08-10", "2026-08-10", "invalid", "2026-08-11", "2026-08-12",
-		"2026-08-13", "2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17",
-	})
-	if len(values) != maxCatalogDates || values[0] != "2026-08-10" || values[6] != "2026-08-16" {
-		t.Fatalf("filtered dates = %v", values)
-	}
-}
-
-func TestCatalogRequestCooldownIsPerTarget(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, time.August, 9, 9, 0, 0, 0, time.UTC)
-	server := &Server{clock: webTestClock{now}}
-
-	if _, allowed := server.reserveCatalogRequest("seat-map:a", seatMapCaptureCooldown); !allowed {
-		t.Fatal("first request was rejected")
-	}
-	if retryAfter, allowed := server.reserveCatalogRequest("seat-map:a", seatMapCaptureCooldown); allowed || retryAfter != seatMapCaptureCooldown {
-		t.Fatalf("duplicate request allowed/retry = %v/%s", allowed, retryAfter)
-	}
-	if _, allowed := server.reserveCatalogRequest("seat-map:b", seatMapCaptureCooldown); !allowed {
-		t.Fatal("different auditorium was rate limited")
-	}
-}
-
-func TestCatalogPreparationUsesCompleteCachedLayoutWithoutAutomation(t *testing.T) {
-	t.Parallel()
-	store := memoryrepo.New()
-	ctx := context.Background()
-	now := time.Date(2026, time.August, 9, 9, 0, 0, 0, time.UTC)
-	theater := domain.Theater{ProviderID: contracts.ProviderCGV, SourceKey: "서울/용산아이파크몰", Region: "서울", Name: "용산아이파크몰", ObservedAt: now}
-	theater.ID = contracts.CatalogID(contracts.ProviderCGV, "theater", theater.SourceKey)
-	auditorium := domain.Auditorium{TheaterID: theater.ID, SourceKey: theater.SourceKey + "/IMAX관", Name: "IMAX관", Capacity: 1, SeatMapVersion: "v1", ObservedAt: now}
-	auditorium.ID = contracts.CatalogID(contracts.ProviderCGV, "auditorium", auditorium.SourceKey)
-	seatMap := domain.SeatMap{
-		AuditoriumID: auditorium.ID, Version: "v1", ObservedAt: now,
-		Seats: []domain.Seat{{
-			ID: "seat-1", AuditoriumID: auditorium.ID, Label: "A1", Row: "A", Number: 1,
-			X: .5, Y: .5, Type: domain.SeatTypeStandard,
-		}},
-	}
-	if err := store.PutTheater(ctx, theater); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PutAuditorium(ctx, auditorium); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PutSeatMap(ctx, seatMap); err != nil {
-		t.Fatal(err)
-	}
-	factoryCalls := 0
-	server := &Server{
-		repository: store,
-		factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
-			factoryCalls++
-			return nil, nil
-		},
-		clock: webTestClock{now},
-	}
-	request := httptest.NewRequestWithContext(
-		ctx, http.MethodPost, "/api/catalog/sync",
-		strings.NewReader(`{"region":"서울","theater":"용산아이파크몰","dates":[],"headful":true,"force":false}`),
-	)
-	recorder := httptest.NewRecorder()
-
-	server.syncCatalog(recorder, request)
-	if recorder.Code != http.StatusOK || factoryCalls != 0 {
-		t.Fatalf("status/factory calls = %d/%d, body = %s", recorder.Code, factoryCalls, recorder.Body.String())
-	}
-	if !strings.Contains(recorder.Body.String(), `"cached":true`) {
-		t.Fatalf("response is not cached: %s", recorder.Body.String())
 	}
 }
 

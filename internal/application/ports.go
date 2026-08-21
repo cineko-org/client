@@ -37,20 +37,21 @@ type EventPublisher interface {
 }
 
 type TheaterRepository interface {
-	PutTheater(context.Context, domain.Theater) error
 	GetTheater(context.Context, string) (domain.Theater, error)
 	ListTheaters(context.Context) ([]domain.Theater, error)
 }
 
 type AuditoriumRepository interface {
-	PutAuditorium(context.Context, domain.Auditorium) error
 	GetAuditorium(context.Context, string) (domain.Auditorium, error)
 	ListAuditoriumsByTheater(context.Context, string) ([]domain.Auditorium, error)
 }
 
 type SeatMapRepository interface {
-	PutSeatMap(context.Context, domain.SeatMap) error
 	GetSeatMap(context.Context, string) (domain.SeatMap, error)
+}
+
+type CatalogRepository interface {
+	GetCatalog(context.Context) (contracts.CatalogIndex, error)
 }
 
 type PresetRepository interface {
@@ -80,11 +81,6 @@ type ExternalOperationRepository interface {
 	PutExternalOperation(context.Context, domain.ExternalOperation) error
 }
 
-type GlobalCatalogRepository interface {
-	PublishCatalogSnapshot(context.Context, contracts.CatalogSnapshot) error
-	GetCatalog(context.Context) (contracts.CatalogIndex, error)
-}
-
 type TheaterRef struct {
 	Region string
 	Name   string
@@ -93,12 +89,6 @@ type TheaterRef struct {
 type AuditoriumObservation struct {
 	Auditorium            domain.Auditorium
 	RepresentativeShowing *domain.Showtime
-}
-
-type CatalogGateway interface {
-	ResolveTheater(context.Context, TheaterRef) (domain.Theater, error)
-	DiscoverAuditoriums(context.Context, domain.Theater, []string) ([]AuditoriumObservation, error)
-	CaptureSeatMap(context.Context, domain.Auditorium, domain.Showtime) (domain.SeatMap, error)
 }
 
 type ShowtimeQuery struct {

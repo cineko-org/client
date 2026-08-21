@@ -14,10 +14,10 @@ github.com/cenkalti/backoff/v5
 # github.com/cespare/xxhash/v2 v2.3.0
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
-# github.com/cineko-org/contracts/v3 v3.3.0
+# github.com/cineko-org/contracts/v3 v3.4.0
 ## explicit; go 1.26
 github.com/cineko-org/contracts/v3
-# github.com/cineko-org/probe/v2 v2.3.1
+# github.com/cineko-org/probe/v2 v2.5.0
 ## explicit; go 1.26
 github.com/cineko-org/probe/v2/internal/bootstrap
 github.com/cineko-org/probe/v2/internal/egress
@@ -29,8 +29,6 @@ github.com/cineko-org/probe/v2/probe
 # github.com/danieljoos/wincred v1.2.3
 ## explicit; go 1.18
 github.com/danieljoos/wincred
-# github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
-## explicit
 # github.com/deckarep/golang-set/v2 v2.9.0
 ## explicit; go 1.18
 github.com/deckarep/golang-set/v2
@@ -115,8 +113,8 @@ github.com/samber/lo/internal/constraints
 github.com/samber/lo/internal/xrand
 github.com/samber/lo/internal/xtime
 github.com/samber/lo/mutable
-# github.com/stretchr/testify v1.12.1
-## explicit; go 1.17
+# github.com/stretchr/objx v0.5.3
+## explicit; go 1.20
 # github.com/tkrajina/go-reflector v0.5.8
 ## explicit; go 1.17
 github.com/tkrajina/go-reflector/reflector

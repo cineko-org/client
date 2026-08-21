@@ -17,7 +17,7 @@ import (
 
 func TestEmbeddedProbeRejectsIncompleteRuntimeIdentity(t *testing.T) {
 	if _, err := startEmbeddedProbe(
-		context.Background(), nil, t.TempDir(), desktopRuntimeIdentity{}, nil, nil,
+		context.Background(), nil, t.TempDir(), desktopRuntimeIdentity{},
 	); err == nil {
 		t.Fatal("incomplete embedded Probe runtime identity accepted")
 	}

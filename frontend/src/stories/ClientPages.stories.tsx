@@ -107,11 +107,10 @@ function NewPresetStory() {
     <Canvas><PresetPageView
       catalog={catalog} form={form} region={region} theater={theater} auditoriumId={auditoriumId}
       auditoriums={availableAuditoriums} seatMap={auditoriumId ? seatMap : null} pickedSeats={pickedSeats}
-      catalogDates="" catalogMessage={theater && availableAuditoriums.length === 0 ? '이 Story에서는 용산아이파크몰 좌석만 준비되어 있습니다.' : ''}
-      loadingCatalog={false} saving={false} forceCapture={false} onBack={noop} onRefreshCatalog={noop}
+      catalogMessage={theater && availableAuditoriums.length === 0 ? '이 Story에서는 용산아이파크몰 좌석만 준비되어 있습니다.' : ''}
+      loadingCatalog={false} saving={false} onBack={noop} onRefreshCatalog={noop}
       onFormChange={setForm} onRegionChange={(value) => { setRegion(value); setTheater(''); setAuditoriumId(''); }}
       onTheaterChange={(value) => { setTheater(value); setAuditoriumId(''); }} onAuditoriumChange={setAuditoriumId}
-      onCatalogDatesChange={noop} onDiscover={noop} onCapture={noop} onForceCaptureChange={noop}
       onToggleSeat={(label) => setPickedSeats((current) => current.includes(label) ? current.filter((item) => item !== label) : [...current, label])}
       onClearSeats={() => setPickedSeats([])} onSave={noop} onReset={() => { setForm(initialPresetForm); setPickedSeats([]); }}
     /></Canvas>
@@ -123,10 +122,9 @@ export const EditPreset: Story = {
     <Canvas><PresetPageView
       catalog={catalog} form={{ ...initialPresetForm, id: presets[0].id, name: presets[0].name, seatCount: 2, preferredRows: 'H, I' }}
       region="서울" theater="용산아이파크몰" auditoriumId={imaxSeatMapFixture.seatMap.auditoriumId} auditoriums={auditoriums} seatMap={seatMap}
-      pickedSeats={imaxSeatMapFixture.pickedSeats} catalogDates="2026-08-20" catalogMessage="" loadingCatalog={false} saving={false} forceCapture={false}
+      pickedSeats={imaxSeatMapFixture.pickedSeats} catalogMessage="" loadingCatalog={false} saving={false}
       onBack={noop} onRefreshCatalog={noop} onFormChange={noop} onRegionChange={noop} onTheaterChange={noop}
-      onAuditoriumChange={noop} onCatalogDatesChange={noop} onDiscover={noop} onCapture={noop}
-      onForceCaptureChange={noop} onToggleSeat={noop} onClearSeats={noop} onSave={noop} onReset={noop}
+      onAuditoriumChange={noop} onToggleSeat={noop} onClearSeats={noop} onSave={noop} onReset={noop}
     /></Canvas>
   ),
 };
