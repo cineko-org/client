@@ -66,7 +66,7 @@ if PATH="$test_root/bin:$PATH" \
   printf 'registration accepted an incomplete Client release\n' >&2
   exit 1
 fi
-[[ "$(wc -l <"$payloads" | tr -d ' ')" == 1 ]]
+jq -se 'length == 1' "$payloads" >/dev/null
 
 printf 'linux\n' >"$assets/cineko-client-v2.3.0-linux-amd64.tar.gz"
 if PATH="$test_root/bin:$PATH" \
@@ -82,5 +82,5 @@ if PATH="$test_root/bin:$PATH" \
   printf 'registration accepted a Playwright target that differs from the locked driver\n' >&2
   exit 1
 fi
-[[ "$(wc -l <"$payloads" | tr -d ' ')" == 1 ]]
+jq -se 'length == 1' "$payloads" >/dev/null
 printf 'Client release registration checks passed\n'
