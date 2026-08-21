@@ -21,19 +21,24 @@ type ScheduleWindow struct {
 
 // Validate checks the user-facing schedule window without applying it.
 func (window ScheduleWindow) Validate() error {
-	for name, value := range map[string]string{
-		"earliest time": window.Earliest,
-		"latest time":   window.Latest,
-	} {
-		if value == "" {
-			continue
-		}
-		if _, err := time.Parse(scheduleTimeLayout, value); err != nil {
-			return fmt.Errorf("invalid %s %q: %w", name, value, err)
-		}
+	if err := validateScheduleBound("earliest time", window.Earliest); err != nil {
+		return err
+	}
+	if err := validateScheduleBound("latest time", window.Latest); err != nil {
+		return err
 	}
 	if window.Earliest != "" && window.Latest != "" && window.Earliest == window.Latest {
 		return fmt.Errorf("earliest time and latest time must differ")
+	}
+	return nil
+}
+
+func validateScheduleBound(name, value string) error {
+	if value == "" {
+		return nil
+	}
+	if _, err := time.Parse(scheduleTimeLayout, value); err != nil {
+		return fmt.Errorf("invalid %s %q: %w", name, value, err)
 	}
 	return nil
 }
