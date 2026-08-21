@@ -1,7 +1,7 @@
 import { Group, Modal, Stack, Text } from '@mantine/core';
 import { DangerButton, PrimaryButton, SecondaryButton } from '../../../components/core/Actions';
 import { EmptyState, Section } from '../../../components/core/Section';
-import type { Preset } from '../../../api/types';
+import type { Preset } from '../../../api/proto';
 import { presetSummary } from '../model';
 
 export interface PresetListViewProps {

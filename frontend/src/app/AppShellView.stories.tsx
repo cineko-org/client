@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { AppShellView } from '../features/shell/ui/AppShellView';
 import { HomePage } from './HomePage';
+import { authenticatedAccount, directNetwork, unauthenticatedAccount } from '../stories/fixtures';
 
 const noop = () => undefined;
 
@@ -11,8 +12,8 @@ const meta = {
     activeSection: 'home',
     loading: false,
     connection: { status: 'ready', message: '', lastSuccessfulAt: '2026-08-12T08:00:00Z', retrying: false },
-    account: { status: 'authenticated', authenticated: true },
-    network: { mode: 'direct' },
+    account: authenticatedAccount,
+    network: directNetwork,
     desktopAvailable: true,
     unreadNotices: 2,
     feedback: null,
@@ -29,7 +30,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Home: Story = {};
-export const DirectAndSignedOut: Story = { args: { account: { status: 'unauthenticated', authenticated: false }, network: { mode: 'direct' }, unreadNotices: 0 } };
+export const DirectAndSignedOut: Story = { args: { account: unauthenticatedAccount, network: directNetwork, unreadNotices: 0 } };
 export const Loading: Story = { args: { loading: true } };
 export const Feedback: Story = { args: { feedback: { tone: 'success', message: '프록시 설정을 저장했습니다.' } } };
 export const CentralUnavailable: Story = {

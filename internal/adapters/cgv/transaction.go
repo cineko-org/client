@@ -8,39 +8,43 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cineko-org/client/internal/domain"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/proto"
 )
 
 var moneyPattern = regexp.MustCompile(`(?:총\s*결제금액|결제금액|총금액)\s*([\d,]+원)`)
 
+func stringPointer(value string) *string { return &value }
+
 func (adapter *Adapter) PreparePayment(
 	ctx context.Context,
-	showtime domain.Showtime,
+	showtime *catalogpb.Showtime,
 	seatLabels []string,
-) (domain.BookingDraft, error) {
+) (*clientpb.Reservation, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return domain.BookingDraft{}, err
+		return nil, err
 	}
 	if err := adapter.selectBookingSeats(seatLabels); err != nil {
-		return domain.BookingDraft{}, err
+		return nil, err
 	}
 	if err := adapter.confirmSeatSelection(); err != nil {
-		return domain.BookingDraft{}, err
+		return nil, err
 	}
 	if err := adapter.checkRequiredAgreements(); err != nil {
-		return domain.BookingDraft{}, err
+		return nil, err
 	}
 	total, err := adapter.paymentTotal()
 	if err != nil {
-		return domain.BookingDraft{}, err
+		return nil, err
 	}
 	adapter.preparedPayment = true
-	return domain.BookingDraft{
-		Showtime: showtime, SeatLabels: append([]string(nil), seatLabels...),
-		TotalPrice: total,
-	}, nil
+	return clientpb.Reservation_builder{
+		SeatLabels: append([]string(nil), seatLabels...), TotalPrice: &total,
+		Showtime: proto.CloneOf(showtime),
+	}.Build(), nil
 }
 
 func (adapter *Adapter) selectBookingSeats(seatLabels []string) error {
@@ -80,56 +84,62 @@ func (adapter *Adapter) paymentTotal() (string, error) {
 
 func (adapter *Adapter) PrepareCancellation(
 	ctx context.Context,
-	reservation domain.Reservation,
-) (domain.CancellationDraft, error) {
+	reservation *clientpb.Reservation,
+) (*clientpb.WebUICancellationResult, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return domain.CancellationDraft{}, err
+		return nil, err
 	}
 	if err := adapter.navigate(homeURL); err != nil {
-		return domain.CancellationDraft{}, err
+		return nil, err
 	}
 	clicked, err := adapter.clickButtonExact("티켓")
 	if err != nil {
-		return domain.CancellationDraft{}, err
+		return nil, err
 	}
 	if !clicked {
-		return domain.CancellationDraft{}, fmt.Errorf("%w: ticket history button not found", ErrUIContractChanged)
+		return nil, fmt.Errorf("%w: ticket history button not found", ErrUIContractChanged)
 	}
 	if err := adapter.wait(800 * time.Millisecond); err != nil {
-		return domain.CancellationDraft{}, err
+		return nil, err
 	}
-	clicked, err = adapter.openReservation(reservation.BookingNumber, reservation.Draft.Showtime.Movie)
+	showtime := reservation.GetShowtime()
+	movieTitle := ""
+	if showtime != nil && showtime.GetMovie() != nil {
+		movieTitle = showtime.GetMovie().GetTitle()
+	}
+	clicked, err = adapter.openReservation(reservation.GetBookingNumber(), movieTitle)
 	if err != nil {
-		return domain.CancellationDraft{}, err
+		return nil, err
 	}
 	if !clicked {
-		return domain.CancellationDraft{}, fmt.Errorf("reservation %s was not found", reservation.BookingNumber)
+		return nil, fmt.Errorf("reservation %s was not found", reservation.GetBookingNumber())
 	}
 	clicked, err = adapter.clickButtonMatching(`예매.*취소|예약.*취소`)
 	if err != nil {
-		return domain.CancellationDraft{}, err
+		return nil, err
 	}
 	if !clicked {
-		return domain.CancellationDraft{}, fmt.Errorf("%w: cancellation button not found", ErrUIContractChanged)
+		return nil, fmt.Errorf("%w: cancellation button not found", ErrUIContractChanged)
 	}
 	if err := adapter.wait(500 * time.Millisecond); err != nil {
-		return domain.CancellationDraft{}, err
+		return nil, err
 	}
 	body, err := adapter.bodyText()
 	if err != nil {
-		return domain.CancellationDraft{}, err
+		return nil, err
 	}
 	refund := ""
 	if match := regexp.MustCompile(`(?:환불금액|취소금액)\s*([\d,]+원)`).FindStringSubmatch(normalize(body)); match != nil {
 		refund = match[1]
 	}
 	adapter.preparedCancel = true
-	return domain.CancellationDraft{
-		ReservationID: reservation.ID, BookingNumber: reservation.BookingNumber,
-		RefundAmount: refund,
-	}, nil
+	return clientpb.WebUICancellationResult_builder{
+		ReservationId: stringPointer(reservation.GetId()),
+		BookingNumber: stringPointer(reservation.GetBookingNumber()),
+		RefundAmount:  &refund,
+	}.Build(), nil
 }
 
 func (adapter *Adapter) CommitCancellation(ctx context.Context) error {

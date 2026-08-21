@@ -1,4 +1,9 @@
-import type { Seat, SeatMap, SeatType } from '../api/types';
+import { create } from '@bufbuild/protobuf';
+import {
+	LayoutSchema, LayoutZoneSchema, SeatSchema, SnapshotSchema,
+	type Seat, type Snapshot,
+} from '../api/proto';
+import type { SeatType } from '../features/presets/model';
 
 type SeatTuple = readonly [
   label: string, x: number, y: number, type: SeatType, leftAisle: boolean, rightAisle: boolean,
@@ -14,24 +19,30 @@ export interface LiveSeatMapFixture {
   layoutHeight: number;
   observedAt: string;
   pickedSeats: string[];
-  seatMap: SeatMap;
+  seatMap: Snapshot;
 }
 
 function createSeatMap(
   auditoriumId: string, zoneName: string, saleFormName: string, tuples: readonly SeatTuple[],
-): SeatMap {
+): Snapshot {
   const seats: Seat[] = tuples.map(([label, x, y, type, leftAisle, rightAisle]) => {
     const match = /^([A-Z]+)(\d+)$/.exec(label);
     if (!match) throw new Error(`Invalid captured CGV seat label: ${label}`);
-    return {
-      id: `${auditoriumId}:${label}`, label, row: match[1], number: Number(match[2]), x, y, type,
-      zoneName, saleFormName: type === 'wheelchair' ? '장애인석' : saleFormName, leftAisle, rightAisle,
-    };
+    return create(SeatSchema, {
+			id: `${auditoriumId}:${label}`, auditoriumId, label, row: match[1], number: Number(match[2]), x, y, type,
+			zoneName, saleFormName: type === 'wheelchair' ? '장애인석' : saleFormName, leftAisle, rightAisle,
+		});
   });
-  return {
-    auditoriumId, version: `live-cgv-${auditoriumId}-20260812`,
-    seats, zones: zoneName ? [{ name: zoneName }] : [],
-  };
+  return create(SnapshotSchema, {
+		id: `live-${auditoriumId}`,
+		auditoriumId,
+		layoutHash: `live-cgv-${auditoriumId}-20260812`,
+		capacity: seats.length,
+		layout: create(LayoutSchema, {
+			seats,
+			zones: zoneName ? [create(LayoutZoneSchema, { name: zoneName })] : [],
+		}),
+	});
 }
 
 const imaxSeats: readonly SeatTuple[] = [

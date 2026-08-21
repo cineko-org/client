@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	contracts "github.com/cineko-org/contracts/v3"
 )
 
 const seatDataPath = "/api/v1/booking/searchIfSeatData"
@@ -154,7 +153,7 @@ func appendSeatDataItem(
 		saleFormName := saleForms[source.SaleForm]
 		features := seatFeatures(source, saleFormName)
 		snapshot.Seats = append(snapshot.Seats, domain.Seat{
-			ID: contracts.SeatID(auditoriumID, label), AuditoriumID: auditoriumID,
+			ID: seatID(auditoriumID, label), AuditoriumID: auditoriumID,
 			Label: label, Row: strings.ToUpper(strings.TrimSpace(source.Row)),
 			Number: number, X: board.centerX(source.XStart, source.XEnd),
 			Y: board.centerY(source.YStart, source.YEnd), Type: sourceSeatType(source, saleFormName),

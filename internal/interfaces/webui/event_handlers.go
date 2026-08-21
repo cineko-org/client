@@ -6,50 +6,46 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cineko-org/client/internal/domain"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 )
 
 type appEventRepository interface {
-	PutAppEvent(context.Context, domain.AppEvent) error
-	ListAppEvents(context.Context, string, int) ([]domain.AppEvent, error)
+	PutAppEvent(context.Context, *clientpb.Resource) error
+	ListAppEvents(context.Context, string, int) ([]*clientpb.Resource, error)
 	MarkAppEventsRead(context.Context, string, time.Time) error
 	DeleteAppEvents(context.Context, string) error
 	DeleteAppEventsBefore(context.Context, time.Time) error
 }
 
 type startupRecoveryRepository interface {
-	RecoverInterruptedWork(context.Context, time.Time) ([]domain.AppEvent, error)
+	RecoverInterruptedWork(context.Context, time.Time) ([]*clientpb.Resource, error)
 }
 
-func (server *Server) addEvent(userID, kind string, tone domain.EventTone, message string) {
+func (server *Server) addEvent(event *clientpb.AppEvent) {
 	root := server.rootContext
 	if root == nil {
 		root = context.Background()
 	}
-	_ = server.persistEvent(context.WithoutCancel(root), domain.AppEvent{
-		UserID: userID, Kind: kind, Tone: tone, Message: message, CreatedAt: server.clock.Now(),
-	})
+	_ = server.persistEvent(context.WithoutCancel(root), event)
 }
 
 // RecordSystemEvent exposes the durable notification boundary to the desktop
 // shell for startup and configuration failures.
-func (server *Server) RecordSystemEvent(userID, kind string, tone domain.EventTone, message string) {
-	server.addEvent(userID, kind, tone, message)
+func (server *Server) RecordSystemEvent(event *clientpb.AppEvent) {
+	server.addEvent(event)
 }
 
 // RecordLocalSystemEvent deliberately skips external publishers. It is used
 // when a publisher itself fails, preventing recursive delivery attempts.
-func (server *Server) RecordLocalSystemEvent(userID, kind string, tone domain.EventTone, message string) {
+func (server *Server) RecordLocalSystemEvent(event *clientpb.AppEvent) {
 	root := server.rootContext
 	if root == nil {
 		root = context.Background()
 	}
-	_ = server.persistEventLocally(context.WithoutCancel(root), domain.AppEvent{
-		UserID: userID, Kind: kind, Tone: tone, Message: message, CreatedAt: server.clock.Now(),
-	})
+	_ = server.persistEventLocally(context.WithoutCancel(root), event)
 }
 
-func (server *Server) persistEvent(ctx context.Context, event domain.AppEvent) error {
+func (server *Server) persistEvent(ctx context.Context, event *clientpb.AppEvent) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -65,7 +61,7 @@ func (server *Server) persistEvent(ctx context.Context, event domain.AppEvent) e
 	return nil
 }
 
-func (server *Server) persistEventLocally(ctx context.Context, event domain.AppEvent) error {
+func (server *Server) persistEventLocally(ctx context.Context, event *clientpb.AppEvent) error {
 	repository, ok := server.repository.(appEventRepository)
 	if !ok {
 		return nil
@@ -74,21 +70,44 @@ func (server *Server) persistEventLocally(ctx context.Context, event domain.AppE
 		ctx = context.Background()
 	}
 	event = server.normalizedEvent(event)
-	if err := repository.PutAppEvent(ctx, event); err != nil {
+	if err := repository.PutAppEvent(ctx, resourceFromAppEvent(event)); err != nil {
 		server.recordMaintenanceFailure("event-log", err)
 		return err
 	}
 	return nil
 }
 
-func (server *Server) normalizedEvent(event domain.AppEvent) domain.AppEvent {
-	if event.ID == "" {
-		event.ID = server.ids.NewID()
+func (server *Server) normalizedEvent(event *clientpb.AppEvent) *clientpb.AppEvent {
+	if event == nil {
+		event = &clientpb.AppEvent{}
 	}
-	if event.CreatedAt.IsZero() {
-		event.CreatedAt = server.clock.Now()
+	if event.GetId() == "" {
+		event.SetId(server.ids.NewID())
+	}
+	if event.GetCreatedAt() == nil {
+		event.SetCreatedAt(timestamp(server.clock.Now()))
 	}
 	return event
+}
+
+func appErrorEvent(userID, kind, message string) *clientpb.AppEvent {
+	return clientpb.AppEvent_builder{UserId: &userID, Kind: &kind, Message: &message, Error: clientpb.EventError_builder{}.Build()}.Build()
+}
+
+func appSuccessEvent(userID, kind, message string) *clientpb.AppEvent {
+	return clientpb.AppEvent_builder{UserId: &userID, Kind: &kind, Message: &message, Success: clientpb.EventSuccess_builder{}.Build()}.Build()
+}
+
+func appWarningEvent(userID, kind, message string) *clientpb.AppEvent {
+	return clientpb.AppEvent_builder{UserId: &userID, Kind: &kind, Message: &message, Warning: clientpb.EventWarning_builder{}.Build()}.Build()
+}
+
+func resourceFromAppEvent(event *clientpb.AppEvent) *clientpb.Resource {
+	createdAt := time.Time{}
+	if event.GetCreatedAt() != nil {
+		createdAt = event.GetCreatedAt().AsTime()
+	}
+	return clientpb.Resource_builder{Identity: resourceIdentity(event.GetId(), createdAt), AppEvent: event}.Build()
 }
 
 func (server *Server) events(writer http.ResponseWriter, request *http.Request) {
@@ -98,7 +117,7 @@ func (server *Server) events(writer http.ResponseWriter, request *http.Request) 
 	}
 	repository, ok := server.repository.(appEventRepository)
 	if !ok {
-		server.writeJSON(writer, http.StatusOK, []domain.AppEvent{})
+		writeProtoJSON(writer, http.StatusOK, clientpb.WebUIResourceList_builder{}.Build())
 		return
 	}
 	values, err := repository.ListAppEvents(request.Context(), userID, 100)
@@ -106,32 +125,20 @@ func (server *Server) events(writer http.ResponseWriter, request *http.Request) 
 		server.writeError(writer, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, values)
+	writeProtoJSON(writer, http.StatusOK, clientpb.WebUIResourceList_builder{Resources: values}.Build())
 }
 
 func (server *Server) createEvent(writer http.ResponseWriter, request *http.Request) {
-	var input struct {
-		UserID  string           `json:"userId"`
-		Kind    string           `json:"kind"`
-		Tone    domain.EventTone `json:"tone"`
-		Message string           `json:"message"`
-	}
-	if !server.decode(writer, request, &input) {
+	input := &clientpb.AppEvent{}
+	if !decodeProtoJSON(server, writer, request, input) {
 		return
 	}
-	input.UserID = strings.TrimSpace(input.UserID)
-	input.Message = strings.TrimSpace(input.Message)
-	if input.UserID == "" || input.Message == "" {
-		server.writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "알림 내용을 입력하세요."})
-		return
-	}
-	event := domain.AppEvent{ID: server.ids.NewID(), UserID: input.UserID, Kind: input.Kind,
-		Tone: input.Tone, Message: input.Message, CreatedAt: server.clock.Now()}
+	event := server.normalizedEvent(input)
 	if err := server.persistEvent(request.Context(), event); err != nil {
 		server.writeError(writer, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusCreated, event)
+	writeProtoJSON(writer, http.StatusCreated, resourceFromAppEvent(event))
 }
 
 func (server *Server) readEvents(writer http.ResponseWriter, request *http.Request) {
@@ -151,20 +158,18 @@ func (server *Server) mutateEvents(
 	request *http.Request,
 	mutation func(context.Context, appEventRepository, string) error,
 ) {
-	var input struct {
-		UserID string `json:"userId"`
-	}
-	if !server.decode(writer, request, &input) {
+	input := &clientpb.WebUIAppEventUserRequest{}
+	if !decodeProtoJSON(server, writer, request, input) {
 		return
 	}
 	repository, ok := server.repository.(appEventRepository)
 	if !ok {
-		server.writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+		writeProtoJSON(writer, http.StatusOK, actionStatus(false))
 		return
 	}
-	if err := mutation(request.Context(), repository, strings.TrimSpace(input.UserID)); err != nil {
+	if err := mutation(request.Context(), repository, strings.TrimSpace(input.GetUserId())); err != nil {
 		server.writeError(writer, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+	writeProtoJSON(writer, http.StatusOK, actionStatus(false))
 }

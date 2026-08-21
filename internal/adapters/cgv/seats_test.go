@@ -5,14 +5,13 @@ import (
 	"testing"
 
 	"github.com/cineko-org/client/internal/domain"
-	contracts "github.com/cineko-org/contracts/v3"
 )
 
 func TestCommandedShowtimeUsesExactProviderTupleBeforeDisplayHandoff(t *testing.T) {
 	command := domain.Showtime{
-		ProviderID:     contracts.ProviderCGV,
+		ProviderID:     providerCGV,
 		SourceKey:      "0056/2026-08-20/0007/0004",
-		MovieID:        contracts.CatalogID(contracts.ProviderCGV, "movie", "00001234"),
+		MovieID:        catalogID(providerCGV, "movie", "00001234"),
 		Movie:          "stale command display",
 		TheaterID:      "theater",
 		TheaterName:    "용산아이파크몰",

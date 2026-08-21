@@ -8,16 +8,20 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
 
 func TestBestShowtimeDoesNotTrustPossiblyStaleSeatCount(t *testing.T) {
 	t.Parallel()
 
-	showtime, ok := bestShowtime([]domain.Showtime{
-		{ID: "sold-out", SoldOut: true, AvailableSeats: 2},
-		{ID: "open", Date: "2026-08-10", StartsAt: "20:30", AvailableSeats: 0},
+	showtime, ok := bestShowtime([]*catalogpb.Showtime{
+		showtimeProtoFromDomain(domain.Showtime{ID: "sold-out", SoldOut: true, AvailableSeats: 2}),
+		showtimeProtoFromDomain(domain.Showtime{ID: "open", SourceKey: "cgv/2026-08-10/a/1", Date: "2026-08-10", StartsAt: "20:30", AvailableSeats: 0}),
 	})
-	if !ok || showtime.ID != "open" {
+	if !ok || showtime.GetId() != "open" {
 		t.Fatalf("bestShowtime() = %+v, %t", showtime, ok)
 	}
 }
@@ -27,14 +31,8 @@ func TestBookingWorkerStopsAtPreparedPaymentWhenCommitIsDisabled(t *testing.T) {
 
 	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
 	repository := &workerRepository{
-		job: domain.MonitorJob{
-			ID: "monitor-1", UserID: "user-1", PresetID: "preset-1", MovieID: "movie_1", Movie: "오디세이",
-			TargetDates: []string{"2026-08-10"}, PollInterval: 5 * time.Second,
-		},
-		preset: domain.Preset{
-			ID: "preset-1", UserID: "user-1", TheaterID: "theater-1", AuditoriumID: "auditorium-1",
-			SeatCount: 1, SeatPreference: domain.SeatPreference{CandidateSeats: []string{"H10"}, Adjacency: domain.SeatAdjacencyRequired},
-		},
+		job:        monitorFixtureForTest("monitor-1", "user-1", "preset-1", "오디세이", false, []string{"2026-08-10"}),
+		preset:     presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"H10"}),
 		theater:    domain.Theater{ID: "theater-1"},
 		auditorium: domain.Auditorium{ID: "auditorium-1"},
 		seatMap: domain.SeatMap{AuditoriumID: "auditorium-1", Seats: []domain.Seat{{
@@ -42,7 +40,7 @@ func TestBookingWorkerStopsAtPreparedPaymentWhenCommitIsDisabled(t *testing.T) {
 		}}},
 	}
 	gateway := &workerGateway{
-		showtimes: []domain.Showtime{{ID: "showtime-1", Date: "2026-08-10", StartsAt: "20:30"}},
+		showtimes: []*catalogpb.Showtime{showtimeProtoFromDomain(domain.Showtime{ID: "showtime-1", SourceKey: "cgv/2026-08-10/a/1", Date: "2026-08-10", StartsAt: "20:30"})},
 		live:      []domain.LiveSeat{{Label: "H10", Available: true}},
 	}
 	worker := NewBookingWorker(BookingWorkerDependencies{
@@ -56,15 +54,15 @@ func TestBookingWorkerStopsAtPreparedPaymentWhenCommitIsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if reservation.Status != "prepared" || repository.job.Status != domain.MonitorTriggered {
+	if reservation.GetReservation().GetPrepared() == nil || repository.job.GetState().GetTriggered() == nil {
 		t.Fatalf("reservation/job = %+v / %+v", reservation, repository.job)
 	}
-	if repository.reservation.ID == "" {
+	if repository.reservation.GetId() == "" {
 		t.Fatal("prepared reservation was not persisted")
 	}
 	wantDates := []string{"2026-08-10"}
-	if fmt.Sprint(gateway.lastQuery.TargetDates) != fmt.Sprint(wantDates) {
-		t.Fatalf("FindShowtimes target dates = %v, want %v", gateway.lastQuery.TargetDates, wantDates)
+	if fmt.Sprint(gateway.lastTargetDates) != fmt.Sprint(wantDates) {
+		t.Fatalf("FindShowtimes target dates = %v, want %v", gateway.lastTargetDates, wantDates)
 	}
 }
 
@@ -72,18 +70,16 @@ func TestMonitorServiceDefaultsRollingWeekdayHorizon(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	repository := &workerRepository{preset: domain.Preset{ID: "preset-1", UserID: "user-1"}}
+	repository := &workerRepository{preset: presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"A1"})}
 	service := NewMonitorService(repository, repository, &sequenceIDs{}, fixedClock{now: now})
 
-	job, err := service.Create(context.Background(), CreateMonitorRequest{
-		UserID: "user-1", PresetID: "preset-1", MovieID: "movie_1", Movie: "오디세이",
-		TargetWeekdays: []int{int(time.Saturday)}, PollInterval: 5 * time.Second,
-	})
+	resource, err := service.Create(context.Background(), monitorMutationForTest(0, "", "", "user-1", "preset-1", openingMonitorModeForTest(), "movie_1", "오디세이", nil, []int{int(time.Saturday)}, 0, "", "", 5*time.Second, 0))
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if job.SearchHorizonDays != domain.DefaultSearchHorizonDays {
-		t.Fatalf("SearchHorizonDays = %d, want %d", job.SearchHorizonDays, domain.DefaultSearchHorizonDays)
+	job := resource.GetMonitor()
+	if job.GetSearchHorizonDays() != defaultSearchHorizonDays {
+		t.Fatalf("SearchHorizonDays = %d, want %d", job.GetSearchHorizonDays(), defaultSearchHorizonDays)
 	}
 }
 
@@ -91,13 +87,10 @@ func TestMonitorServiceRejectsExpiredExactDates(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	repository := &workerRepository{preset: domain.Preset{ID: "preset-1", UserID: "user-1"}}
+	repository := &workerRepository{preset: presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"A1"})}
 	service := NewMonitorService(repository, repository, &sequenceIDs{}, fixedClock{now: now})
 
-	_, err := service.Create(context.Background(), CreateMonitorRequest{
-		UserID: "user-1", PresetID: "preset-1", MovieID: "movie_1", Movie: "오디세이",
-		TargetDates: []string{"2026-08-08"}, PollInterval: 5 * time.Second,
-	})
+	_, err := service.Create(context.Background(), monitorMutationForTest(0, "", "", "user-1", "preset-1", openingMonitorModeForTest(), "movie_1", "오디세이", []string{"2026-08-08"}, nil, 0, "", "", 5*time.Second, 0))
 	if !errors.Is(err, ErrMonitorExpired) {
 		t.Fatalf("Create() error = %v, want %v", err, ErrMonitorExpired)
 	}
@@ -108,15 +101,8 @@ func TestCancellationMonitorFailsWhenShowtimeIsNotOpen(t *testing.T) {
 
 	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
 	repository := &workerRepository{
-		job: domain.MonitorJob{
-			ID: "monitor-1", UserID: "user-1", PresetID: "preset-1", MovieID: "movie_1", Movie: "오디세이",
-			Mode: domain.MonitorModeCancellation, TargetDates: []string{"2026-08-10"},
-			PollInterval: 5 * time.Second,
-		},
-		preset: domain.Preset{
-			ID: "preset-1", UserID: "user-1", TheaterID: "theater-1", AuditoriumID: "auditorium-1",
-			SeatCount: 1, SeatPreference: domain.SeatPreference{CandidateSeats: []string{"H10"}, Adjacency: domain.SeatAdjacencyRequired},
-		},
+		job:     monitorFixtureForTest("monitor-1", "user-1", "preset-1", "오디세이", true, []string{"2026-08-10"}),
+		preset:  presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"H10"}),
 		theater: domain.Theater{ID: "theater-1"}, auditorium: domain.Auditorium{ID: "auditorium-1"},
 		seatMap: domain.SeatMap{AuditoriumID: "auditorium-1"},
 	}
@@ -132,27 +118,27 @@ func TestCancellationMonitorFailsWhenShowtimeIsNotOpen(t *testing.T) {
 	if !errors.Is(err, ErrBookingNotOpen) {
 		t.Fatalf("Run() error = %v, want %v", err, ErrBookingNotOpen)
 	}
-	if repository.job.Status != domain.MonitorFailed {
-		t.Fatalf("monitor status = %s, want failed", repository.job.Status)
+	if repository.job.GetState().GetFailed() == nil {
+		t.Fatalf("monitor status = %s, want failed", monitorStateName(repository.job))
 	}
 }
 
 type workerRepository struct {
-	job         domain.MonitorJob
-	preset      domain.Preset
+	job         *clientpb.Monitor
+	preset      *clientpb.Preset
 	theater     domain.Theater
 	auditorium  domain.Auditorium
 	seatMap     domain.SeatMap
-	reservation domain.Reservation
+	reservation *clientpb.Reservation
 }
 
 func (repository *workerRepository) AcquireMonitor(
 	_ context.Context, id, _ string, _ time.Time, _ time.Duration,
-) (domain.MonitorJob, error) {
-	if id != repository.job.ID {
-		return domain.MonitorJob{}, ErrNotFound
+) (*clientpb.Resource, error) {
+	if repository.job == nil || id != repository.job.GetId() {
+		return nil, ErrNotFound
 	}
-	return repository.job, nil
+	return resourceForMonitor(cloneMonitor(repository.job), 0), nil
 }
 
 func (repository *workerRepository) RenewMonitor(
@@ -162,72 +148,91 @@ func (repository *workerRepository) RenewMonitor(
 }
 
 func (repository *workerRepository) ReleaseMonitor(context.Context, string, string) error { return nil }
-func (repository *workerRepository) PutMonitor(_ context.Context, job domain.MonitorJob) error {
-	repository.job = job
+func (repository *workerRepository) PutMonitor(_ context.Context, resource *clientpb.Resource) error {
+	job, _, err := monitorMessage(resource)
+	if err != nil {
+		return err
+	}
+	repository.job = cloneMonitor(job)
 	return nil
 }
-func (repository *workerRepository) GetMonitor(context.Context, string) (domain.MonitorJob, error) {
-	return repository.job, nil
+func (repository *workerRepository) GetMonitor(context.Context, string) (*clientpb.Resource, error) {
+	return resourceForMonitor(cloneMonitor(repository.job), 0), nil
 }
-func (repository *workerRepository) ListMonitorsByUser(context.Context, string) ([]domain.MonitorJob, error) {
-	return []domain.MonitorJob{repository.job}, nil
+func (repository *workerRepository) ListMonitorsByUser(context.Context, string) ([]*clientpb.Resource, error) {
+	return []*clientpb.Resource{resourceForMonitor(cloneMonitor(repository.job), 0)}, nil
 }
 func (repository *workerRepository) DeleteMonitor(context.Context, string) error { return nil }
-func (repository *workerRepository) GetPreset(context.Context, string) (domain.Preset, error) {
-	return repository.preset, nil
+func (repository *workerRepository) GetPreset(context.Context, string) (*clientpb.Resource, error) {
+	return resourceForPreset(clonePreset(repository.preset), 0), nil
 }
-func (repository *workerRepository) PutPreset(context.Context, domain.Preset) error { return nil }
-func (repository *workerRepository) ListPresetsByUser(context.Context, string) ([]domain.Preset, error) {
-	return []domain.Preset{repository.preset}, nil
+func (repository *workerRepository) PutPreset(context.Context, *clientpb.Resource) error { return nil }
+func (repository *workerRepository) ListPresetsByUser(context.Context, string) ([]*clientpb.Resource, error) {
+	return []*clientpb.Resource{resourceForPreset(clonePreset(repository.preset), 0)}, nil
 }
 func (repository *workerRepository) DeletePreset(context.Context, string) error { return nil }
-func (repository *workerRepository) GetTheater(context.Context, string) (domain.Theater, error) {
-	return repository.theater, nil
+func (repository *workerRepository) GetTheater(context.Context, string) (*catalogpb.Theater, error) {
+	id, providerID, sourceKey := repository.theater.ID, repository.theater.ProviderID, repository.theater.SourceKey
+	region, name := repository.theater.Region, repository.theater.Name
+	return catalogpb.Theater_builder{Id: &id, ProviderId: &providerID, SourceKey: &sourceKey, Region: &region, Name: &name}.Build(), nil
 }
-func (repository *workerRepository) PutTheater(context.Context, domain.Theater) error { return nil }
-func (repository *workerRepository) ListTheaters(context.Context) ([]domain.Theater, error) {
-	return []domain.Theater{repository.theater}, nil
+func (repository *workerRepository) PutTheater(context.Context, *catalogpb.Theater) error { return nil }
+func (repository *workerRepository) ListTheaters(ctx context.Context) ([]*catalogpb.Theater, error) {
+	value, err := repository.GetTheater(ctx, repository.theater.ID)
+	return []*catalogpb.Theater{value}, err
 }
-func (repository *workerRepository) GetAuditorium(context.Context, string) (domain.Auditorium, error) {
-	return repository.auditorium, nil
+func (repository *workerRepository) GetAuditorium(context.Context, string) (*catalogpb.Auditorium, error) {
+	id, theaterID, sourceKey, name := repository.auditorium.ID, repository.auditorium.TheaterID, repository.auditorium.SourceKey, repository.auditorium.Name
+	capacity, _ := int32Checked(repository.auditorium.Capacity, "auditorium capacity")
+	return catalogpb.Auditorium_builder{Id: &id, TheaterId: &theaterID, SourceKey: &sourceKey, Name: &name,
+		ScreenTypes: append([]string(nil), repository.auditorium.ScreenTypes...), Capacity: &capacity}.Build(), nil
 }
-func (repository *workerRepository) PutAuditorium(context.Context, domain.Auditorium) error {
+func (repository *workerRepository) PutAuditorium(context.Context, *catalogpb.Auditorium) error {
 	return nil
 }
-func (repository *workerRepository) ListAuditoriumsByTheater(context.Context, string) ([]domain.Auditorium, error) {
-	return []domain.Auditorium{repository.auditorium}, nil
+func (repository *workerRepository) ListAuditoriumsByTheater(ctx context.Context, _ string) ([]*catalogpb.Auditorium, error) {
+	value, err := repository.GetAuditorium(ctx, repository.auditorium.ID)
+	return []*catalogpb.Auditorium{value}, err
 }
-func (repository *workerRepository) GetSeatMap(context.Context, string) (domain.SeatMap, error) {
-	return repository.seatMap, nil
+func (repository *workerRepository) GetSeatMap(context.Context, string) (*seatmappb.Snapshot, error) {
+	auditoriumID, layoutHash := repository.seatMap.AuditoriumID, repository.seatMap.Version
+	return seatmappb.Snapshot_builder{AuditoriumId: &auditoriumID, LayoutHash: &layoutHash}.Build(), nil
 }
-func (repository *workerRepository) PutSeatMap(context.Context, domain.SeatMap) error { return nil }
-func (repository *workerRepository) PutReservation(_ context.Context, value domain.Reservation) error {
-	repository.reservation = value
+func (repository *workerRepository) PutSeatMap(context.Context, *seatmappb.Snapshot) error {
 	return nil
 }
-func (repository *workerRepository) GetReservation(context.Context, string) (domain.Reservation, error) {
-	return repository.reservation, nil
+func (repository *workerRepository) PutReservation(_ context.Context, resource *clientpb.Resource) error {
+	value, _, err := reservationMessage(resource)
+	if err != nil {
+		return err
+	}
+	repository.reservation = cloneReservation(value)
+	return nil
 }
-func (repository *workerRepository) ListReservationsByUser(context.Context, string) ([]domain.Reservation, error) {
-	return []domain.Reservation{repository.reservation}, nil
+func (repository *workerRepository) GetReservation(context.Context, string) (*clientpb.Resource, error) {
+	return resourceForReservation(cloneReservation(repository.reservation), 0), nil
+}
+func (repository *workerRepository) ListReservationsByUser(context.Context, string) ([]*clientpb.Resource, error) {
+	return []*clientpb.Resource{resourceForReservation(cloneReservation(repository.reservation), 0)}, nil
 }
 
 type workerGateway struct {
-	showtimes []domain.Showtime
-	live      []domain.LiveSeat
-	lastQuery ShowtimeQuery
+	showtimes       []*catalogpb.Showtime
+	live            []domain.LiveSeat
+	lastTargetDates []string
 }
 
-func (gateway *workerGateway) FindShowtimes(_ context.Context, query ShowtimeQuery) ([]domain.Showtime, error) {
-	gateway.lastQuery = query
+func (gateway *workerGateway) FindShowtimes(_ context.Context, _ *catalogpb.Theater, _ *catalogpb.Auditorium, _ string, targetDates []string, _ []int32, _ *commonpb.LocalTime, _ *commonpb.LocalTime) ([]*catalogpb.Showtime, error) {
+	gateway.lastTargetDates = append([]string(nil), targetDates...)
 	return gateway.showtimes, nil
 }
 func (gateway *workerGateway) OpenSeatSelection(
 	context.Context,
-	domain.Showtime,
+	*catalogpb.Showtime,
 	int,
-) (domain.SeatSelection, error) {
-	return domain.SeatSelection{SeatMap: gatewaySeatMap(), LiveSeats: gateway.live}, nil
+) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+	snapshot := gatewaySeatSnapshot()
+	return snapshot, gatewayAvailableSeats(snapshot, gateway.live), nil
 }
 
 func gatewaySeatMap() domain.SeatMap {
@@ -236,12 +241,12 @@ func gatewaySeatMap() domain.SeatMap {
 	}}}
 }
 func (gateway *workerGateway) PreparePayment(
-	_ context.Context, showtime domain.Showtime, seats []string,
-) (domain.BookingDraft, error) {
-	return domain.BookingDraft{Showtime: showtime, SeatLabels: seats}, nil
+	_ context.Context, showtime *catalogpb.Showtime, seats []string,
+) (*clientpb.Reservation, error) {
+	return clientpb.Reservation_builder{Showtime: showtime, SeatLabels: append([]string(nil), seats...)}.Build(), nil
 }
-func (gateway *workerGateway) PrepareCancellation(context.Context, domain.Reservation) (domain.CancellationDraft, error) {
-	return domain.CancellationDraft{}, fmt.Errorf("not used")
+func (gateway *workerGateway) PrepareCancellation(context.Context, *clientpb.Reservation) (*clientpb.WebUICancellationResult, error) {
+	return nil, fmt.Errorf("not used")
 }
 func (gateway *workerGateway) CommitCancellation(context.Context) error {
 	return fmt.Errorf("not used")
@@ -261,3 +266,26 @@ func (ids *sequenceIDs) NewID() string {
 type noWaiter struct{}
 
 func (noWaiter) Wait(context.Context, time.Duration) error { return nil }
+
+func gatewaySeatSnapshot() *seatmappb.Snapshot {
+	seatID, auditoriumID, label, row := "seat", "auditorium-1", "H10", "H"
+	number := int32(10)
+	seat := seatmappb.Seat_builder{Id: &seatID, AuditoriumId: &auditoriumID, Label: &label, Row: &row, Number: &number, Type: stringPointerForTest("standard")}.Build()
+	return seatmappb.Snapshot_builder{AuditoriumId: &auditoriumID, Layout: seatmappb.Layout_builder{Seats: []*seatmappb.Seat{seat}}.Build()}.Build()
+}
+
+func gatewayAvailableSeats(snapshot *seatmappb.Snapshot, live []domain.LiveSeat) []*seatmappb.Seat {
+	available := map[string]bool{}
+	for _, seat := range live {
+		available[seat.Label] = seat.Available
+	}
+	result := make([]*seatmappb.Seat, 0, len(snapshot.GetLayout().GetSeats()))
+	for _, seat := range snapshot.GetLayout().GetSeats() {
+		if available[seat.GetLabel()] {
+			result = append(result, seat)
+		}
+	}
+	return result
+}
+
+func stringPointerForTest(value string) *string { return &value }

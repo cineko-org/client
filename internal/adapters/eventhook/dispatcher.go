@@ -20,7 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cineko-org/client/internal/domain"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type Kind string
@@ -33,23 +35,13 @@ const (
 	defaultQueueSize = 128
 )
 
-type Target struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Kind       Kind     `json:"kind"`
-	URL        string   `json:"url"`
-	Secret     string   `json:"secret,omitempty"`
-	EventKinds []string `json:"eventKinds,omitempty"`
-	Enabled    bool     `json:"enabled"`
-}
-
 type Adapter interface {
-	Deliver(context.Context, *http.Client, Target, domain.AppEvent) error
+	Deliver(context.Context, *http.Client, *clientpb.WebhookTarget, *clientpb.AppEvent) error
 }
 
 type Failure struct {
-	Target Target
-	Event  domain.AppEvent
+	Target *clientpb.WebhookTarget
+	Event  *clientpb.AppEvent
 	Err    error
 }
 
@@ -59,11 +51,11 @@ type Dispatcher struct {
 	resolver ipResolver
 	dial     func(context.Context, string, string) (net.Conn, error)
 	adapters map[Kind]Adapter
-	queue    chan domain.AppEvent
+	queue    chan *clientpb.AppEvent
 	done     chan struct{}
 
 	mu        sync.RWMutex
-	targets   []Target
+	targets   []*clientpb.WebhookTarget
 	onFailure func(Failure)
 	closeOnce sync.Once
 }
@@ -89,14 +81,14 @@ func New(client *http.Client) *Dispatcher {
 			KindSlack:   slackAdapter{},
 			KindWebhook: webhookAdapter{},
 		},
-		queue: make(chan domain.AppEvent, defaultQueueSize),
+		queue: make(chan *clientpb.AppEvent, defaultQueueSize),
 		done:  make(chan struct{}),
 	}
 	go dispatcher.run()
 	return dispatcher
 }
 
-func (dispatcher *Dispatcher) Configure(targets []Target) error {
+func (dispatcher *Dispatcher) Configure(targets []*clientpb.WebhookTarget) error {
 	normalized, err := normalizeTargets(targets, dispatcher.adapters)
 	if err != nil {
 		return err
@@ -113,7 +105,7 @@ func (dispatcher *Dispatcher) SetFailureHandler(handler func(Failure)) {
 	dispatcher.mu.Unlock()
 }
 
-func (dispatcher *Dispatcher) Publish(ctx context.Context, event domain.AppEvent) error {
+func (dispatcher *Dispatcher) Publish(ctx context.Context, event *clientpb.AppEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -145,18 +137,18 @@ func (dispatcher *Dispatcher) run() {
 	}
 }
 
-func (dispatcher *Dispatcher) deliver(event domain.AppEvent) {
+func (dispatcher *Dispatcher) deliver(event *clientpb.AppEvent) {
 	dispatcher.mu.RLock()
-	targets := append([]Target(nil), dispatcher.targets...)
+	targets := append([]*clientpb.WebhookTarget(nil), dispatcher.targets...)
 	handler := dispatcher.onFailure
 	dispatcher.mu.RUnlock()
 	for _, target := range targets {
-		if !target.Enabled || !matches(target.EventKinds, event.Kind) {
+		if event == nil || target == nil || !target.GetEnabled() || !matches(target.GetEventKinds(), event.GetKind()) {
 			continue
 		}
-		adapter := dispatcher.adapters[target.Kind]
+		adapter := dispatcher.adapters[targetKind(target.GetUrl())]
 		ctx, cancel := context.WithTimeout(context.Background(), dispatcher.timeout)
-		client, clientErr := dispatcher.clientForTarget(ctx, target.URL)
+		client, clientErr := dispatcher.clientForTarget(ctx, target.GetUrl())
 		var err error
 		if clientErr != nil {
 			err = clientErr
@@ -171,65 +163,85 @@ func (dispatcher *Dispatcher) deliver(event domain.AppEvent) {
 	}
 }
 
-func normalizeTargets(targets []Target, adapters map[Kind]Adapter) ([]Target, error) {
-	result := make([]Target, 0, len(targets))
+func normalizeTargets(targets []*clientpb.WebhookTarget, adapters map[Kind]Adapter) ([]*clientpb.WebhookTarget, error) {
+	result := make([]*clientpb.WebhookTarget, 0, len(targets))
 	ids := make(map[string]struct{}, len(targets))
 	for index, target := range targets {
-		var err error
-		target, err = normalizeTarget(index, target, adapters)
+		normalized, err := normalizeTarget(index, target, adapters)
 		if err != nil {
 			return nil, err
 		}
-		if _, exists := ids[target.ID]; exists {
-			return nil, fmt.Errorf("hook ID %q is duplicated", target.ID)
+		if _, exists := ids[normalized.GetId()]; exists {
+			return nil, fmt.Errorf("hook ID %q is duplicated", normalized.GetId())
 		}
-		ids[target.ID] = struct{}{}
-		result = append(result, target)
+		ids[normalized.GetId()] = struct{}{}
+		result = append(result, normalized)
 	}
 	return result, nil
 }
 
-func normalizeTarget(index int, target Target, adapters map[Kind]Adapter) (Target, error) {
-	target.ID = strings.TrimSpace(target.ID)
-	target.Name = strings.TrimSpace(target.Name)
-	target.URL = strings.TrimSpace(target.URL)
-	if target.ID == "" {
-		return Target{}, fmt.Errorf("hook %d: ID is required", index+1)
+func normalizeTarget(index int, target *clientpb.WebhookTarget, adapters map[Kind]Adapter) (*clientpb.WebhookTarget, error) {
+	if target == nil {
+		return nil, fmt.Errorf("hook %d: target is required", index+1)
 	}
-	if target.Name == "" {
-		return Target{}, fmt.Errorf("hook %q: name is required", target.ID)
+	target = proto.CloneOf(target)
+	target.SetId(strings.TrimSpace(target.GetId()))
+	target.SetName(strings.TrimSpace(target.GetName()))
+	target.SetUrl(strings.TrimSpace(target.GetUrl()))
+	if target.GetId() == "" {
+		return nil, fmt.Errorf("hook %d: ID is required", index+1)
 	}
-	if _, exists := adapters[target.Kind]; !exists {
-		return Target{}, fmt.Errorf("hook %q: unsupported adapter %q", target.ID, target.Kind)
+	if target.GetName() == "" {
+		return nil, fmt.Errorf("hook %q: name is required", target.GetId())
 	}
-	parsed, err := url.Parse(target.URL)
+	kind := targetKind(target.GetUrl())
+	if _, exists := adapters[kind]; !exists {
+		return nil, fmt.Errorf("hook %q: unsupported adapter %q", target.GetId(), kind)
+	}
+	parsed, err := url.Parse(target.GetUrl())
 	if err != nil || parsed.Hostname() == "" {
-		return Target{}, fmt.Errorf("hook %q: valid URL is required", target.ID)
+		return nil, fmt.Errorf("hook %q: valid URL is required", target.GetId())
 	}
-	if err := validateTargetURL(target, parsed); err != nil {
-		return Target{}, err
+	if err := validateTargetURL(target, kind, parsed); err != nil {
+		return nil, err
 	}
-	target.EventKinds = uniqueStrings(target.EventKinds)
+	target.SetEventKinds(uniqueStrings(target.GetEventKinds()))
 	return target, nil
 }
 
-func validateTargetURL(target Target, parsed *url.URL) error {
+func validateTargetURL(target *clientpb.WebhookTarget, kind Kind, parsed *url.URL) error {
 	if parsed.User != nil {
-		return fmt.Errorf("hook %q: URL credentials are not allowed", target.ID)
+		return fmt.Errorf("hook %q: URL credentials are not allowed", target.GetId())
 	}
 	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !isLoopback(parsed.Hostname())) {
-		return fmt.Errorf("hook %q: HTTPS is required outside loopback", target.ID)
+		return fmt.Errorf("hook %q: HTTPS is required outside loopback", target.GetId())
 	}
 	if ip := net.ParseIP(parsed.Hostname()); ip != nil && !isLoopback(parsed.Hostname()) && !isPublicWebhookIP(ip) {
-		return fmt.Errorf("hook %q: private or reserved destinations are not allowed", target.ID)
+		return fmt.Errorf("hook %q: private or reserved destinations are not allowed", target.GetId())
 	}
 	switch {
-	case target.Kind == KindDiscord && !isDiscordWebhook(parsed):
-		return fmt.Errorf("hook %q: invalid Discord webhook URL", target.ID)
-	case target.Kind == KindSlack && !isSlackWebhook(parsed):
-		return fmt.Errorf("hook %q: invalid Slack webhook URL", target.ID)
+	case kind == KindDiscord && !isDiscordWebhook(parsed):
+		return fmt.Errorf("hook %q: invalid Discord webhook URL", target.GetId())
+	case kind == KindSlack && !isSlackWebhook(parsed):
+		return fmt.Errorf("hook %q: invalid Slack webhook URL", target.GetId())
 	default:
 		return nil
+	}
+}
+
+func targetKind(rawURL string) Kind {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return KindWebhook
+	}
+	host := strings.ToLower(parsed.Hostname())
+	switch host {
+	case "discord.com", "discordapp.com":
+		return KindDiscord
+	case "hooks.slack.com", "hooks.slack-gov.com":
+		return KindSlack
+	default:
+		return KindWebhook
 	}
 }
 
@@ -394,21 +406,21 @@ func matches(filters []string, kind string) bool {
 
 type webhookAdapter struct{}
 
-func (webhookAdapter) Deliver(ctx context.Context, client *http.Client, target Target, event domain.AppEvent) error {
-	payload, err := json.Marshal(event)
+func (webhookAdapter) Deliver(ctx context.Context, client *http.Client, target *clientpb.WebhookTarget, event *clientpb.AppEvent) error {
+	payload, err := (protojson.MarshalOptions{UseProtoNames: false}).Marshal(event)
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.URL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.GetUrl(), bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("User-Agent", "Cineko-Hook/1")
-	request.Header.Set("X-Cineko-Event", event.Kind)
-	request.Header.Set("X-Cineko-Delivery", event.ID)
-	if target.Secret != "" {
-		mac := hmac.New(sha256.New, []byte(target.Secret))
+	request.Header.Set("X-Cineko-Event", event.GetKind())
+	request.Header.Set("X-Cineko-Delivery", event.GetId())
+	if target.GetSecret() != "" {
+		mac := hmac.New(sha256.New, []byte(target.GetSecret()))
 		_, _ = mac.Write(payload)
 		request.Header.Set("X-Cineko-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
@@ -417,15 +429,15 @@ func (webhookAdapter) Deliver(ctx context.Context, client *http.Client, target T
 
 type discordAdapter struct{}
 
-func (discordAdapter) Deliver(ctx context.Context, client *http.Client, target Target, event domain.AppEvent) error {
+func (discordAdapter) Deliver(ctx context.Context, client *http.Client, target *clientpb.WebhookTarget, event *clientpb.AppEvent) error {
 	payload, err := json.Marshal(map[string]any{
-		"content":          fmt.Sprintf("[%s] %s", event.Tone, event.Message),
+		"content":          fmt.Sprintf("[%s] %s", eventTone(event), event.GetMessage()),
 		"allowed_mentions": map[string]any{"parse": []string{}},
 	})
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.URL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.GetUrl(), bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -436,20 +448,33 @@ func (discordAdapter) Deliver(ctx context.Context, client *http.Client, target T
 
 type slackAdapter struct{}
 
-func (slackAdapter) Deliver(ctx context.Context, client *http.Client, target Target, event domain.AppEvent) error {
+func (slackAdapter) Deliver(ctx context.Context, client *http.Client, target *clientpb.WebhookTarget, event *clientpb.AppEvent) error {
 	payload, err := json.Marshal(map[string]string{
-		"text": fmt.Sprintf("[%s] %s", event.Tone, event.Message),
+		"text": fmt.Sprintf("[%s] %s", eventTone(event), event.GetMessage()),
 	})
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.URL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.GetUrl(), bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("User-Agent", "Cineko-Hook/1")
 	return send(client, request)
+}
+
+func eventTone(event *clientpb.AppEvent) string {
+	switch {
+	case event.GetSuccess() != nil:
+		return "success"
+	case event.GetWarning() != nil:
+		return "warning"
+	case event.GetError() != nil:
+		return "error"
+	default:
+		return "info"
+	}
 }
 
 func send(client *http.Client, request *http.Request) error {

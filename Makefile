@@ -1,7 +1,8 @@
 .PHONY: behavior-contract-check check contract-check contract-release-check coverage desktop dev format-check frontend-check install-playwright install-wails lint security storybook storybook-build test workflow-check
 
-WAILS ?= $(shell go env GOPATH)/bin/wails
-WAILS_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)
+GO ?= GOWORK=off go
+WAILS ?= $(shell GOWORK=off go env GOPATH)/bin/wails
+WAILS_VERSION ?= $(shell GOWORK=off go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)
 WAILS_DEV_SERVER ?= 127.0.0.1:34116
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOVULNCHECK_VERSION ?= v1.6.0
@@ -12,10 +13,10 @@ GO_FILES := $(shell find . -maxdepth 1 -name '*.go' -type f) $(shell find intern
 
 install-wails:
 	@test -x "$(WAILS)" && "$(WAILS)" version | grep -q '$(WAILS_VERSION)' || \
-		go install github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)
+		$(GO) install github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)
 
 install-playwright:
-	go run github.com/mxschmitt/playwright-go/cmd/playwright@$$(bash scripts/playwright-version.sh go) install chromium
+	$(GO) run github.com/mxschmitt/playwright-go/cmd/playwright@$$(bash scripts/playwright-version.sh go) install chromium
 
 desktop: install-wails
 	$(WAILS) build -clean -trimpath -m -nosyncgomod -ldflags "-s -w -X main.desktopVersion=$(VERSION)"
@@ -31,17 +32,17 @@ format-check:
 	@test -z "$$(gofmt -l $(GO_FILES))" || (gofmt -l $(GO_FILES) && exit 1)
 
 lint: format-check
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
+	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
 security:
-	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 	$(NPM) --prefix frontend audit --audit-level=moderate
 
 coverage:
 	bash scripts/unit-coverage.sh
 
 test: install-playwright
-	go test -mod=vendor -race ./...
+	$(GO) test -mod=vendor -race ./...
 
 frontend-check:
 	$(NPM) --prefix frontend run check
@@ -53,7 +54,7 @@ storybook-build:
 	$(NPM) --prefix frontend run storybook:build
 
 workflow-check:
-	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
+	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
 	bash -n scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-browser-version.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh scripts/publish-playwright-assets.sh scripts/register-browser-release.sh scripts/register-client-release.sh scripts/register-playwright-release.sh scripts/sign-notarize-macos-client.sh scripts/test-browser-release.sh scripts/test-publish-playwright-assets.sh scripts/test-register-client-release.sh scripts/test-register-playwright-release.sh scripts/verify-macos-signing-workflow.sh
 	shellcheck scripts/configure-ubuntu-mirror.sh scripts/package-client.sh scripts/package-playwright.sh scripts/playwright-browser-version.sh scripts/playwright-version.sh scripts/publish-release.sh scripts/publish-official-browser-release.sh scripts/publish-playwright-assets.sh scripts/register-browser-release.sh scripts/register-client-release.sh scripts/register-playwright-release.sh scripts/sign-notarize-macos-client.sh scripts/test-browser-release.sh scripts/test-publish-playwright-assets.sh scripts/test-register-client-release.sh scripts/test-register-playwright-release.sh scripts/verify-macos-signing-workflow.sh
 	bash scripts/verify-macos-signing-workflow.sh
@@ -64,17 +65,17 @@ workflow-check:
 	node --test scripts/release-metadata.test.mjs
 
 contract-check:
-	grep -Eq '^# github.com/cineko-org/contracts/v3 v3.4.0( => ../contracts)?$$' vendor/modules.txt
+	grep -Eq '^# github.com/cineko-org/contracts v0.0.0-20260821194330-7caf5c3d2d0e( => ../contracts)?$$' vendor/modules.txt
 
 contract-release-check:
 	@! grep -Eq '^[[:space:]]*replace([[:space:]]|\()' go.mod
-	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3.4.0$$' go.mod
-	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3.4.0$$' vendor/modules.txt
-	@grep -Eq '^github.com/cineko-org/contracts/v3 v3.4.0 h1:' go.sum
+	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts v0.0.0-20260821194330-7caf5c3d2d0e$$' go.mod
+	@grep -Eq '^# github.com/cineko-org/contracts v0.0.0-20260821194330-7caf5c3d2d0e$$' vendor/modules.txt
+	@grep -Eq '^github.com/cineko-org/contracts v0.0.0-20260821194330-7caf5c3d2d0e h1:' go.sum
 
 behavior-contract-check:
 	bash scripts/verify-behavior-contract.sh
 
 check: lint security coverage test frontend-check workflow-check contract-check behavior-contract-check
 	node --check internal/interfaces/webui/assets/app.js
-	grep -Eq '^# github.com/cineko-org/probe/v2 v2.5.0( => ../probe)?$$' vendor/modules.txt
+	grep -Eq '^# github.com/cineko-org/probe/v2 v2.5.2-0.20260821180948-c007dfe6ecb0( => ../probe)?$$' vendor/modules.txt

@@ -3,6 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShellView } from '../src/features/shell/ui/AppShellView';
 import { cinekoTheme } from '../src/app/theme';
+import { directNetwork, unauthenticatedAccount } from '../src/stories/fixtures';
 
 beforeEach(() => {
 	vi.stubGlobal('matchMedia', vi.fn<(query: string) => MediaQueryList>().mockImplementation((query) => ({
@@ -27,8 +28,8 @@ describe('application shell', () => {
 					activeSection="home"
 					loading={false}
 					connection={{ status: 'ready', message: '', lastSuccessfulAt: '', retrying: false }}
-					account={{ status: 'unauthenticated', authenticated: false }}
-					network={{ mode: 'direct' }}
+					account={unauthenticatedAccount}
+					network={directNetwork}
 					desktopAvailable={false}
 					unreadNotices={0}
 					feedback={null}

@@ -6,18 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cineko-org/client/internal/domain"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-type CreatePresetRequest struct {
-	ExpectedRevision int64
-	UserID           string
-	Name             string
-	TheaterID        string
-	AuditoriumID     string
-	SeatCount        int
-	SeatPreference   domain.SeatPreference
-}
 
 type PresetService struct {
 	presets PresetRepository
@@ -33,85 +24,111 @@ func NewPresetService(
 	return &PresetService{presets: presets, ids: ids, clock: clock}
 }
 
-func (service *PresetService) Create(ctx context.Context, request CreatePresetRequest) (domain.Preset, error) {
-	if err := service.ensureUniqueName(ctx, request.UserID, request.Name, ""); err != nil {
-		return domain.Preset{}, err
+func (service *PresetService) Create(ctx context.Context, mutation *clientpb.WebUIResourceMutation) (*clientpb.Resource, error) {
+	request, _, err := presetMutationMessage(mutation)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.ensureUniqueName(ctx, request.GetUserId(), request.GetName(), ""); err != nil {
+		return nil, err
 	}
 	now := service.clock.Now()
-	preset := domain.Preset{
-		ID: service.ids.NewID(), UserID: request.UserID, CreatedAt: now,
-	}
-	applyPresetRequest(&preset, request, now)
-	return service.validateAndSave(ctx, preset)
+	preset := clonePreset(request)
+	preset.SetId(service.ids.NewID())
+	preset.SetCreatedAt(timestamppb.New(now))
+	preset.SetUpdatedAt(timestamppb.New(now))
+	applyPreset(preset, request, now)
+	return service.validateAndSave(ctx, resourceForPreset(preset, 0))
 }
 
 func (service *PresetService) Update(
 	ctx context.Context,
-	userID, presetID string,
-	request CreatePresetRequest,
-) (domain.Preset, error) {
-	preset, err := service.presets.GetPreset(ctx, presetID)
+	mutation *clientpb.WebUIResourceMutation,
+) (*clientpb.Resource, error) {
+	request, expectedRevision, err := presetMutationMessage(mutation)
 	if err != nil {
-		return domain.Preset{}, err
+		return nil, err
 	}
-	if !preset.Owns(userID) {
-		return domain.Preset{}, ErrNotFound
+	userID, presetID := request.GetUserId(), request.GetId()
+	resource, err := service.presets.GetPreset(ctx, presetID)
+	if err != nil {
+		return nil, err
 	}
-	if request.ExpectedRevision < 1 || preset.Revision != request.ExpectedRevision {
-		return domain.Preset{}, ErrConflict
+	preset, revision, err := presetMessage(resource)
+	if err != nil {
+		return nil, err
 	}
-	if uniqueErr := service.ensureUniqueName(ctx, userID, request.Name, presetID); uniqueErr != nil {
-		return domain.Preset{}, uniqueErr
+	if preset.GetUserId() != userID {
+		return nil, ErrNotFound
 	}
-	applyPresetRequest(&preset, request, service.clock.Now())
-	return service.validateAndSave(ctx, preset)
+	if expectedRevision < 1 || revision != expectedRevision {
+		return nil, ErrConflict
+	}
+	if uniqueErr := service.ensureUniqueName(ctx, userID, request.GetName(), presetID); uniqueErr != nil {
+		return nil, uniqueErr
+	}
+	updated := clonePreset(preset)
+	applyPreset(updated, request, service.clock.Now())
+	return service.validateAndSave(ctx, resourceForPreset(updated, revision))
 }
 
-func (service *PresetService) List(ctx context.Context, userID string) ([]domain.Preset, error) {
+func (service *PresetService) List(ctx context.Context, userID string) ([]*clientpb.Resource, error) {
 	return service.presets.ListPresetsByUser(ctx, userID)
 }
 
 func (service *PresetService) Delete(ctx context.Context, userID, presetID string, expectedRevision ...int64) error {
-	preset, err := service.presets.GetPreset(ctx, presetID)
+	resource, err := service.presets.GetPreset(ctx, presetID)
 	if err != nil {
 		return err
 	}
-	if !preset.Owns(userID) {
+	preset, revision, err := presetMessage(resource)
+	if err != nil {
+		return err
+	}
+	if preset.GetUserId() != userID {
 		return ErrNotFound
 	}
-	if len(expectedRevision) > 0 && (expectedRevision[0] < 1 || preset.Revision != expectedRevision[0]) {
+	if len(expectedRevision) > 0 && (expectedRevision[0] < 1 || revision != expectedRevision[0]) {
 		return ErrConflict
 	}
 	return service.presets.DeletePreset(ctx, presetID)
 }
 
-func applyPresetRequest(preset *domain.Preset, request CreatePresetRequest, updatedAt time.Time) {
-	preset.Name = strings.TrimSpace(request.Name)
-	preset.TheaterID = request.TheaterID
-	preset.AuditoriumID = request.AuditoriumID
-	preset.SeatCount = request.SeatCount
-	preset.SeatPreference = request.SeatPreference
-	preset.UpdatedAt = updatedAt
+func applyPreset(preset, request *clientpb.Preset, updatedAt time.Time) {
+	preset.SetName(strings.TrimSpace(request.GetName()))
+	preset.SetTheaterId(request.GetTheaterId())
+	preset.SetAuditoriumId(request.GetAuditoriumId())
+	preset.SetSeatCount(request.GetSeatCount())
+	preset.SetSeatPreference(request.GetSeatPreference())
+	preset.SetUpdatedAt(timestamppb.New(updatedAt))
 }
 
-func (service *PresetService) validateAndSave(ctx context.Context, preset domain.Preset) (domain.Preset, error) {
-	if err := preset.Validate(nil); err != nil {
-		return domain.Preset{}, err
+func (service *PresetService) validateAndSave(ctx context.Context, resource *clientpb.Resource) (*clientpb.Resource, error) {
+	preset, _, err := presetMessage(resource)
+	if err != nil {
+		return nil, err
 	}
-	if err := service.presets.PutPreset(ctx, preset); err != nil {
-		return domain.Preset{}, err
+	if err := validatePresetMessage(preset); err != nil {
+		return nil, err
 	}
-	return preset, nil
+	if err := service.presets.PutPreset(ctx, resource); err != nil {
+		return nil, err
+	}
+	return resource, nil
 }
 
 func (service *PresetService) ensureUniqueName(ctx context.Context, userID, name, exceptID string) error {
-	presets, err := service.presets.ListPresetsByUser(ctx, userID)
+	resources, err := service.presets.ListPresetsByUser(ctx, userID)
 	if err != nil {
 		return err
 	}
 	normalizedName := strings.TrimSpace(name)
-	for _, preset := range presets {
-		if preset.ID != exceptID && strings.EqualFold(preset.Name, normalizedName) {
+	for _, resource := range resources {
+		preset, _, decodeErr := presetMessage(resource)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if preset.GetId() != exceptID && strings.EqualFold(preset.GetName(), normalizedName) {
 			return fmt.Errorf("%w: preset name already exists", ErrConflict)
 		}
 	}

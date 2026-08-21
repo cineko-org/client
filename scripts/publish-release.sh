@@ -14,7 +14,7 @@ export AWS_ACCESS_KEY_ID="$CINEKO_RELEASES_S3_ACCESS_KEY"
 export AWS_SECRET_ACCESS_KEY="$CINEKO_RELEASES_S3_SECRET_KEY"
 export AWS_DEFAULT_REGION="${CINEKO_RELEASES_S3_REGION:-us-east-1}"
 
-for command in aws curl jq node openssl; do
+for command in aws curl go jq openssl; do
   command -v "$command" >/dev/null || {
     printf '%s is required on the release publisher runner\n' "$command" >&2
     exit 2
@@ -27,29 +27,17 @@ batch_payload="$temporary_directory/batch.json"
 readonly batch_payload
 cleanup() { rm -rf "$temporary_directory"; }
 trap cleanup EXIT
+readonly release_contract="$temporary_directory/releasecontract"
+GOWORK=off go build -mod=vendor -o "$release_contract" ./cmd/releasecontract
 
-node scripts/verify-release-metadata.mjs "$@"
-jq -s -e '
-  length == 3 and
-  ([.[].component] | unique | length == 1) and
-  ([.[].release.channel] | unique == ["stable"]) and
-  ([.[].release.publishedAt] | unique | length == 1) and
-  ([.[] | .release.platform + "/" + .release.arch] | sort == ["darwin/arm64", "linux/amd64", "windows/amd64"]) and
-  ([.[] | (.release.version // .release.revision)] | unique | length == 1)
-' "$@" >/dev/null || {
-  printf 'release batch must contain one stable component version for darwin/arm64, linux/amd64, and windows/amd64\n' >&2
-  exit 1
-}
-
-component="$(jq -sr '.[0].component' "$@")"
+"$release_contract" verify-artifacts "$@"
+component="$("$release_contract" component "$@")"
 readonly component
-jq -s '{schemaVersion: 2, payload: {releases: (map(.release) | sort_by(.platform, .arch))}}' "$@" > "$batch_payload"
+"$release_contract" set "$component" "$@" > "$batch_payload"
+readonly publish_plan="$temporary_directory/publish-plan.tsv"
+"$release_contract" plan "$component" "$public_base_url" "$@" >"$publish_plan"
 
-for metadata in "$@"; do
-  object_key="$(jq -er '.objectKey' "$metadata")"
-  artifact="$(dirname "$metadata")/$(jq -er '.file' "$metadata")"
-  expected_size="$(jq -er '.release.artifact.size' "$metadata")"
-  expected_sha256="$(jq -er '.release.artifact.sha256' "$metadata")"
+while IFS=$'\t' read -r artifact object_key public_url expected_size expected_sha256; do
   expected_sha256_base64="$(openssl dgst -sha256 -binary "$artifact" | openssl base64 -A)"
   if ! object_metadata="$(aws --endpoint-url "$CINEKO_RELEASES_S3_ENDPOINT" s3api head-object \
     --bucket "$bucket" --key "$object_key" --checksum-mode ENABLED --output json 2>/dev/null)"; then
@@ -81,17 +69,17 @@ for metadata in "$@"; do
     printf 'immutable release object checksum mismatch: %s\n' "$object_key" >&2
     exit 1
   fi
-
-  public_url="$(jq -er '.release.artifact.url' "$metadata")"
   if [[ "$public_url" != "${public_base_url%/}/$object_key" ]]; then
     printf 'public CDN URL does not match immutable object key: %s\n' "$public_url" >&2
     exit 1
   fi
-done
+done <"$publish_plan"
 
+readonly response="$temporary_directory/publish-response.json"
 curl --fail-with-body --retry 3 --retry-all-errors \
   -H "Authorization: Bearer $CINEKO_RELEASE_PUBLISH_TOKEN" \
   -H 'Content-Type: application/json' \
-  -H "X-Cineko-Protocol: ${CINEKO_PROTOCOL_VERSION:-3}" \
   --data-binary "@$batch_payload" \
+  --output "$response" \
   "${CINEKO_CENTRAL_URL%/}/v1/release-registry/$component"
+"$release_contract" verify-response "$component" "$response"

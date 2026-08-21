@@ -1,4 +1,7 @@
-import type { DesktopBridge } from './types';
+import { fromJson, toJson, type JsonValue, type Message } from '@bufbuild/protobuf';
+import type { GenMessage } from '@bufbuild/protobuf/codegenv2';
+import { APIErrorResponseSchema } from './proto';
+import type { DesktopBridge } from './desktop';
 
 export class APIError extends Error {
 	constructor(message: string, readonly status: number) {
@@ -7,17 +10,41 @@ export class APIError extends Error {
 	}
 }
 
-export async function api<T>(path: string, options: Omit<RequestInit, 'body'> & { body?: unknown } = {}): Promise<T> {
-  const headers = new Headers(options.headers);
-  let body = options.body as BodyInit | null | undefined;
-  if (options.body !== undefined) {
-    headers.set('Content-Type', 'application/json');
-    body = JSON.stringify(options.body);
-  }
-  const response = await fetch(path, { ...options, headers, body });
-  const value = (await response.json().catch(() => ({}))) as T & { error?: string };
-	if (!response.ok) throw new APIError(value.error || `요청 실패 (${response.status})`, response.status);
-  return value;
+export async function api<Response extends Message, Request extends Message = never>(
+	path: string,
+	responseSchema: GenMessage<Response>,
+	options: RequestInit = {},
+	requestSchema?: GenMessage<Request>,
+	requestMessage?: Request,
+): Promise<Response> {
+	const headers = new Headers(options.headers);
+	if ((requestSchema === undefined) !== (requestMessage === undefined)) {
+		throw new TypeError('A generated request schema and message must be provided together.');
+	}
+	if (options.body !== undefined) {
+		throw new TypeError('API request bodies must use a generated request schema and message.');
+	}
+	const body = requestSchema === undefined || requestMessage === undefined
+		? undefined
+		: JSON.stringify(toJson(requestSchema, requestMessage));
+	if (requestSchema !== undefined) {
+		headers.set('Content-Type', 'application/json');
+	}
+	const response = await fetch(path, { ...options, headers, body });
+	const text = await response.text();
+	let value: JsonValue = {};
+	if (text.trim() !== '') {
+		try {
+			value = JSON.parse(text);
+		} catch {
+			throw new APIError(`요청 실패 (${response.status})`, response.status);
+		}
+	}
+	if (!response.ok) {
+		const error = fromJson(APIErrorResponseSchema, value, { ignoreUnknownFields: false });
+		throw new APIError(error.error?.message || `요청 실패 (${response.status})`, response.status);
+	}
+	return fromJson(responseSchema, value, { ignoreUnknownFields: false });
 }
 
 export function isRevisionConflict(error: unknown): boolean {
@@ -25,7 +52,7 @@ export function isRevisionConflict(error: unknown): boolean {
 }
 
 export function desktopBridge(): DesktopBridge | null {
-  return window.go?.main?.DesktopApp ?? null;
+	return window.go?.main?.DesktopApp ?? null;
 }
 
 export function errorMessage(error: unknown): string {

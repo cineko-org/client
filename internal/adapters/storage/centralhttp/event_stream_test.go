@@ -2,12 +2,12 @@ package centralhttp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"testing"
 
-	central "github.com/cineko-org/contracts/v3"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
 )
 
 func TestExecutionClaimRetryClassification(t *testing.T) {
@@ -49,10 +49,10 @@ func TestStoreConsumesTypedEventStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.releaseGeneration.Store(7)
-	control, _ := json.Marshal(central.EventStreamControl{
-		Protocol: central.ProtocolVersion, ReleaseGeneration: 7,
-		Cursor: 0, Action: central.EventStreamActionReady,
-	})
+	control := []byte(protoJSON(t, servicepb.StreamEventsResponse_builder{Control: clientpb.StreamControl_builder{
+		ReleaseGeneration: int64Pointer(7),
+		Ready:             clientpb.StreamReady_builder{Cursor: int64Pointer(0)}.Build(),
+	}.Build()}.Build()))
 	if err := store.consumeSSEEvent(sseEvent{type_: "cineko.control", data: control}); err != nil {
 		t.Fatal(err)
 	}
@@ -61,21 +61,22 @@ func TestStoreConsumesTypedEventStream(t *testing.T) {
 	default:
 		t.Fatal("stream readiness did not wake the execution worker after reconnect")
 	}
-	resource, _ := json.Marshal(central.ClientEvent{
-		Sequence: 1, ID: "event", Type: "monitor.updated",
-		Resource: central.EventResource{Kind: "monitors", ID: "monitor", Revision: 2},
-		Data:     json.RawMessage(`{"id":"monitor"}`),
-	})
+	resource := []byte(protoJSON(t, servicepb.StreamEventsResponse_builder{Data: clientpb.ClientEvent_builder{
+		Sequence: int64Pointer(1), Id: stringPointer("event"),
+		Upserted: clientpb.EventResource_builder{
+			Id: stringPointer("monitor"), Revision: int64Pointer(2), Monitor: clientpb.Monitor_builder{}.Build(),
+		}.Build(),
+	}.Build()}.Build()))
 	if err := store.consumeSSEEvent(sseEvent{id: 1, type_: "monitor.updated", data: resource}); err != nil {
 		t.Fatal(err)
 	}
 	if store.eventCursor.Load() != 1 {
 		t.Fatalf("event cursor = %d", store.eventCursor.Load())
 	}
-	reset, _ := json.Marshal(central.EventStreamControl{
-		Protocol: central.ProtocolVersion, ReleaseGeneration: 7,
-		Cursor: 9, Action: central.EventStreamActionFullResync, Reason: central.EventStreamResetRetentionGap,
-	})
+	reset := []byte(protoJSON(t, servicepb.StreamEventsResponse_builder{Control: clientpb.StreamControl_builder{
+		ReleaseGeneration: int64Pointer(7),
+		RetentionGap:      clientpb.RetentionGap_builder{Cursor: int64Pointer(9)}.Build(),
+	}.Build()}.Build()))
 	if err := store.consumeSSEEvent(sseEvent{type_: "cineko.control", data: reset}); err != nil {
 		t.Fatal(err)
 	}
@@ -92,11 +93,12 @@ func TestExecutionReadyEventIsBufferedAndCoalesced(t *testing.T) {
 		t.Fatal(err)
 	}
 	for sequence := int64(1); sequence <= 2; sequence++ {
-		payload, _ := json.Marshal(central.ClientEvent{
-			Sequence: sequence, ID: "event", Type: executionReadyEventType,
-			Resource: central.EventResource{Kind: "executions", ID: "execution", Revision: sequence},
-			Data:     json.RawMessage(`{"id":"execution"}`),
-		})
+		payload := []byte(protoJSON(t, servicepb.StreamEventsResponse_builder{Data: clientpb.ClientEvent_builder{
+			Sequence: int64Pointer(sequence), Id: stringPointer("event"),
+			ExecutionReady: clientpb.ExecutionReady_builder{
+				CommandId: stringPointer("command"), MonitorId: stringPointer("monitor"), Reason: stringPointer("updated"),
+			}.Build(),
+		}.Build()}.Build()))
 		if err := store.consumeSSEEvent(sseEvent{id: sequence, type_: executionReadyEventType, data: payload}); err != nil {
 			t.Fatal(err)
 		}
@@ -113,9 +115,9 @@ func TestExecutionReadyEventIsBufferedAndCoalesced(t *testing.T) {
 	}
 }
 
-func TestEventStreamProtocolFailuresAreNotRetried(t *testing.T) {
-	if isRetryableEventStreamError(errors.New("invalid protocol")) {
-		t.Fatal("protocol failure is retryable")
+func TestEventStreamControlFailuresAreNotRetried(t *testing.T) {
+	if isRetryableEventStreamError(errors.New("invalid control")) {
+		t.Fatal("control failure is retryable")
 	}
 	if !isRetryableEventStreamError(eventStreamTransportError{err: errors.New("offline")}) {
 		t.Fatal("transport failure is not retryable")

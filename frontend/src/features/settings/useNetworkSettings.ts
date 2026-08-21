@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
+import { create } from '@bufbuild/protobuf';
 import { desktopBridge, errorMessage } from '../../api/client';
-import type { NetworkSettings } from '../../api/types';
+import { decodeDesktopProto, encodeDesktopProto } from '../../api/desktop';
+import { DirectNetworkSchema, NetworkSettingsSchema, type NetworkSettings } from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
 import {
   networkForm, networkSettingsInput, type NetworkForm, type SettingsLoadState,
 } from './model';
 
 export function useNetworkSettings(opened: boolean, notify: Notify) {
-  const [settings, setSettings] = useState<NetworkSettings>({ mode: 'direct' });
+  const [settings, setSettings] = useState<NetworkSettings>(() => create(NetworkSettingsSchema, {
+	  mode: { case: 'direct', value: create(DirectNetworkSchema) },
+  }));
   const [form, setForm] = useState<NetworkForm>(networkForm());
   const [saving, setSaving] = useState(false);
   const bridge = desktopBridge();
@@ -20,7 +24,7 @@ export function useNetworkSettings(opened: boolean, notify: Notify) {
     }
     setLoadState('loading');
     try {
-      const value = await bridge.GetNetworkSettings();
+	  const value = decodeDesktopProto(NetworkSettingsSchema, await bridge.GetNetworkSettings());
       setSettings(value);
       setForm(networkForm(value));
       setLoadState('ready');
@@ -50,10 +54,14 @@ export function useNetworkSettings(opened: boolean, notify: Notify) {
     }
     setSaving(true);
     try {
-      const value = await bridge.SaveNetworkSettings(networkSettingsInput(next));
+	  const input = networkSettingsInput(next);
+	  const value = decodeDesktopProto(
+	    NetworkSettingsSchema,
+	    await bridge.SaveNetworkSettings(encodeDesktopProto(NetworkSettingsSchema, input)),
+	  );
       setSettings(value);
       setForm(networkForm(value));
-      notify(value.mode === 'direct' ? '프록시를 사용하지 않습니다.' : '프록시 연결을 확인하고 저장했습니다.');
+      notify(value.mode.case === 'direct' ? '프록시를 사용하지 않습니다.' : '프록시 연결을 확인하고 저장했습니다.');
       return true;
     } catch (error) {
       notify(errorMessage(error), { tone: 'error' });

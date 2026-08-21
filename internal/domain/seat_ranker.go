@@ -8,8 +8,8 @@ import (
 )
 
 type SeatGroup struct {
-	Seats []Seat  `json:"seats"`
-	Score float64 `json:"score"`
+	Seats []Seat
+	Score float64
 }
 
 type SeatRanker struct{}

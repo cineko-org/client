@@ -2,7 +2,8 @@ import { Group, Modal, Stack, Text } from '@mantine/core';
 import { DangerButton, PrimaryButton, SecondaryButton } from '../../../components/core/Actions';
 import { EmptyState, Section } from '../../../components/core/Section';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
-import type { Monitor } from '../../../api/types';
+import type { Monitor } from '../../../api/proto';
+import { monitorMode, monitorMovie, monitorStatus } from '../../../api/resources';
 import { monitorScheduleLabel, monitorStatusLabel, monitorTimeLabel } from '../model';
 
 export interface MonitorListViewProps {
@@ -17,22 +18,25 @@ export interface MonitorListViewProps {
 }
 
 function monitorColor(monitor: Monitor): string {
-  if (monitor.status === 'booked') return 'green';
-  if (monitor.status === 'triggered' || monitor.status === 'payment_unknown') return 'orange';
-  if (monitor.status === 'failed') return 'red';
-  if (monitor.status === 'running') return 'blue';
+	const status = monitorStatus(monitor);
+	if (status === 'booked') return 'green';
+	if (status === 'triggered' || status === 'payment_unknown') return 'orange';
+	if (status === 'failed') return 'red';
+	if (status === 'running') return 'blue';
   return 'gray';
 }
 
 function executionDescription(monitor: Monitor): string {
-  if (monitor.status === 'triggered') return '결제 화면을 열어 두었습니다 · 최대 15분 유지';
-  if (monitor.status === 'payment_unknown') return 'CGV 예매 내역을 확인해야 합니다 · 자동 재실행 안 함';
+	const status = monitorStatus(monitor);
+	if (status === 'triggered') return '결제 화면을 열어 두었습니다 · 최대 15분 유지';
+	if (status === 'payment_unknown') return 'CGV 예매 내역을 확인해야 합니다 · 자동 재실행 안 함';
   return `${monitorTimeLabel(monitor)} · 결제 전까지 진행`;
 }
 
 function retryLabel(monitor: Monitor): string {
-  if (monitor.status === 'payment_unknown') return '확인 후 다시 찾기';
-  if (monitor.status === 'triggered') return '다시 찾기';
+	const status = monitorStatus(monitor);
+	if (status === 'payment_unknown') return '확인 후 다시 찾기';
+	if (status === 'triggered') return '다시 찾기';
   return '다시 찾기';
 }
 
@@ -42,18 +46,19 @@ export function MonitorListView({ monitors, deleteId, mutationId, onRetry, onDel
       {monitors.length === 0 ? <EmptyState>등록된 모니터가 없습니다.</EmptyState> : (
         <Stack gap="xs">
           {monitors.map((monitor) => {
-            const active = monitor.status === 'running';
-            const paymentBlocked = monitor.status === 'triggered' || monitor.status === 'payment_unknown';
+			const status = monitorStatus(monitor);
+			const active = status === 'running';
+			const paymentBlocked = status === 'triggered' || status === 'payment_unknown';
             const mutationLocked = Boolean(mutationId);
             const mutating = mutationId === monitor.id;
             return (
               <Stack key={monitor.id} gap="xs" bg="dark.6" p="md">
                 <Group justify="space-between">
-                  <Text fw={600}>{monitor.movie}</Text>
-                  <StatusIndicator label={monitorStatusLabel(monitor.status)} color={monitorColor(monitor)} processing={active} />
+				  <Text fw={600}>{monitorMovie(monitor)}</Text>
+				  <StatusIndicator label={monitorStatusLabel(status)} color={monitorColor(monitor)} processing={active} />
                 </Group>
                 <Stack gap={2}>
-                  <Text size="sm" c="dimmed">{monitor.mode === 'cancellation' ? '취소표 감시' : '오픈 · 취소표 감시'} · {monitorScheduleLabel(monitor)}</Text>
+				  <Text size="sm" c="dimmed">{monitorMode(monitor) === 'cancellation' ? '취소표 감시' : '오픈 · 취소표 감시'} · {monitorScheduleLabel(monitor)}</Text>
                   <Text size="sm" c="dimmed">{executionDescription(monitor)}</Text>
                 </Stack>
                 <Group gap="xs">

@@ -1,11 +1,11 @@
 import { Box, Image, SimpleGrid, Stack, Text, UnstyledButton } from '@mantine/core';
-import type { CatalogMovie } from '../../../api/types';
+import type { Movie } from '../../../api/proto';
 import { orderedCatalogMovies } from '../model';
 
 export interface MoviePickerProps {
-  movies: CatalogMovie[];
+  movies: Movie[];
   value: string;
-  onChange: (movie: CatalogMovie) => void;
+  onChange: (movie: Movie) => void;
 }
 
 export function MoviePicker({ movies, value, onChange }: MoviePickerProps) {

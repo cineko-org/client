@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -172,7 +171,7 @@ func TestSeatMapSortingAndEmptyAnalysis(t *testing.T) {
 	}
 }
 
-func TestPresetValidationAndPreferenceHelpers(t *testing.T) {
+func TestSeatPreferenceHelpers(t *testing.T) {
 	t.Parallel()
 
 	zone := SeatZone{Name: "center", MinX: 0.2, MaxX: 0.8, MinY: 0.2, MaxY: 0.8}
@@ -193,128 +192,9 @@ func TestPresetValidationAndPreferenceHelpers(t *testing.T) {
 		}
 	}
 
-	preset := validPreset()
-	if err := preset.Validate(nil); err != nil {
-		t.Fatalf("valid preset: %v", err)
-	}
-	for _, mutate := range []func(*Preset){
-		func(value *Preset) { value.ID = "" },
-		func(value *Preset) { value.Name = "" },
-		func(value *Preset) { value.TheaterID = "" },
-		func(value *Preset) { value.SeatCount = 0 },
-		func(value *Preset) {
-			value.SeatPreference.PreferredZones = []SeatZone{{Name: "bad", MinX: 1, MaxX: 0}}
-		},
-		func(value *Preset) { value.SeatPreference.PreferredTypes = []SeatType{"bad"} },
-		func(value *Preset) { value.SeatPreference.Adjacency = "bad" },
-		func(value *Preset) { value.SeatPreference.CandidateSeats = []string{"A1", "A1"} },
-	} {
-		candidate := preset
-		mutate(&candidate)
-		if candidate.Validate(nil) == nil {
-			t.Fatalf("invalid preset accepted: %+v", candidate)
-		}
-	}
-
-	seatMap := validSeatMap()
-	preset.SeatPreference.CandidateSeats = []string{"A1"}
-	if err := preset.Validate(&seatMap); err != nil {
-		t.Fatalf("valid map-bound preset: %v", err)
-	}
-	wrongMap := seatMap
-	wrongMap.AuditoriumID = "other"
-	if preset.Validate(&wrongMap) == nil {
-		t.Fatal("mismatched seat map accepted")
-	}
-	preset.SeatPreference.CandidateSeats = []string{"Z99"}
-	if preset.Validate(&seatMap) == nil {
-		t.Fatal("missing explicit seat accepted")
-	}
-	if !preset.Owns("user") || preset.Owns("other") {
-		t.Fatal("Preset.Owns returned an invalid result")
-	}
 	preference := SeatPreference{PreferredTypes: []SeatType{SeatTypeWheelchair, SeatTypeStandard}}
 	if preference.TypeRank(SeatTypeStandard) != 1 || preference.TypeRank(SeatTypeBed) != 3 {
 		t.Fatal("SeatPreference.TypeRank returned an invalid rank")
-	}
-}
-
-func TestMonitorValidationAndStateHelpers(t *testing.T) {
-	t.Parallel()
-
-	job := validMonitorJob()
-	if err := job.Validate(); err != nil {
-		t.Fatalf("valid monitor: %v", err)
-	}
-	mutations := []func(*MonitorJob){
-		func(value *MonitorJob) { value.ID = "" },
-		func(value *MonitorJob) { value.MovieID = "" },
-		func(value *MonitorJob) { value.Mode = "bad" },
-		func(value *MonitorJob) {
-			value.Mode = MonitorModeCancellation
-			value.TargetWeekdays = []int{1}
-			value.SearchHorizonDays = 10
-		},
-		func(value *MonitorJob) { value.PollInterval = time.Second },
-		func(value *MonitorJob) { value.PollIntervalMax = value.PollInterval },
-		func(value *MonitorJob) { value.TargetDates = []string{"bad"} },
-		func(value *MonitorJob) {
-			value.TargetWeekdays = []int{8}
-			value.SearchHorizonDays = 10
-		},
-		func(value *MonitorJob) {
-			value.TargetWeekdays = []int{1, 1}
-			value.SearchHorizonDays = 10
-		},
-		func(value *MonitorJob) {
-			value.TargetWeekdays = []int{1}
-			value.SearchHorizonDays = 0
-		},
-		func(value *MonitorJob) { value.EarliestTime = "bad" },
-		func(value *MonitorJob) { value.LatestTime = "bad" },
-		func(value *MonitorJob) { value.EarliestTime, value.LatestTime = "20:00", "20:00" },
-	}
-	for index, mutate := range mutations {
-		candidate := job
-		mutate(&candidate)
-		if candidate.Validate() == nil {
-			t.Fatalf("case %d accepted: %+v", index, candidate)
-		}
-	}
-	if got := job.EffectivePollIntervalMax(); got != job.PollInterval+job.PollInterval/5 {
-		t.Fatalf("EffectivePollIntervalMax(legacy) = %v", got)
-	}
-	job.PollIntervalMax = 9 * time.Second
-	if got := job.EffectivePollIntervalMax(); got != 9*time.Second {
-		t.Fatalf("EffectivePollIntervalMax(explicit) = %v", got)
-	}
-
-	if (MonitorJob{}).EffectiveMode() != MonitorModeOpening ||
-		(MonitorJob{Mode: MonitorModeCancellation}).EffectiveMode() != MonitorModeCancellation {
-		t.Fatal("EffectiveMode returned an invalid mode")
-	}
-	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	resolved := (MonitorJob{
-		TargetDates: []string{"bad", "2026-08-08", "2026-08-10"},
-	}).ResolveTargetDates(now)
-	if !reflect.DeepEqual(resolved, []string{"2026-08-10"}) {
-		t.Fatalf("ResolveTargetDates() = %v", resolved)
-	}
-	if (MonitorJob{}).Expired(now) {
-		t.Fatal("empty schedule expired")
-	}
-	job.Transition(MonitorBooked, now)
-	if job.Status != MonitorBooked || !job.UpdatedAt.Equal(now) {
-		t.Fatal("Transition did not update state")
-	}
-	job.RecordCheck(now, nil)
-	if job.LastError != "" || job.LastCheckedAt == nil {
-		t.Fatal("RecordCheck did not clear error")
-	}
-	wantErr := errors.New("failed")
-	job.RecordCheck(now, wantErr)
-	if job.LastError != wantErr.Error() {
-		t.Fatal("RecordCheck did not save error")
 	}
 }
 
@@ -360,20 +240,5 @@ func TestSeatRankerSelectedCandidateAndErrorPaths(t *testing.T) {
 	})
 	if err != nil || tied[0].Seats[0].Label != "B1" {
 		t.Fatalf("tied ranking = %+v, %v", tied, err)
-	}
-}
-
-func validPreset() Preset {
-	return Preset{
-		ID: "preset", UserID: "user", Name: "center", TheaterID: "theater",
-		AuditoriumID: "auditorium-1", SeatCount: 1,
-		SeatPreference: SeatPreference{CandidateSeats: []string{"A1"}, PreferredTypes: []SeatType{SeatTypeStandard}, Adjacency: SeatAdjacencyRequired},
-	}
-}
-
-func validMonitorJob() MonitorJob {
-	return MonitorJob{
-		ID: "monitor", UserID: "user", PresetID: "preset", Mode: MonitorModeOpening,
-		MovieID: "movie_1", Movie: "Movie", TargetDates: []string{"2026-08-10"}, PollInterval: 2 * time.Second,
 	}
 }

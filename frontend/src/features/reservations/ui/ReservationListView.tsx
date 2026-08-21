@@ -2,7 +2,8 @@ import { Group, Modal, Stack, Text } from '@mantine/core';
 import { DangerButton, PrimaryButton, SecondaryButton } from '../../../components/core/Actions';
 import { EmptyState, Section } from '../../../components/core/Section';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
-import type { Reservation } from '../../../api/types';
+import type { Reservation } from '../../../api/proto';
+import { reservationStatus } from '../../../api/resources';
 import { reservationReference, reservationStatusLabel } from '../model';
 
 export interface ReservationListViewProps {
@@ -22,9 +23,9 @@ export function ReservationListView(props: ReservationListViewProps) {
         <Stack gap="xs">
           {reservations.map((reservation) => (
             <Stack key={reservation.id} gap="xs" bg="dark.6" p="md">
-              <Group justify="space-between"><Text fw={600}>{reservation.draft?.showtime?.movie || '예약'}</Text><StatusIndicator label={reservationStatusLabel(reservation.status)} color={reservation.status === 'booked' ? 'green' : reservation.status === 'cancelled' ? 'yellow' : 'gray'} /></Group>
-              <Stack gap={2}><Text size="sm" c="dimmed">{reservation.draft?.seatLabels?.join(' · ') || '좌석 준비 중'}</Text><Text size="sm" c="dimmed">{reservationReference(reservation.status, reservation.bookingNumber)}</Text></Stack>
-              {reservation.status === 'booked' ? <Group gap="xs"><SecondaryButton size="xs" onClick={() => onReviewCancellation(reservation.id)}>취소 검토</SecondaryButton><DangerButton size="xs" onClick={() => onCancelRequest(reservation.id)}>실제 취소</DangerButton></Group> : null}
+				  <Group justify="space-between"><Text fw={600}>{reservation.bookingNumber || '예약'}</Text><StatusIndicator label={reservationStatusLabel(reservationStatus(reservation))} color={reservationStatus(reservation) === 'booked' ? 'green' : reservationStatus(reservation) === 'cancelled' ? 'yellow' : 'gray'} /></Group>
+				  <Stack gap={2}><Text size="sm" c="dimmed">{reservation.seatLabels.join(' · ') || '좌석 준비 중'}</Text><Text size="sm" c="dimmed">{reservationReference(reservationStatus(reservation), reservation.bookingNumber)}</Text></Stack>
+				  {reservationStatus(reservation) === 'booked' ? <Group gap="xs"><SecondaryButton size="xs" onClick={() => onReviewCancellation(reservation.id)}>취소 검토</SecondaryButton><DangerButton size="xs" onClick={() => onCancelRequest(reservation.id)}>실제 취소</DangerButton></Group> : null}
             </Stack>
           ))}
         </Stack>

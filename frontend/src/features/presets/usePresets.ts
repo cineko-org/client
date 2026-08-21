@@ -1,14 +1,19 @@
 import { useCallback, useState } from 'react';
+import { create } from '@bufbuild/protobuf';
 import { api, errorMessage, isRevisionConflict } from '../../api/client';
-import type { AppState } from '../../api/types';
+import {
+	MutationIdentitySchema, PresetResourceSchema, ResourceKindSchema, ResourceSchema, WebUIActionStatusSchema,
+	WebUIResourceDeletionSchema, WebUIResourceMutationSchema, type WebUIState,
+} from '../../api/proto';
+import { presetResources, resourceRevision, statePresets } from '../../api/resources';
 import type { Notify } from '../../components/core/feedback';
 import { candidateSelectionError, formFromPreset, initialPresetForm, presetSaveRequest, type PresetForm } from './model';
 import { usePresetCatalog } from './usePresetCatalog';
 
 export function usePresets(
-  state: AppState,
+  state: WebUIState,
   userId: string,
-  reload: () => Promise<AppState>,
+  reload: () => Promise<WebUIState>,
   notify: Notify,
   onSaved: () => void,
 ) {
@@ -39,25 +44,24 @@ export function usePresets(
       notify('프리셋 이름을 입력하세요.', { tone: 'error' });
       return;
     }
-    if (!seatMap || seatMap.seats.length === 0) {
+	const seats = seatMap?.layout?.seats ?? [];
+	if (!seatMap || seats.length === 0) {
       notify('좌석 배치 분석이 끝난 뒤 프리셋을 저장할 수 있습니다.', { tone: 'error' });
       return;
     }
-    const selectionError = candidateSelectionError(
-      seatMap.seats, pickedSeats, form.seatCount,
+	const selectionError = candidateSelectionError(
+			seats, pickedSeats, form.seatCount,
     );
     if (selectionError) {
       notify(selectionError, { tone: 'error' });
       return;
-    }
-    setSaving(true);
-    try {
-      await api('/api/presets', {
-        method: form.id ? 'PUT' : 'POST',
-        body: presetSaveRequest(
-          form, userId, activeTheaterId, auditoriumId, pickedSeats,
-        ),
-      });
+		}
+		setSaving(true);
+		try {
+			const mutation = presetSaveRequest(form, userId, activeTheaterId, auditoriumId, pickedSeats);
+			await api('/api/presets', ResourceSchema, {
+				method: form.id ? 'PUT' : 'POST',
+			}, WebUIResourceMutationSchema, mutation);
       notify(form.id ? '프리셋을 수정했습니다.' : '프리셋을 저장했습니다.', { important: true });
       reset();
       await reload();
@@ -75,18 +79,23 @@ export function usePresets(
   }, [activeTheaterId, auditoriumId, form, notify, onSaved, pickedSeats, reload, reset, seatMap, userId]);
 
   const edit = useCallback((id: string) => {
-    const preset = state.presets.find((item) => item.id === id);
-    if (!preset) return false;
-    setForm(formFromPreset(preset));
-    loadPreset(preset);
+		const resource = presetResources(state).find((item) => item.resource.case === 'preset' && item.resource.value.id === id);
+		const preset = resource?.resource.case === 'preset' ? resource.resource.value : undefined;
+		if (!preset) return false;
+		setForm({ ...formFromPreset(preset), revision: resourceRevision(resource) });
+		loadPreset(preset);
     return true;
-  }, [loadPreset, state.presets]);
+	}, [loadPreset, state]);
 
   const remove = useCallback(async () => {
 	if (!deleteId) return;
 	try {
-		const preset = state.presets.find((item) => item.id === deleteId);
-		await api('/api/presets', { method: 'DELETE', body: { id: deleteId, userId, revision: preset?.revision ?? 0 } });
+		const resource = presetResources(state).find((item) => item.resource.case === 'preset' && item.resource.value.id === deleteId);
+		await api('/api/presets', WebUIActionStatusSchema, { method: 'DELETE' }, WebUIResourceDeletionSchema,
+				create(WebUIResourceDeletionSchema, {
+					mutation: create(MutationIdentitySchema, { expectedRevision: BigInt(resourceRevision(resource)) }),
+					userId, id: deleteId, kind: create(ResourceKindSchema, { kind: { case: 'preset', value: create(PresetResourceSchema) } }),
+				}));
       await reload();
       notify('프리셋을 삭제했습니다.');
 	} catch (error) {
@@ -97,10 +106,10 @@ export function usePresets(
     } finally {
       setDeleteId(null);
     }
-	}, [deleteId, notify, reload, state.presets, userId]);
+	}, [deleteId, notify, reload, state, userId]);
 
   return {
-    presets: state.presets, form, setForm, saving, save, reset, newPreset: reset, edit,
+		presets: statePresets(state), form, setForm, saving, save, reset, newPreset: reset, edit,
     deleteId, setDeleteId, remove, activeTheaterId, auditoriumId, pickedSeats, seatMap, ...catalog,
   };
 }

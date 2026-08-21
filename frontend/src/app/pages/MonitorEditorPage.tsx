@@ -1,9 +1,9 @@
-import type { CatalogMovie, Preset } from '../../api/types';
+import type { Movie, Preset } from '../../api/proto';
 import { MonitorEditorPageView } from '../../features/monitors/ui/MonitorEditorPageView';
 import type { useMonitors } from '../../features/monitors/useMonitors';
 
 interface MonitorEditorPageProps {
-  movies: CatalogMovie[];
+  movies: Movie[];
   presets: Preset[];
   controller: ReturnType<typeof useMonitors>;
   onBack: () => void;

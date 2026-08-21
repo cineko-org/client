@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,12 +11,19 @@ import (
 
 	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
 	"github.com/cineko-org/client/internal/interfaces/webui"
-	central "github.com/cineko-org/contracts/v3"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestEmbeddedProbeRejectsIncompleteRuntimeIdentity(t *testing.T) {
 	if _, err := startEmbeddedProbe(
-		context.Background(), nil, t.TempDir(), desktopRuntimeIdentity{},
+		context.Background(), nil, t.TempDir(), nil,
 	); err == nil {
 		t.Fatal("incomplete embedded Probe runtime identity accepted")
 	}
@@ -315,21 +321,23 @@ func TestClientProbeCredentialSource(t *testing.T) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(time.Minute)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set(central.ReleaseGenerationHeader, "17")
+		writer.Header().Set("X-Cineko-Release-Generation", "17")
 		switch request.URL.Path {
 		case "/v1/auth/exchange":
-			_ = json.NewEncoder(writer).Encode(central.AuthExchangeResponse{ // #nosec G117 -- test credential.
-				AccessToken: "access", ExpiresAt: now.Add(time.Hour),
-				RefreshToken: "refresh", RefreshExpiresAt: now.Add(2 * time.Hour),
-				User: central.ClientUser{ID: "user"},
-			})
+			authentication := clientpb.AuthenticationResponse_builder{
+				AccessToken: stringPointer("access"), ExpiresAt: timestamppb.New(now.Add(time.Hour)),
+				RefreshToken: stringPointer("refresh"), RefreshExpiresAt: timestamppb.New(now.Add(2 * time.Hour)),
+				User: clientpb.User_builder{Id: stringPointer("user")}.Build(),
+			}.Build()
+			writeMainProto(t, writer, servicepb.ExchangeTokenResponse_builder{Authentication: authentication}.Build())
 		case "/v1/probe-bootstrap-tickets":
 			if request.Header.Get("Authorization") != "Bearer access" {
 				t.Errorf("authorization = %q", request.Header.Get("Authorization"))
 			}
-			_ = json.NewEncoder(writer).Encode(central.ProbeBootstrapTicketResponse{
-				Ticket: "ticket", ExpiresAt: expiresAt,
-			})
+			ticket := clientpb.ProbeBootstrapTicketResponse_builder{
+				Ticket: stringPointer("ticket"), ExpiresAt: timestamppb.New(expiresAt),
+			}.Build()
+			writeMainProto(t, writer, servicepb.CreateProbeBootstrapTicketResponse_builder{Response: ticket}.Build())
 		default:
 			http.NotFound(writer, request)
 		}
@@ -343,7 +351,18 @@ func TestClientProbeCredentialSource(t *testing.T) {
 	}
 	source := clientProbeCredentialSource{
 		store: store, deviceID: "device",
-		registration: central.RegisterProbeRequest{InstallationID: "installation", MaxConcurrency: 1},
+		registration: probepb.RegisterRequest_builder{
+			InstallationId: stringPointer("installation"),
+			Kind:           probepb.ProbeKind_builder{Client: probepb.ClientProbe_builder{}.Build()}.Build(),
+			Capabilities: []*observationpb.Capability{
+				observationpb.Capability_builder{CatalogCapture: observationpb.CatalogCapture_builder{}.Build()}.Build(),
+			},
+			MaxConcurrency: int32Pointer(1),
+			Runtime: commonpb.Runtime_builder{
+				ComponentVersion: stringPointer("1.0.0"), BrowserRevision: stringPointer("1234"),
+				Platform: stringPointer("test"), Architecture: stringPointer("test"),
+			}.Build(),
+		}.Build(),
 	}
 	if credential, err := source.Credential(t.Context()); err != nil || credential != "ticket" {
 		t.Fatalf("Credential() = %q, %v", credential, err)
@@ -355,6 +374,19 @@ func TestClientProbeCredentialSource(t *testing.T) {
 	server.Close()
 	if _, err := source.Credential(t.Context()); err == nil || errors.Is(err, context.Canceled) {
 		t.Fatalf("Credential() transport error = %v", err)
+	}
+}
+
+func writeMainProto(t *testing.T, writer http.ResponseWriter, message proto.Message) {
+	t.Helper()
+	writer.Header().Set("Content-Type", "application/json")
+	encoded, err := (protojson.MarshalOptions{UseProtoNames: false}).Marshal(message)
+	if err != nil {
+		t.Errorf("encode protobuf fixture: %v", err)
+		return
+	}
+	if _, err := writer.Write(encoded); err != nil {
+		t.Errorf("write protobuf fixture: %v", err)
 	}
 }
 

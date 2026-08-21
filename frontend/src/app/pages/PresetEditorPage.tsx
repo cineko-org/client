@@ -1,4 +1,4 @@
-import type { CatalogIndex } from '../../api/types';
+import type { CatalogIndex } from '../../api/proto';
 import { PresetPageView } from '../../features/presets/ui/PresetPageView';
 import type { usePresets } from '../../features/presets/usePresets';
 

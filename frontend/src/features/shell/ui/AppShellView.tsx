@@ -12,7 +12,10 @@ import {
 } from '@tabler/icons-react';
 import { IconAction, SecondaryButton } from '../../../components/core/Actions';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
-import type { AccountState, ApplicationConnection, NetworkSettings } from '../../../api/types';
+import type { WebUIAccountState } from '../../../api/proto';
+import { accountAuthenticated } from '../../../api/resources';
+import type { ApplicationConnection } from '../../../shared/application';
+import type { NetworkSettings } from '../../../api/proto';
 
 interface ShellFeedback {
   message: string;
@@ -23,7 +26,7 @@ export interface AppShellViewProps {
   activeSection: MainSection | null;
   loading: boolean;
   connection: ApplicationConnection;
-  account: AccountState;
+	account: WebUIAccountState;
   network: NetworkSettings;
   desktopAvailable: boolean;
   unreadNotices: number;
@@ -154,8 +157,8 @@ export function AppShellView(props: AppShellViewProps) {
           </Group>
           <Group gap="md" wrap="nowrap">
             <Group gap="md" wrap="nowrap" visibleFrom="md">
-              <StatusIndicator label="프록시" color={network.mode !== 'direct' ? 'green' : 'gray'} muted={network.mode === 'direct'} />
-              <StatusIndicator label="CGV" color={account.authenticated ? 'green' : 'gray'} muted={!account.authenticated} />
+			  <StatusIndicator label="프록시" color={network.mode.case === 'proxy' ? 'green' : 'gray'} muted={network.mode.case !== 'proxy'} />
+			  <StatusIndicator label="CGV" color={accountAuthenticated(account) ? 'green' : 'gray'} muted={!accountAuthenticated(account)} />
             </Group>
             <Group gap={4} wrap="nowrap">
               <Indicator

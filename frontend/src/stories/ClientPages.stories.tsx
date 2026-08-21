@@ -12,7 +12,11 @@ import { initialMonitorForm } from '../features/monitors/model';
 import { initialPresetForm } from '../features/presets/model';
 import type { MonitorForm } from '../features/monitors/model';
 import type { PresetForm } from '../features/presets/model';
-import { auditoriums, catalog, monitors, noop, presets, reservations, seatMap } from './fixtures';
+import {
+	auditoriums, authenticatedAccount, catalog, directNetwork, monitors, noop, presets, proxyNetwork,
+	reservations, seatMap, unauthenticatedAccount, checkingAccount,
+} from './fixtures';
+import { localDateText } from '../api/resources';
 import { imaxSeatMapFixture } from './liveSeatMaps';
 
 const meta = { title: 'Client/Pages' } satisfies Meta;
@@ -77,7 +81,7 @@ export const EditMonitor: Story = {
   render: () => (
     <Canvas><MonitorEditorPageView onBack={noop} builder={{
       movies: catalog.movies, presets,
-      form: { ...initialMonitorForm, id: monitors[0].id, movieId: monitors[0].movieId, movie: monitors[0].movie, presetId: presets[0].id, dates: monitors[0].targetDates, earliestTime: '18:00', latestTime: '23:30' },
+      form: { ...initialMonitorForm, id: monitors[0].id, movieId: monitors[0].movieId, movie: monitors[0].movieTitle, presetId: presets[0].id, dates: monitors[0].targetDates.map(localDateText), earliestTime: '18:00', latestTime: '23:30' },
       submitting: false, onChange: noop, onSubmit: noop,
     }} /></Canvas>
   ),
@@ -133,8 +137,8 @@ export const Settings: Story = {
   render: () => (
     <Canvas>
       <SettingsPage
-        available account={{ status: 'authenticated', authenticated: true }}
-        settings={{ mode: 'direct' }}
+        available account={authenticatedAccount}
+        settings={directNetwork}
         form={{ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '' }}
         loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} onAuthenticate={noop}
         onSaveAccountCredentials={noop} onRestoreAuthentication={noop} onDeleteAccountCredentials={noop}
@@ -148,8 +152,8 @@ export const Settings: Story = {
 export const StandardProxySettings: Story = {
   render: () => (
     <Canvas><SettingsPage
-      available account={{ status: 'unauthenticated', authenticated: false }}
-      settings={{ mode: 'proxy', proxyUrls: ['socks5://127.0.0.1:1080'], hasProxyPassword: true }}
+      available account={unauthenticatedAccount}
+      settings={proxyNetwork}
       form={{ mode: 'proxy', proxyUrls: 'socks5://127.0.0.1:1080', proxyUsername: 'cineko', proxyPassword: '' }}
       loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} onAuthenticate={noop}
       onSaveAccountCredentials={noop} onRestoreAuthentication={noop} onDeleteAccountCredentials={noop}
@@ -161,7 +165,7 @@ export const StandardProxySettings: Story = {
 export const SettingsLoading: Story = {
   render: () => (
     <Canvas><SettingsPage
-      available account={{ status: 'checking', authenticated: false }} settings={{ mode: 'direct' }}
+      available account={checkingAccount} settings={directNetwork}
       form={{ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '' }}
       loadState="loading" saving={false} onChange={noop} onReload={noop} onSave={noop} onAuthenticate={noop}
       onSaveAccountCredentials={noop} onRestoreAuthentication={noop} onDeleteAccountCredentials={noop}
@@ -174,7 +178,7 @@ export const SettingsLoading: Story = {
 export const SettingsLoadFailed: Story = {
   render: () => (
     <Canvas><SettingsPage
-      available account={{ status: 'error', authenticated: false }} settings={{ mode: 'direct' }}
+      available account={checkingAccount} settings={directNetwork}
       form={{ mode: 'direct', proxyUrls: '', proxyUsername: '', proxyPassword: '' }}
       loadState="error" saving={false} onChange={noop} onReload={noop} onSave={noop} onAuthenticate={noop}
       onSaveAccountCredentials={noop} onRestoreAuthentication={noop} onDeleteAccountCredentials={noop}

@@ -5,61 +5,53 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/cineko-org/client/internal/domain"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type CreateMonitorRequest struct {
-	ExpectedRevision  int64
-	UserID            string
-	PresetID          string
-	Mode              domain.MonitorMode
-	MovieID           string
-	Movie             string
-	TargetDates       []string
-	TargetWeekdays    []int
-	SearchHorizonDays int
-	EarliestTime      string
-	LatestTime        string
-	PollInterval      time.Duration
-	PollIntervalMax   time.Duration
-}
-
-type UpdateMonitorRequest struct {
-	ID string
-	CreateMonitorRequest
-}
-
-func (service *MonitorService) Update(ctx context.Context, request UpdateMonitorRequest) (domain.MonitorJob, error) {
-	job, err := service.monitors.GetMonitor(ctx, request.ID)
-	if err != nil || job.UserID != request.UserID {
-		return domain.MonitorJob{}, ErrNotFound
+func (service *MonitorService) Update(ctx context.Context, mutation *clientpb.WebUIResourceMutation) (*clientpb.Resource, error) {
+	request, expectedRevision, err := monitorMutationMessage(mutation)
+	if err != nil {
+		return nil, err
 	}
-	if request.ExpectedRevision < 1 || job.Revision != request.ExpectedRevision {
-		return domain.MonitorJob{}, ErrConflict
+	resource, err := service.monitors.GetMonitor(ctx, request.GetId())
+	if err != nil {
+		return nil, ErrNotFound
 	}
-	if job.Status == domain.MonitorRunning || job.Status == domain.MonitorTriggered || job.Status == domain.MonitorPaymentUnknown {
-		return domain.MonitorJob{}, fmt.Errorf("%w: active monitor cannot be edited", ErrConflict)
+	job, revision, err := monitorMessage(resource)
+	if err != nil || job.GetUserId() != request.GetUserId() {
+		return nil, ErrNotFound
 	}
-	preset, err := service.presets.GetPreset(ctx, request.PresetID)
-	if err != nil || !preset.Owns(request.UserID) {
-		return domain.MonitorJob{}, ErrNotFound
+	if expectedRevision < 1 || revision != expectedRevision {
+		return nil, ErrConflict
 	}
-	updated := service.newMonitor(request.CreateMonitorRequest)
-	updated.ID = job.ID
-	updated.Revision = job.Revision
-	updated.CreatedAt = job.CreatedAt
-	if err := updated.Validate(); err != nil {
-		return domain.MonitorJob{}, err
+	if monitorIsActive(job) {
+		return nil, fmt.Errorf("%w: active monitor cannot be edited", ErrConflict)
 	}
-	if updated.Expired(service.clock.Now()) {
-		return domain.MonitorJob{}, ErrMonitorExpired
+	presetResource, err := service.presets.GetPreset(ctx, request.GetPresetId())
+	if err != nil {
+		return nil, ErrNotFound
 	}
-	if err := service.monitors.PutMonitor(ctx, updated); err != nil {
-		return domain.MonitorJob{}, err
+	preset, _, err := presetMessage(presetResource)
+	if err != nil || preset.GetUserId() != request.GetUserId() {
+		return nil, ErrNotFound
 	}
-	return updated, nil
+	updated := service.newMonitor(request)
+	updated.SetId(job.GetId())
+	updated.SetCreatedAt(job.GetCreatedAt())
+	if err := validateMonitorMessage(updated); err != nil {
+		return nil, err
+	}
+	if monitorIsExpired(updated, service.clock.Now()) {
+		return nil, ErrMonitorExpired
+	}
+	updatedResource := resourceForMonitor(updated, revision)
+	if err := service.monitors.PutMonitor(ctx, updatedResource); err != nil {
+		return nil, err
+	}
+	return updatedResource, nil
 }
 
 type MonitorService struct {
@@ -80,23 +72,32 @@ func NewMonitorService(
 
 func (service *MonitorService) Create(
 	ctx context.Context,
-	request CreateMonitorRequest,
-) (domain.MonitorJob, error) {
-	preset, err := service.presets.GetPreset(ctx, request.PresetID)
-	if err != nil || !preset.Owns(request.UserID) {
-		return domain.MonitorJob{}, ErrNotFound
+	mutation *clientpb.WebUIResourceMutation,
+) (*clientpb.Resource, error) {
+	request, _, err := monitorMutationMessage(mutation)
+	if err != nil {
+		return nil, err
+	}
+	presetResource, err := service.presets.GetPreset(ctx, request.GetPresetId())
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	preset, _, err := presetMessage(presetResource)
+	if err != nil || preset.GetUserId() != request.GetUserId() {
+		return nil, ErrNotFound
 	}
 	job := service.newMonitor(request)
-	if err := job.Validate(); err != nil {
-		return domain.MonitorJob{}, err
+	if err := validateMonitorMessage(job); err != nil {
+		return nil, err
 	}
-	if job.Expired(service.clock.Now()) {
-		return domain.MonitorJob{}, ErrMonitorExpired
+	if monitorIsExpired(job, service.clock.Now()) {
+		return nil, ErrMonitorExpired
 	}
-	if err := service.monitors.PutMonitor(ctx, job); err != nil {
-		return domain.MonitorJob{}, err
+	resource := resourceForMonitor(job, 0)
+	if err := service.monitors.PutMonitor(ctx, resource); err != nil {
+		return nil, err
 	}
-	return job, nil
+	return resource, nil
 }
 
 // CreateIdempotent uses the caller's stable command key as the monitor ID.
@@ -104,111 +105,95 @@ func (service *MonitorService) Create(
 // instead of creating another one.
 func (service *MonitorService) CreateIdempotent(
 	ctx context.Context,
-	commandID string,
-	request CreateMonitorRequest,
-) (domain.MonitorJob, error) {
-	commandID = strings.TrimSpace(commandID)
-	if commandID == "" {
-		return domain.MonitorJob{}, errors.New("idempotency key is required")
+	mutation *clientpb.WebUIResourceMutation,
+) (*clientpb.Resource, error) {
+	request, _, err := monitorMutationMessage(mutation)
+	if err != nil {
+		return nil, err
 	}
-	existing, err := service.monitors.GetMonitor(ctx, commandID)
+	commandID := monitorCommandID(mutation)
+	if commandID == "" {
+		return nil, errors.New("idempotency key is required")
+	}
+	existingResource, err := service.monitors.GetMonitor(ctx, commandID)
 	if err == nil {
-		if existing.UserID != request.UserID {
-			return domain.MonitorJob{}, ErrNotFound
+		existing, _, decodeErr := monitorMessage(existingResource)
+		if decodeErr != nil {
+			return nil, decodeErr
 		}
-		return existing, nil
+		if existing.GetUserId() != request.GetUserId() {
+			return nil, ErrNotFound
+		}
+		return existingResource, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
-		return domain.MonitorJob{}, err
+		return nil, err
 	}
-	preset, err := service.presets.GetPreset(ctx, request.PresetID)
-	if err != nil || !preset.Owns(request.UserID) {
-		return domain.MonitorJob{}, ErrNotFound
+	presetResource, err := service.presets.GetPreset(ctx, request.GetPresetId())
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	preset, _, err := presetMessage(presetResource)
+	if err != nil || preset.GetUserId() != request.GetUserId() {
+		return nil, ErrNotFound
 	}
 	job := service.newMonitor(request)
-	job.ID = commandID
-	if err := job.Validate(); err != nil {
-		return domain.MonitorJob{}, err
+	job.SetId(commandID)
+	if err := validateMonitorMessage(job); err != nil {
+		return nil, err
 	}
-	if job.Expired(service.clock.Now()) {
-		return domain.MonitorJob{}, ErrMonitorExpired
+	if monitorIsExpired(job, service.clock.Now()) {
+		return nil, ErrMonitorExpired
 	}
-	if err := service.monitors.PutMonitor(ctx, job); err != nil {
-		return domain.MonitorJob{}, err
+	resource := resourceForMonitor(job, 0)
+	if err := service.monitors.PutMonitor(ctx, resource); err != nil {
+		return nil, err
 	}
-	return job, nil
+	return resource, nil
 }
 
-func (service *MonitorService) List(ctx context.Context, userID string) ([]domain.MonitorJob, error) {
+func (service *MonitorService) List(ctx context.Context, userID string) ([]*clientpb.Resource, error) {
 	return service.monitors.ListMonitorsByUser(ctx, userID)
 }
 
 func (service *MonitorService) Delete(ctx context.Context, userID, monitorID string, expectedRevision ...int64) error {
-	job, err := service.monitors.GetMonitor(ctx, monitorID)
+	resource, err := service.monitors.GetMonitor(ctx, monitorID)
 	if err != nil {
 		return err
 	}
-	if job.UserID != userID {
+	job, revision, err := monitorMessage(resource)
+	if err != nil {
+		return err
+	}
+	if job.GetUserId() != userID {
 		return ErrNotFound
 	}
-	if len(expectedRevision) > 0 && (expectedRevision[0] < 1 || job.Revision != expectedRevision[0]) {
+	if len(expectedRevision) > 0 && (expectedRevision[0] < 1 || revision != expectedRevision[0]) {
 		return ErrConflict
 	}
-	if job.Status == domain.MonitorRunning {
+	if monitorStateName(job) == "running" {
 		return fmt.Errorf("%w: running monitor cannot be deleted", ErrConflict)
 	}
 	return service.monitors.DeleteMonitor(ctx, monitorID)
 }
 
-func (service *MonitorService) newMonitor(request CreateMonitorRequest) domain.MonitorJob {
+func (service *MonitorService) newMonitor(request *clientpb.Monitor) *clientpb.Monitor {
 	now := service.clock.Now()
-	return domain.MonitorJob{
-		ID:                service.ids.NewID(),
-		UserID:            request.UserID,
-		PresetID:          request.PresetID,
-		Mode:              monitorModeOrDefault(request.Mode),
-		MovieID:           strings.TrimSpace(request.MovieID),
-		Movie:             strings.TrimSpace(request.Movie),
-		TargetDates:       append([]string(nil), request.TargetDates...),
-		TargetWeekdays:    append([]int(nil), request.TargetWeekdays...),
-		SearchHorizonDays: monitorHorizon(request.TargetWeekdays, request.SearchHorizonDays),
-		EarliestTime:      request.EarliestTime,
-		LatestTime:        request.LatestTime,
-		PollInterval:      pollIntervalOrDefault(request.PollInterval),
-		PollIntervalMax:   pollIntervalMaxOrDefault(request.PollInterval, request.PollIntervalMax),
-		Status:            domain.MonitorPending,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-	}
+	monitor := proto.CloneOf(request)
+	monitor.SetId(service.ids.NewID())
+	monitor.SetMovieId(strings.TrimSpace(request.GetMovieId()))
+	monitor.SetMovieTitle(strings.TrimSpace(request.GetMovieTitle()))
+	monitor.SetCreatedAt(timestamppb.New(now))
+	monitor.SetUpdatedAt(timestamppb.New(now))
+	applyMonitorDefaults(monitor)
+	return monitor
 }
 
-func monitorModeOrDefault(mode domain.MonitorMode) domain.MonitorMode {
-	if mode == "" {
-		return domain.MonitorModeOpening
+func monitorIsActive(value *clientpb.Monitor) bool {
+	switch monitorStateName(value) {
+	case "running", "triggered", "payment_unknown":
+		return true
+	default:
+		return false
 	}
-	return mode
-}
-
-func monitorHorizon(weekdays []int, horizon int) int {
-	if len(weekdays) > 0 && horizon == 0 {
-		return domain.DefaultSearchHorizonDays
-	}
-	return horizon
-}
-
-func pollIntervalOrDefault(interval time.Duration) time.Duration {
-	if interval == 0 {
-		return 3 * time.Minute
-	}
-	return interval
-}
-
-func pollIntervalMaxOrDefault(interval, maximum time.Duration) time.Duration {
-	if maximum > 0 {
-		return maximum
-	}
-	if interval > 0 {
-		return interval + interval/5
-	}
-	return 8 * time.Minute
 }

@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
 
 const monitorLeaseTTL = 10 * time.Minute
@@ -49,17 +52,6 @@ type BookingWorkerDependencies struct {
 	ClaimedWatch ClaimedSeatWatchPolicy
 }
 
-// ClaimedBooking is the complete, immutable input selected by a Central
-// execution lease. Unlike a normal monitor run, it already contains the exact
-// observed showtime and therefore must never perform another schedule lookup.
-type ClaimedBooking struct {
-	Monitor    domain.MonitorJob
-	Preset     domain.Preset
-	Theater    domain.Theater
-	Auditorium domain.Auditorium
-	Showtime   domain.Showtime
-}
-
 func NewBookingWorker(dependencies BookingWorkerDependencies) *BookingWorker {
 	jitter := dependencies.Jitter
 	if jitter == nil {
@@ -76,7 +68,7 @@ func NewBookingWorker(dependencies BookingWorkerDependencies) *BookingWorker {
 	}
 }
 
-func (worker *BookingWorker) Run(ctx context.Context, monitorID string) (domain.Reservation, error) {
+func (worker *BookingWorker) Run(ctx context.Context, monitorID string) (*clientpb.Resource, error) {
 	return worker.run(ctx, monitorID, 0, 0)
 }
 
@@ -90,7 +82,7 @@ func (worker *BookingWorker) RunWithRestartPolicy(
 	monitorID string,
 	maxAttempts int,
 	maxAge time.Duration,
-) (domain.Reservation, error) {
+) (*clientpb.Resource, error) {
 	return worker.run(ctx, monitorID, maxAttempts, maxAge)
 }
 
@@ -99,10 +91,10 @@ func (worker *BookingWorker) run(
 	monitorID string,
 	maxAttempts int,
 	maxAge time.Duration,
-) (domain.Reservation, error) {
+) (*clientpb.Resource, error) {
 	job, err := worker.startMonitor(ctx, monitorID)
 	if err != nil {
-		return domain.Reservation{}, err
+		return nil, err
 	}
 	defer func() {
 		_ = worker.monitors.ReleaseMonitor(context.WithoutCancel(ctx), monitorID, worker.workerID)
@@ -110,34 +102,34 @@ func (worker *BookingWorker) run(
 
 	preset, theater, auditorium, err := worker.loadBookingContext(ctx, job)
 	if err != nil {
-		return domain.Reservation{}, worker.fail(ctx, job, err)
+		return nil, worker.fail(ctx, job, err)
 	}
-	backoff := job.PollInterval
+	backoff := monitorPollInterval(job)
 	startedAt := worker.clock.Now()
 	attempts := 0
 	for {
 		if stopErr := worker.stopReason(ctx, job); stopErr != nil {
-			return domain.Reservation{}, worker.stop(ctx, job, stopErr)
+			return nil, worker.stop(ctx, job, stopErr)
 		}
 
 		if maxAttempts > 0 && attempts >= maxAttempts || maxAge > 0 && worker.clock.Now().Sub(startedAt) >= maxAge {
-			return domain.Reservation{}, ErrBrowserRotation
+			return nil, ErrBrowserRotation
 		}
 		reservation, attemptErr := worker.attempt(ctx, job, preset, theater, auditorium)
 		attempts++
-		result, done, nextBackoff, handleErr := worker.handleAttempt(ctx, &job, reservation, attemptErr, backoff)
+		result, done, nextBackoff, handleErr := worker.handleAttempt(ctx, job, reservation, attemptErr, backoff)
 		if handleErr != nil || done {
 			return result, handleErr
 		}
 		backoff = nextBackoff
 
 		if renewErr := worker.monitors.RenewMonitor(
-			ctx, job.ID, worker.workerID, worker.clock.Now(), monitorLeaseTTL,
+			ctx, job.GetId(), worker.workerID, worker.clock.Now(), monitorLeaseTTL,
 		); renewErr != nil {
-			return domain.Reservation{}, worker.fail(ctx, job, renewErr)
+			return nil, worker.fail(ctx, job, renewErr)
 		}
 		if waitErr := worker.waiter.Wait(ctx, backoff+worker.jitter(pollJitterRange(job, backoff))); waitErr != nil {
-			return domain.Reservation{}, worker.stopAfterWait(ctx, job, waitErr)
+			return nil, worker.stopAfterWait(ctx, job, waitErr)
 		}
 	}
 }
@@ -146,36 +138,39 @@ func (worker *BookingWorker) run(
 // lease immediately when the target is no longer bookable. Opening monitors
 // use it after a disposable scan detects availability so other saved targets
 // are never starved by a long-lived browser session.
-func (worker *BookingWorker) RunOnce(ctx context.Context, monitorID string) (domain.Reservation, error) {
+func (worker *BookingWorker) RunOnce(ctx context.Context, monitorID string) (*clientpb.Resource, error) {
 	job, err := worker.startMonitor(ctx, monitorID)
 	if err != nil {
-		return domain.Reservation{}, err
+		return nil, err
 	}
 	defer func() {
 		_ = worker.monitors.ReleaseMonitor(context.WithoutCancel(ctx), monitorID, worker.workerID)
 	}()
 	preset, theater, auditorium, err := worker.loadBookingContext(ctx, job)
 	if err != nil {
-		return domain.Reservation{}, worker.fail(ctx, job, err)
+		return nil, worker.fail(ctx, job, err)
 	}
 	reservation, attemptErr := worker.attempt(ctx, job, preset, theater, auditorium)
 	now := worker.clock.Now()
-	job.RecordCheck(now, attemptErr)
+	monitorRecordCheck(job, now, attemptErr)
 	if attemptErr == nil {
-		result, _, _, completeErr := worker.complete(ctx, &job, reservation, now)
-		return result, completeErr
+		result, _, _, completeErr := worker.complete(ctx, job, reservation, now)
+		if completeErr != nil {
+			return nil, completeErr
+		}
+		return result, nil
 	}
 	if errors.Is(attemptErr, context.Canceled) || errors.Is(attemptErr, context.DeadlineExceeded) {
-		return domain.Reservation{}, worker.stop(ctx, job, attemptErr)
+		return nil, worker.stop(ctx, job, attemptErr)
 	}
 	if errors.Is(attemptErr, ErrBookingNotOpen) || errors.Is(attemptErr, ErrSeatUnavailable) {
-		job.Transition(domain.MonitorRunning, now)
-		if err := worker.monitors.PutMonitor(ctx, job); err != nil {
-			return domain.Reservation{}, err
+		monitorTransition(job, "running", now)
+		if err := worker.putMonitor(ctx, job, 0); err != nil {
+			return nil, err
 		}
-		return domain.Reservation{}, attemptErr
+		return nil, attemptErr
 	}
-	return domain.Reservation{}, worker.fail(ctx, job, attemptErr)
+	return nil, worker.fail(ctx, job, attemptErr)
 }
 
 // RunClaimedShowtime prepares the exact showtime carried by a Central
@@ -184,107 +179,139 @@ func (worker *BookingWorker) RunOnce(ctx context.Context, monitorID string) (dom
 // Client installation from executing and could incorrectly imply otherwise.
 func (worker *BookingWorker) RunClaimedShowtime(
 	ctx context.Context,
-	claimed ClaimedBooking,
-) (domain.Reservation, error) {
-	if err := claimed.Validate(worker.clock.Now()); err != nil {
-		return domain.Reservation{}, err
+	monitorResource *clientpb.Resource,
+	presetResource *clientpb.Resource,
+	theaterMessage *catalogpb.Theater,
+	auditoriumMessage *catalogpb.Auditorium,
+	showtimeMessage *catalogpb.Showtime,
+) (*clientpb.Resource, error) {
+	job, revision, err := monitorMessage(monitorResource)
+	if err != nil {
+		return nil, err
 	}
-	job := claimed.Monitor
-	job.Transition(domain.MonitorRunning, worker.clock.Now())
-	if err := worker.monitors.PutMonitor(ctx, job); err != nil {
-		return domain.Reservation{}, err
+	preset, _, err := presetMessage(presetResource)
+	if err != nil {
+		return nil, err
 	}
-	reservation, attemptErr := worker.attemptClaimedShowtime(
-		ctx, job, claimed.Preset, claimed.Showtime,
-	)
+	if err := validateClaimedBooking(job, preset, theaterMessage, auditoriumMessage, showtimeMessage, worker.clock.Now()); err != nil {
+		return nil, err
+	}
+	monitorTransition(job, "running", worker.clock.Now())
+	if err := worker.putMonitor(ctx, job, revision); err != nil {
+		return nil, err
+	}
+	reservation, attemptErr := worker.attemptClaimedShowtime(ctx, job, preset, showtimeMessage)
 	if err := ctx.Err(); err != nil {
-		return domain.Reservation{}, err
+		return nil, err
 	}
 	now := worker.clock.Now()
-	job.RecordCheck(now, attemptErr)
+	monitorRecordCheck(job, now, attemptErr)
 	if attemptErr != nil {
 		// Central owns retry/exhaustion for execution commands. Keep the monitor
 		// eligible while Central decides whether this failed lease is retried.
-		if err := worker.monitors.PutMonitor(ctx, job); err != nil {
-			return domain.Reservation{}, errors.Join(attemptErr, err)
+		if err := worker.putMonitor(ctx, job, revision); err != nil {
+			return nil, errors.Join(attemptErr, err)
 		}
-		return domain.Reservation{}, attemptErr
+		return nil, attemptErr
 	}
-	result, _, _, completeErr := worker.complete(ctx, &job, reservation, now)
-	return result, completeErr
+	result, _, _, completeErr := worker.complete(ctx, job, reservation, now)
+	if completeErr != nil {
+		return nil, completeErr
+	}
+	return result, nil
 }
 
-func (claimed ClaimedBooking) Validate(now time.Time) error {
-	if err := claimed.validateMonitorContext(); err != nil {
+func validateClaimedBooking(job *clientpb.Monitor, preset *clientpb.Preset, theater *catalogpb.Theater, auditorium *catalogpb.Auditorium, showtime *catalogpb.Showtime, now time.Time) error {
+	if err := validateClaimedMonitorContext(job, preset, theater, auditorium); err != nil {
 		return err
 	}
-	if err := claimed.validateShowtimeContext(); err != nil {
+	if err := validateClaimedShowtimeContext(job, theater, auditorium, showtime); err != nil {
 		return err
 	}
-	return claimed.validateSchedule(now)
+	return validateClaimedSchedule(job, showtime, now)
 }
 
-func (claimed ClaimedBooking) validateMonitorContext() error {
-	job, preset := claimed.Monitor, claimed.Preset
-	if job.Status != domain.MonitorPending && job.Status != domain.MonitorRunning {
+func validateClaimedMonitorContext(job *clientpb.Monitor, preset *clientpb.Preset, theater *catalogpb.Theater, auditorium *catalogpb.Auditorium) error {
+	state := monitorStateName(job)
+	if state != "pending" && state != "running" {
 		return ErrConflict
 	}
-	if preset.ID == "" || preset.ID != job.PresetID || preset.TheaterID != claimed.Theater.ID ||
-		preset.AuditoriumID != claimed.Auditorium.ID {
+	if preset == nil || preset.GetId() == "" || preset.GetId() != job.GetPresetId() || theater == nil || auditorium == nil ||
+		preset.GetTheaterId() != theater.GetId() || preset.GetAuditoriumId() != auditorium.GetId() {
 		return errors.New("claimed booking context does not match the monitor preset")
 	}
 	return nil
 }
 
-func (claimed ClaimedBooking) validateShowtimeContext() error {
-	job, showtime := claimed.Monitor, claimed.Showtime
-	if showtime.ID == "" || strings.TrimSpace(showtime.ProviderID) == "" || strings.TrimSpace(showtime.SourceKey) == "" ||
-		strings.TrimSpace(job.MovieID) == "" ||
-		strings.TrimSpace(showtime.MovieID) == "" || showtime.MovieID != job.MovieID ||
-		showtime.AuditoriumID != claimed.Auditorium.ID || showtime.TheaterID != claimed.Theater.ID {
+func validateClaimedShowtimeContext(job *clientpb.Monitor, theater *catalogpb.Theater, auditorium *catalogpb.Auditorium, showtime *catalogpb.Showtime) error {
+	if theater == nil || auditorium == nil || showtime == nil || showtime.GetMovie() == nil || showtime.GetAuditorium() == nil {
+		return errors.New("claimed booking context is incomplete")
+	}
+	if !claimedShowtimeIdentityMatches(job, theater, auditorium, showtime) {
 		return errors.New("claimed showtime does not match the monitor")
 	}
-	if showtime.SoldOut || showtime.AvailableSeats < 1 || showtime.Capacity < showtime.AvailableSeats {
+	if showtime.GetSoldOut() || showtime.GetAvailableSeats() < 1 || showtime.GetCapacity() < showtime.GetAvailableSeats() {
 		return ErrBookingNotOpen
 	}
 	return nil
 }
 
-func (claimed ClaimedBooking) validateSchedule(now time.Time) error {
-	job, showtime := claimed.Monitor, claimed.Showtime
-	if showtime.Date == "" || showtime.StartsAt == "" || showtime.EndsAt == "" {
+func claimedShowtimeIdentityMatches(
+	job *clientpb.Monitor,
+	theater *catalogpb.Theater,
+	auditorium *catalogpb.Auditorium,
+	showtime *catalogpb.Showtime,
+) bool {
+	movieID := strings.TrimSpace(job.GetMovieId())
+	return showtime.GetId() != "" &&
+		strings.TrimSpace(showtime.GetProviderId()) != "" &&
+		strings.TrimSpace(showtime.GetSourceKey()) != "" &&
+		movieID != "" &&
+		strings.TrimSpace(showtime.GetMovie().GetId()) == movieID &&
+		showtime.GetAuditorium().GetId() == auditorium.GetId() &&
+		showtime.GetTheaterId() == theater.GetId()
+}
+
+func validateClaimedSchedule(job *clientpb.Monitor, showtime *catalogpb.Showtime, now time.Time) error {
+	if showtime == nil || showtime.GetStartsAt() == nil || showtime.GetEndsAt() == nil {
 		return errors.New("claimed showtime schedule is incomplete")
 	}
-	if !slices.Contains(job.ResolveTargetDates(now), showtime.Date) ||
+	internalShowtime := showtimeDomainFromProto(showtime)
+	if internalShowtime.Date == "" || !slices.Contains(monitorResolveTargetDates(job, now), internalShowtime.Date) ||
 		!(domain.ScheduleWindow{
-			Weekdays: job.TargetWeekdays,
-			Earliest: job.EarliestTime,
-			Latest:   job.LatestTime,
-		}.MatchesShowtime(showtime)) {
+			Weekdays: int32Values(job.GetTargetWeekdays()),
+			Earliest: localTimeValue(job.GetEarliestTime()),
+			Latest:   localTimeValue(job.GetLatestTime()),
+		}.MatchesShowtime(internalShowtime)) {
 		return errors.New("claimed showtime is outside the monitor schedule")
 	}
 	return nil
 }
 
-func (worker *BookingWorker) startMonitor(ctx context.Context, monitorID string) (domain.MonitorJob, error) {
-	job, err := worker.monitors.AcquireMonitor(
+func (worker *BookingWorker) startMonitor(ctx context.Context, monitorID string) (*clientpb.Monitor, error) {
+	resource, err := worker.monitors.AcquireMonitor(
 		ctx, monitorID, worker.workerID, worker.clock.Now(), monitorLeaseTTL,
 	)
 	if err != nil {
-		return domain.MonitorJob{}, err
+		return nil, err
 	}
-	job.Transition(domain.MonitorRunning, worker.clock.Now())
-	if err := worker.monitors.PutMonitor(ctx, job); err != nil {
-		return domain.MonitorJob{}, err
+	job, revision, err := monitorMessage(resource)
+	if err != nil {
+		return nil, err
+	}
+	job = cloneMonitor(job)
+	monitorTransition(job, "running", worker.clock.Now())
+	if err := worker.putMonitor(ctx, job, revision); err != nil {
+		return nil, err
 	}
 	return job, nil
 }
 
-func (worker *BookingWorker) stopReason(ctx context.Context, job domain.MonitorJob) error {
+func (worker *BookingWorker) stopReason(ctx context.Context, job *clientpb.Monitor) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if job.Expired(worker.clock.Now()) {
+	if monitorIsExpired(job, worker.clock.Now()) {
 		return ErrMonitorExpired
 	}
 	return nil
@@ -292,105 +319,112 @@ func (worker *BookingWorker) stopReason(ctx context.Context, job domain.MonitorJ
 
 func (worker *BookingWorker) handleAttempt(
 	ctx context.Context,
-	job *domain.MonitorJob,
-	reservation domain.Reservation,
+	job *clientpb.Monitor,
+	reservation *clientpb.Resource,
 	attemptErr error,
 	backoff time.Duration,
-) (domain.Reservation, bool, time.Duration, error) {
+) (*clientpb.Resource, bool, time.Duration, error) {
 	now := worker.clock.Now()
-	job.RecordCheck(now, attemptErr)
+	monitorRecordCheck(job, now, attemptErr)
 	if attemptErr == nil {
 		return worker.complete(ctx, job, reservation, now)
 	}
-	if errors.Is(attemptErr, ErrBookingNotOpen) &&
-		job.EffectiveMode() == domain.MonitorModeCancellation {
-		return domain.Reservation{}, true, backoff, worker.fail(ctx, *job, attemptErr)
+	if errors.Is(attemptErr, ErrBookingNotOpen) && monitorModeIsCancellation(job) {
+		return nil, true, backoff, worker.fail(ctx, job, attemptErr)
 	}
-	if err := worker.monitors.PutMonitor(ctx, *job); err != nil {
-		return domain.Reservation{}, true, backoff, err
+	if err := worker.putMonitor(ctx, job, 0); err != nil {
+		return nil, true, backoff, err
 	}
 	if errors.Is(attemptErr, ErrBookingNotOpen) || errors.Is(attemptErr, ErrSeatUnavailable) {
-		return domain.Reservation{}, false, job.PollInterval, nil
+		return nil, false, monitorPollInterval(job), nil
 	}
-	return domain.Reservation{}, false, min(backoff*2, 30*time.Second), nil
+	return nil, false, min(backoff*2, 30*time.Second), nil
 }
 
 func (worker *BookingWorker) complete(
 	ctx context.Context,
-	job *domain.MonitorJob,
-	reservation domain.Reservation,
+	job *clientpb.Monitor,
+	reservation *clientpb.Resource,
 	now time.Time,
-) (domain.Reservation, bool, time.Duration, error) {
-	job.ReservationID = reservation.ID
-	status := domain.MonitorBooked
-	if reservation.Status == "prepared" {
-		status = domain.MonitorTriggered
+) (*clientpb.Resource, bool, time.Duration, error) {
+	if reservation == nil || reservation.GetReservation() == nil {
+		return nil, true, 0, errors.New("reservation resource is required")
 	}
-	job.Transition(status, now)
-	if err := worker.monitors.PutMonitor(ctx, *job); err != nil {
-		return domain.Reservation{}, true, 0, err
+	job.SetReservationId(reservation.GetReservation().GetId())
+	status := "booked"
+	if reservation.GetReservation().HasPrepared() {
+		status = "triggered"
+	}
+	monitorTransition(job, status, now)
+	if err := worker.putMonitor(ctx, job, 0); err != nil {
+		return nil, true, 0, err
 	}
 	return reservation, true, 0, nil
 }
 
-func (worker *BookingWorker) stop(ctx context.Context, job domain.MonitorJob, cause error) error {
+func (worker *BookingWorker) stop(ctx context.Context, job *clientpb.Monitor, cause error) error {
 	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
-		job.Transition(domain.MonitorStopped, worker.clock.Now())
-		_ = worker.monitors.PutMonitor(context.WithoutCancel(ctx), job)
+		monitorTransition(job, "stopped", worker.clock.Now())
+		_ = worker.putMonitor(context.WithoutCancel(ctx), job, 0)
 		return cause
 	}
 	return worker.fail(ctx, job, cause)
 }
 
-func (worker *BookingWorker) stopAfterWait(ctx context.Context, job domain.MonitorJob, cause error) error {
+func (worker *BookingWorker) stopAfterWait(ctx context.Context, job *clientpb.Monitor, cause error) error {
 	if ctx.Err() != nil {
-		job.Transition(domain.MonitorStopped, worker.clock.Now())
-		_ = worker.monitors.PutMonitor(context.WithoutCancel(ctx), job)
+		monitorTransition(job, "stopped", worker.clock.Now())
+		_ = worker.putMonitor(context.WithoutCancel(ctx), job, 0)
 	}
 	return cause
 }
 
 func (worker *BookingWorker) attempt(
 	ctx context.Context,
-	job domain.MonitorJob,
-	preset domain.Preset,
-	theater domain.Theater,
-	auditorium domain.Auditorium,
-) (domain.Reservation, error) {
-	showtimes, err := worker.showtimes.FindShowtimes(ctx, ShowtimeQuery{
-		MovieID: job.MovieID, Movie: job.Movie, Theater: theater, Auditorium: auditorium,
-		TargetDates: job.ResolveTargetDates(worker.clock.Now()), TargetWeekdays: job.TargetWeekdays,
-		EarliestTime: job.EarliestTime, LatestTime: job.LatestTime,
-	})
+	job *clientpb.Monitor,
+	preset *clientpb.Preset,
+	theater *catalogpb.Theater,
+	auditorium *catalogpb.Auditorium,
+) (*clientpb.Resource, error) {
+	showtimes, err := worker.showtimes.FindShowtimes(
+		ctx,
+		theater,
+		auditorium,
+		job.GetMovieId(),
+		monitorResolveTargetDates(job, worker.clock.Now()),
+		job.GetTargetWeekdays(),
+		job.GetEarliestTime(),
+		job.GetLatestTime(),
+	)
 	if err != nil {
-		return domain.Reservation{}, err
+		return nil, err
 	}
 	showtime, ok := bestShowtime(showtimes)
 	if !ok {
-		return domain.Reservation{}, ErrBookingNotOpen
+		return nil, ErrBookingNotOpen
 	}
 	return worker.attemptShowtime(ctx, job, preset, showtime)
 }
 
 func (worker *BookingWorker) attemptShowtime(
 	ctx context.Context,
-	job domain.MonitorJob,
-	preset domain.Preset,
-	showtime domain.Showtime,
-) (domain.Reservation, error) {
-	selection, err := worker.booking.OpenSeatSelection(ctx, showtime, preset.SeatCount)
+	job *clientpb.Monitor,
+	preset *clientpb.Preset,
+	showtime *catalogpb.Showtime,
+) (*clientpb.Resource, error) {
+	snapshot, available, err := worker.booking.OpenSeatSelection(ctx, showtime, int(preset.GetSeatCount()))
 	if err != nil {
-		return domain.Reservation{}, err
+		return nil, err
 	}
-	return worker.prepareSeatSelection(ctx, job, preset, showtime, selection)
+	return worker.prepareSeatSelection(ctx, job, preset, showtime, snapshot, available)
 }
 
 func (worker *BookingWorker) attemptClaimedShowtime(
 	ctx context.Context,
-	job domain.MonitorJob,
-	preset domain.Preset,
-	showtime domain.Showtime,
-) (domain.Reservation, error) {
+	job *clientpb.Monitor,
+	preset *clientpb.Preset,
+	showtime *catalogpb.Showtime,
+) (*clientpb.Resource, error) {
 	reservation, err := worker.attemptShowtime(ctx, job, preset, showtime)
 	if !errors.Is(err, ErrSeatUnavailable) {
 		return reservation, err
@@ -398,7 +432,7 @@ func (worker *BookingWorker) attemptClaimedShowtime(
 	refresher, ok := worker.booking.(LiveSeatSelectionRefresher)
 	policy := worker.claimedWatch
 	if !ok || policy.Window <= 0 {
-		return domain.Reservation{}, ErrSeatUnavailable
+		return nil, ErrSeatUnavailable
 	}
 
 	startedAt := worker.clock.Now()
@@ -414,91 +448,109 @@ func (worker *BookingWorker) attemptClaimedShowtime(
 			delay = remaining
 		}
 		if waitErr := worker.waiter.Wait(ctx, delay); waitErr != nil {
-			return domain.Reservation{}, waitErr
+			return nil, waitErr
 		}
-		selection, refreshErr := refresher.RefreshSeatSelection(ctx, showtime)
+		snapshot, available, refreshErr := refresher.RefreshSeatSelection(ctx, showtime)
 		if refreshErr != nil {
-			return domain.Reservation{}, refreshErr
+			return nil, refreshErr
 		}
-		reservation, refreshErr = worker.prepareSeatSelection(ctx, job, preset, showtime, selection)
+		reservation, refreshErr = worker.prepareSeatSelection(ctx, job, preset, showtime, snapshot, available)
 		if !errors.Is(refreshErr, ErrSeatUnavailable) {
 			return reservation, refreshErr
 		}
 	}
-	return domain.Reservation{}, ErrSeatUnavailable
+	return nil, ErrSeatUnavailable
 }
 
 func (worker *BookingWorker) prepareSeatSelection(
 	ctx context.Context,
-	job domain.MonitorJob,
-	preset domain.Preset,
-	showtime domain.Showtime,
-	selection domain.SeatSelection,
-) (domain.Reservation, error) {
+	job *clientpb.Monitor,
+	preset *clientpb.Preset,
+	showtime *catalogpb.Showtime,
+	snapshot *seatmappb.Snapshot,
+	available []*seatmappb.Seat,
+) (*clientpb.Resource, error) {
+	selection := seatSelectionForRanking(snapshot, available)
+	preference := seatPreferenceForRanking(preset.GetSeatPreference())
 	ranked, err := worker.ranker.Rank(
-		selection.SeatMap, selection.LiveSeats, preset.SeatCount, preset.SeatPreference,
+		selection.SeatMap, selection.LiveSeats, int(preset.GetSeatCount()), preference,
 	)
 	if err != nil || len(ranked) == 0 {
-		return domain.Reservation{}, ErrSeatUnavailable
+		return nil, ErrSeatUnavailable
 	}
 	labels := seatLabels(ranked[0].Seats)
 	draft, err := worker.booking.PreparePayment(ctx, showtime, labels)
 	if err != nil {
-		return domain.Reservation{}, err
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return domain.Reservation{}, err
+		return nil, err
 	}
-	reservation := domain.Reservation{
-		ID: worker.ids.NewID(), UserID: job.UserID, MonitorID: job.ID,
-		Draft: draft, Status: "prepared",
-	}
-	return reservation, worker.reservations.PutReservation(ctx, reservation)
+	reservationID, userID, monitorID := worker.ids.NewID(), job.GetUserId(), job.GetId()
+	reservation := clientpb.Reservation_builder{
+		Id: &reservationID, UserId: &userID, MonitorId: &monitorID,
+		SeatLabels: append([]string(nil), draft.GetSeatLabels()...), TotalPrice: stringPointer(draft.GetTotalPrice()),
+		Prepared: clientpb.ReservationPrepared_builder{}.Build(), Showtime: draft.GetShowtime(),
+	}.Build()
+	resource := resourceForReservation(reservation, 0)
+	return resource, worker.reservations.PutReservation(ctx, resource)
 }
 
 func (worker *BookingWorker) loadBookingContext(
 	ctx context.Context,
-	job domain.MonitorJob,
-) (domain.Preset, domain.Theater, domain.Auditorium, error) {
-	preset, err := worker.presets.GetPreset(ctx, job.PresetID)
+	job *clientpb.Monitor,
+) (*clientpb.Preset, *catalogpb.Theater, *catalogpb.Auditorium, error) {
+	presetResource, err := worker.presets.GetPreset(ctx, job.GetPresetId())
 	if err != nil {
-		return domain.Preset{}, domain.Theater{}, domain.Auditorium{}, err
+		return nil, nil, nil, err
 	}
-	theater, err := worker.theaters.GetTheater(ctx, preset.TheaterID)
+	preset, _, err := presetMessage(presetResource)
 	if err != nil {
-		return domain.Preset{}, domain.Theater{}, domain.Auditorium{}, err
+		return nil, nil, nil, err
 	}
-	auditorium, err := worker.auditoriums.GetAuditorium(ctx, preset.AuditoriumID)
+	theaterMessage, err := worker.theaters.GetTheater(ctx, preset.GetTheaterId())
 	if err != nil {
-		return domain.Preset{}, domain.Theater{}, domain.Auditorium{}, err
+		return nil, nil, nil, err
 	}
-	return preset, theater, auditorium, nil
+	auditoriumMessage, err := worker.auditoriums.GetAuditorium(ctx, preset.GetAuditoriumId())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return preset, theaterMessage, auditoriumMessage, nil
 }
 
-func (worker *BookingWorker) fail(ctx context.Context, job domain.MonitorJob, cause error) error {
-	job.LastError = cause.Error()
-	job.Transition(domain.MonitorFailed, worker.clock.Now())
-	if err := worker.monitors.PutMonitor(ctx, job); err != nil {
+func (worker *BookingWorker) fail(ctx context.Context, job *clientpb.Monitor, cause error) error {
+	now := worker.clock.Now()
+	monitorTransition(job, "failed", now)
+	setMonitorFailure(job, cause.Error())
+	if err := worker.putMonitor(ctx, job, 0); err != nil {
 		return errors.Join(cause, err)
 	}
 	return cause
 }
 
-func bestShowtime(showtimes []domain.Showtime) (domain.Showtime, bool) {
-	available := make([]domain.Showtime, 0, len(showtimes))
+func (worker *BookingWorker) putMonitor(ctx context.Context, job *clientpb.Monitor, revision int64) error {
+	if job == nil {
+		return errors.New("monitor is required")
+	}
+	return worker.monitors.PutMonitor(ctx, resourceForMonitor(job, revision))
+}
+
+func bestShowtime(showtimes []*catalogpb.Showtime) (*catalogpb.Showtime, bool) {
+	available := make([]*catalogpb.Showtime, 0, len(showtimes))
 	for _, showtime := range showtimes {
-		if !showtime.SoldOut {
+		if showtime != nil && !showtime.GetSoldOut() {
 			available = append(available, showtime)
 		}
 	}
 	if len(available) == 0 {
-		return domain.Showtime{}, false
+		return nil, false
 	}
 	sort.Slice(available, func(i, j int) bool {
-		if available[i].Date == available[j].Date {
-			return available[i].StartsAt < available[j].StartsAt
+		if available[i].GetStartsAt() == nil || available[j].GetStartsAt() == nil {
+			return available[i].GetStartsAt() != nil
 		}
-		return available[i].Date < available[j].Date
+		return available[i].GetStartsAt().AsTime().Before(available[j].GetStartsAt().AsTime())
 	})
 	return available[0], true
 }
@@ -515,9 +567,10 @@ func randomJitter(limit time.Duration) time.Duration {
 	return randomJitterFrom(cryptorand.Reader, limit)
 }
 
-func pollJitterRange(job domain.MonitorJob, backoff time.Duration) time.Duration {
-	if backoff == job.PollInterval {
-		return job.EffectivePollIntervalMax() - job.PollInterval
+func pollJitterRange(job *clientpb.Monitor, backoff time.Duration) time.Duration {
+	interval := monitorPollInterval(job)
+	if backoff == interval {
+		return monitorPollIntervalMax(job) - interval
 	}
 	return backoff / 5
 }

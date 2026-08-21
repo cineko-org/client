@@ -1,16 +1,18 @@
 package centralhttp
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
-	central "github.com/cineko-org/contracts/v3"
+	"buf.build/go/protovalidate"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
-const executionReadyEventType = "execution.ready.v1"
+const executionReadyEventType = "execution.ready"
 
 type sseEvent struct {
 	id    int64
@@ -66,76 +68,106 @@ func (parser *sseParser) Consume(line string) (sseEvent, bool, error) {
 }
 
 func (store *Store) consumeSSEEvent(event sseEvent) error {
-	switch event.type_ {
-	case "cineko.control":
-		return store.consumeSSEControl(event)
-	case "":
+	if event.type_ == "" {
 		return errors.New("central event stream event type is missing")
-	default:
-		return store.consumeSSEResource(event)
 	}
+	response := &servicepb.StreamEventsResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(event.data, response); err != nil {
+		return errors.New("central event stream returned invalid response data")
+	}
+	if err := protovalidate.Validate(response); err != nil {
+		return errors.New("central event stream response violates the contract")
+	}
+	if control := response.GetControl(); control != nil {
+		return store.consumeSSEControl(event, control)
+	}
+	if payload := response.GetData(); payload != nil {
+		return store.consumeSSEResource(event, payload)
+	}
+	return errors.New("central event stream response is empty")
 }
 
-func (store *Store) consumeSSEControl(event sseEvent) error {
+func (store *Store) consumeSSEControl(event sseEvent, control *clientpb.StreamControl) error {
 	if event.id != 0 {
 		return errors.New("central control event must not carry a resource cursor")
 	}
-	var control central.EventStreamControl
-	if err := json.Unmarshal(event.data, &control); err != nil {
-		return errors.New("central event stream returned invalid control data")
+	if event.type_ != "cineko.control" {
+		return errors.New("central event stream control type is invalid")
 	}
-	if control.Protocol != central.ProtocolVersion || control.ReleaseGeneration < 1 || control.Cursor < 0 {
+	if control.GetReleaseGeneration() < 1 || !control.HasControl() {
 		return errors.New("central event stream control is incompatible")
 	}
-	if err := store.observeReleaseGeneration(strconv.FormatInt(control.ReleaseGeneration, 10)); err != nil {
+	if err := store.observeReleaseGeneration(strconv.FormatInt(control.GetReleaseGeneration(), 10)); err != nil {
 		return err
 	}
 	return store.applySSEControl(control)
 }
 
-func (store *Store) applySSEControl(control central.EventStreamControl) error {
-	switch control.Action {
-	case central.EventStreamActionReady, central.EventStreamActionHeartbeat:
-		if control.Reason != "" || control.Cursor != store.eventCursor.Load() {
+func (store *Store) applySSEControl(control *clientpb.StreamControl) error {
+	switch {
+	case control.GetReady() != nil, control.GetHeartbeat() != nil:
+		cursor := int64(-1)
+		if ready := control.GetReady(); ready != nil {
+			cursor = ready.GetCursor()
+		}
+		if heartbeat := control.GetHeartbeat(); heartbeat != nil {
+			cursor = heartbeat.GetCursor()
+		}
+		if cursor < 0 || cursor != store.eventCursor.Load() {
 			return errors.New("central event stream control cursor is inconsistent")
 		}
-		if control.Action == central.EventStreamActionReady {
+		if control.GetReady() != nil {
 			store.signalExecutionReady()
 		}
-	case central.EventStreamActionFullResync:
-		if control.Reason != central.EventStreamResetRetentionGap &&
-			control.Reason != central.EventStreamResetInvalidCursor {
-			return errors.New("central event stream reset reason is invalid")
+	case control.GetRetentionGap() != nil, control.GetInvalidCursor() != nil:
+		cursor := int64(-1)
+		if reset := control.GetRetentionGap(); reset != nil {
+			cursor = reset.GetCursor()
 		}
-		store.eventCursor.Store(control.Cursor)
+		if reset := control.GetInvalidCursor(); reset != nil {
+			cursor = reset.GetCursor()
+		}
+		if cursor < 0 {
+			return errors.New("central event stream reset cursor is invalid")
+		}
+		store.eventCursor.Store(cursor)
 		store.resyncOnce.Do(func() { close(store.resyncRequired) })
 		store.signalResourceChanged()
 	default:
-		return fmt.Errorf("central event stream action %q is unsupported", control.Action)
+		return fmt.Errorf("central event stream control %q is unsupported", control.WhichControl())
 	}
 	return nil
 }
 
-func (store *Store) consumeSSEResource(event sseEvent) error {
+func (store *Store) consumeSSEResource(event sseEvent, payload *clientpb.ClientEvent) error {
 	if event.id < 1 || len(event.data) == 0 {
 		return errors.New("central event stream resource event is incomplete")
 	}
-	var payload central.ClientEvent
-	if err := json.Unmarshal(event.data, &payload); err != nil || !validSSEPayload(payload, event) {
+	if !validSSEPayload(payload, event) {
 		return errors.New("central event stream resource event is invalid")
 	}
 	store.eventCursor.Store(event.id)
 	store.signalResourceChanged()
-	if payload.Type == executionReadyEventType {
+	if payload.GetExecutionReady() != nil {
 		store.signalExecutionReady()
 	}
 	return nil
 }
 
-func validSSEPayload(payload central.ClientEvent, event sseEvent) bool {
-	return payload.Sequence == event.id && payload.Type == event.type_ &&
-		strings.TrimSpace(payload.ID) != "" && strings.TrimSpace(payload.Resource.Kind) != "" &&
-		strings.TrimSpace(payload.Resource.ID) != "" && payload.Resource.Revision >= 1 && json.Valid(payload.Data)
+func validSSEPayload(payload *clientpb.ClientEvent, event sseEvent) bool {
+	if payload.GetSequence() != event.id || strings.TrimSpace(payload.GetId()) == "" || strings.TrimSpace(event.type_) == "" || !payload.HasEvent() {
+		return false
+	}
+	if resource := payload.GetUpserted(); resource != nil {
+		return strings.TrimSpace(resource.GetId()) != "" && resource.GetRevision() >= 1 && resource.HasKind()
+	}
+	if deleted := payload.GetDeleted(); deleted != nil {
+		return strings.TrimSpace(deleted.GetId()) != "" && deleted.GetRevision() >= 1 && deleted.GetKind() != nil
+	}
+	ready := payload.GetExecutionReady()
+	return event.type_ == executionReadyEventType && ready != nil &&
+		strings.TrimSpace(ready.GetCommandId()) != "" && strings.TrimSpace(ready.GetMonitorId()) != "" &&
+		strings.TrimSpace(ready.GetReason()) != ""
 }
 
 func (store *Store) signalResourceChanged() {

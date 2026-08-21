@@ -8,22 +8,24 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/application"
-	"github.com/cineko-org/client/internal/domain"
-	central "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type executionStoreFake struct {
 	mu           sync.Mutex
 	heartbeatErr error
-	heartbeat    func(context.Context) (central.ExecutionHeartbeatResponse, error)
-	claim        func() (*central.ExecutionCommand, error)
+	heartbeat    func(context.Context) (*executionpb.HeartbeatResponse, error)
+	claim        func() (*executionpb.Command, error)
 	claims       int
 	ready        chan struct{}
 	retryable    bool
-	completed    chan central.ExecutionResultRequest
+	completed    chan *executionpb.ResultRequest
 }
 
-func (store *executionStoreFake) ClaimExecution(context.Context, string) (*central.ExecutionCommand, error) {
+func (store *executionStoreFake) ClaimExecution(context.Context, string) (*executionpb.Command, error) {
 	store.mu.Lock()
 	store.claims++
 	claim := store.claim
@@ -49,37 +51,37 @@ func (store *executionStoreFake) HeartbeatExecution(
 	ctx context.Context,
 	_ string,
 	_ string,
-) (central.ExecutionHeartbeatResponse, error) {
+) (*executionpb.HeartbeatResponse, error) {
 	if store.heartbeat != nil {
 		return store.heartbeat(ctx)
 	}
 	if store.heartbeatErr != nil {
-		return central.ExecutionHeartbeatResponse{}, store.heartbeatErr
+		return nil, store.heartbeatErr
 	}
-	return central.ExecutionHeartbeatResponse{LeaseExpiresAt: time.Now().Add(time.Minute)}, nil
+	return executionpb.HeartbeatResponse_builder{LeaseExpiresAt: timestamppb.New(time.Now().Add(time.Minute))}.Build(), nil
 }
 
 func TestCompletedPreparationDoesNotMistakeOwnedHeartbeatCancellationForFenceLoss(t *testing.T) {
 	store := &executionStoreFake{
-		completed: make(chan central.ExecutionResultRequest, 1),
-		heartbeat: func(ctx context.Context) (central.ExecutionHeartbeatResponse, error) {
+		completed: make(chan *executionpb.ResultRequest, 1),
+		heartbeat: func(ctx context.Context) (*executionpb.HeartbeatResponse, error) {
 			<-ctx.Done()
-			return central.ExecutionHeartbeatResponse{}, ctx.Err()
+			return nil, ctx.Err()
 		},
 	}
 	server := &executionServerFake{}
 	(&desktopExecutionWorker{store: store, server: server, userID: "user"}).execute(
 		t.Context(), validExecutionCommand(time.Now().Add(time.Minute)),
 	)
-	if result := <-store.completed; result.Status != "completed" || result.ReasonCode != "" {
-		t.Fatalf("completion = %+v", result)
+	if result := <-store.completed; result.GetCompleted() == nil || result.GetFailed() != nil {
+		t.Fatalf("completion = %s", result)
 	}
 }
 
 func (store *executionStoreFake) CompleteExecution(
 	_ context.Context,
 	_ string,
-	result central.ExecutionResultRequest,
+	result *executionpb.ResultRequest,
 ) error {
 	store.completed <- result
 	return nil
@@ -87,14 +89,14 @@ func (store *executionStoreFake) CompleteExecution(
 
 type executionServerFake struct {
 	mu       sync.Mutex
-	showtime domain.Showtime
+	showtime *catalogpb.Showtime
 	run      func(context.Context) error
 }
 
 func (server *executionServerFake) ExecuteAvailability(
 	ctx context.Context,
 	_ string,
-	showtime domain.Showtime,
+	showtime *catalogpb.Showtime,
 ) error {
 	server.mu.Lock()
 	server.showtime = showtime
@@ -105,9 +107,9 @@ func (server *executionServerFake) ExecuteAvailability(
 	return nil
 }
 
-func (*executionServerFake) RecordLocalSystemEvent(string, string, domain.EventTone, string) {}
-func (*executionServerFake) CanAcceptExecution() bool                                        { return true }
-func (*executionServerFake) ExecutionAvailable() <-chan struct{}                             { return nil }
+func (*executionServerFake) RecordLocalSystemEvent(*clientpb.AppEvent) {}
+func (*executionServerFake) CanAcceptExecution() bool                  { return true }
+func (*executionServerFake) ExecutionAvailable() <-chan struct{}       { return nil }
 
 func (store *executionStoreFake) claimCount() int {
 	store.mu.Lock()
@@ -131,7 +133,7 @@ func TestExecutionWorkerWaitsForDurableReadySignal(t *testing.T) {
 func TestExecutionWorkerRetriesTransientClaimFailureWithBoundedDelay(t *testing.T) {
 	store := &executionStoreFake{ready: make(chan struct{}, 1), retryable: true}
 	var calls int
-	store.claim = func() (*central.ExecutionCommand, error) {
+	store.claim = func() (*executionpb.Command, error) {
 		calls++
 		if calls < 3 {
 			return nil, errors.New("temporary central failure")
@@ -153,7 +155,7 @@ func TestExecutionWorkerRetriesTransientClaimFailureWithBoundedDelay(t *testing.
 }
 
 func TestExecutionWorkerStopsOnTerminalClaimFailure(t *testing.T) {
-	store := &executionStoreFake{retryable: false, claim: func() (*central.ExecutionCommand, error) {
+	store := &executionStoreFake{retryable: false, claim: func() (*executionpb.Command, error) {
 		return nil, errors.New("unauthorized")
 	}}
 	worker := &desktopExecutionWorker{store: store, server: &executionServerFake{}}
@@ -163,7 +165,7 @@ func TestExecutionWorkerStopsOnTerminalClaimFailure(t *testing.T) {
 }
 
 func TestExecutionWorkerCancellationDoesNotRetry(t *testing.T) {
-	store := &executionStoreFake{retryable: true, claim: func() (*central.ExecutionCommand, error) {
+	store := &executionStoreFake{retryable: true, claim: func() (*executionpb.Command, error) {
 		return nil, context.Canceled
 	}}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -192,7 +194,7 @@ func TestExecutionHeartbeatIntervalUsesRemainingLease(t *testing.T) {
 
 func TestExecutionLeaseHeartbeatFailureCancelsPreparationAndReportsFailure(t *testing.T) {
 	store := &executionStoreFake{
-		heartbeatErr: errors.New("lease rejected"), completed: make(chan central.ExecutionResultRequest, 1),
+		heartbeatErr: errors.New("lease rejected"), completed: make(chan *executionpb.ResultRequest, 1),
 	}
 	cancelled := make(chan struct{})
 	server := &executionServerFake{run: func(ctx context.Context) error {
@@ -212,13 +214,13 @@ func TestExecutionLeaseHeartbeatFailureCancelsPreparationAndReportsFailure(t *te
 		t.Fatalf("heartbeat failure cancellation took %s", elapsed)
 	}
 	result := <-store.completed
-	if result.Status != "failed" || result.ReasonCode != "execution_lease_lost" {
-		t.Fatalf("completion = %+v", result)
+	if result.GetFailed() == nil || result.GetFailed().GetReasonCode() != "execution_lease_lost" {
+		t.Fatalf("completion = %s", result)
 	}
 }
 
 func TestExecutionUsesExactCommandShowtime(t *testing.T) {
-	store := &executionStoreFake{completed: make(chan central.ExecutionResultRequest, 1)}
+	store := &executionStoreFake{completed: make(chan *executionpb.ResultRequest, 1)}
 	server := &executionServerFake{}
 	worker := desktopExecutionWorker{store: store, server: server, userID: "user"}
 	command := validExecutionCommand(time.Now().Add(time.Minute))
@@ -226,49 +228,53 @@ func TestExecutionUsesExactCommandShowtime(t *testing.T) {
 	server.mu.Lock()
 	showtime := server.showtime
 	server.mu.Unlock()
-	if showtime.ID != command.Payload.Showtime.ID || showtime.Movie != "영화" ||
-		showtime.AuditoriumID != "auditorium" || showtime.Date != "2026-08-20" ||
-		showtime.CivilDate != "2026-08-20" || showtime.StartsAt != "20:00" || showtime.EndsAt != "22:00" {
+	if showtime.GetId() != command.GetPayload().GetShowtime().GetId() || showtime.GetMovie().GetTitle() != "영화" ||
+		showtime.GetAuditorium().GetId() != "auditorium" || showtime.GetSourceKey() != "0056/2026-08-20/0007/0003" ||
+		showtime.GetStartsAt().AsTime() != command.GetPayload().GetShowtime().GetStartsAt().AsTime() ||
+		showtime.GetEndsAt().AsTime() != command.GetPayload().GetShowtime().GetEndsAt().AsTime() {
 		t.Fatalf("executed showtime = %+v", showtime)
 	}
-	if result := <-store.completed; result.Status != "completed" {
+	if result := <-store.completed; result.GetCompleted() == nil {
 		t.Fatalf("completion = %+v", result)
 	}
 }
 
 func TestExecutionPreservesProviderDateForAfterMidnightShowtime(t *testing.T) {
 	location := time.FixedZone("KST", 9*60*60)
-	payload := central.ExecutionPayload{
-		ObservedAt: time.Date(2026, 8, 20, 23, 0, 0, 0, location),
-		Showtime: central.Showtime{
-			ID: "showtime", ProviderID: central.ProviderCGV, SourceKey: "0056/2026-08-20/0007/0003", TheaterID: "theater",
-			Movie:      central.Movie{ID: "movie_1", Title: "영화"},
-			Auditorium: central.Auditorium{ID: "auditorium", Name: "IMAX"},
-			StartsAt:   time.Date(2026, 8, 21, 1, 30, 0, 0, location),
-			EndsAt:     time.Date(2026, 8, 21, 4, 32, 0, 0, location), AvailableSeats: 2, Capacity: 100,
-		},
-	}
+	payload := executionpb.Payload_builder{
+		ObservedAt: timestamppb.New(time.Date(2026, 8, 20, 23, 0, 0, 0, location)),
+		Showtime: catalogpb.Showtime_builder{
+			Id: stringPointer("showtime"), ProviderId: stringPointer("cgv"), SourceKey: stringPointer("0056/2026-08-20/0007/0003"), TheaterId: stringPointer("theater"),
+			Movie:      catalogpb.Movie_builder{Id: stringPointer("movie_1"), Title: stringPointer("영화")}.Build(),
+			Auditorium: catalogpb.Auditorium_builder{Id: stringPointer("auditorium"), Name: stringPointer("IMAX")}.Build(),
+			StartsAt:   timestamppb.New(time.Date(2026, 8, 21, 1, 30, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 21, 4, 32, 0, 0, location)),
+			AvailableSeats: int32Pointer(2), Capacity: int32Pointer(100),
+		}.Build(),
+	}.Build()
 	showtime, err := executionShowtime(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if showtime.Date != "2026-08-20" || showtime.CivilDate != "2026-08-21" || showtime.StartsAt != "01:30" || showtime.EndsAt != "04:32" {
+	if showtime.GetSourceKey() != "0056/2026-08-20/0007/0003" ||
+		showtime.GetStartsAt().AsTime().In(location).Format(time.DateOnly) != "2026-08-21" ||
+		showtime.GetStartsAt().AsTime().In(location).Format("15:04") != "01:30" ||
+		showtime.GetEndsAt().AsTime().In(location).Format("15:04") != "04:32" {
 		t.Fatalf("execution showtime = %+v", showtime)
 	}
 }
 
 func TestExecutionRejectsInvalidCommandPayloadBeforeBrowser(t *testing.T) {
-	store := &executionStoreFake{completed: make(chan central.ExecutionResultRequest, 1)}
+	store := &executionStoreFake{completed: make(chan *executionpb.ResultRequest, 1)}
 	called := false
 	server := &executionServerFake{run: func(context.Context) error { called = true; return nil }}
 	command := validExecutionCommand(time.Now().Add(time.Minute))
-	command.Payload.Showtime.ID = ""
+	command.GetPayload().GetShowtime().SetId("")
 	(&desktopExecutionWorker{store: store, server: server, userID: "user"}).execute(t.Context(), command)
 	if called {
 		t.Fatal("invalid command opened browser preparation")
 	}
-	if result := <-store.completed; result.Status != "failed" || result.ReasonCode != "invalid_execution_payload" {
-		t.Fatalf("completion = %+v", result)
+	if result := <-store.completed; result.GetFailed() == nil || result.GetFailed().GetReasonCode() != "invalid_execution_payload" {
+		t.Fatalf("completion = %s", result)
 	}
 }
 
@@ -292,20 +298,22 @@ func TestExecutionFailureCodeSeparatesAvailabilityFromTransientFailures(t *testi
 	}
 }
 
-func validExecutionCommand(expiresAt time.Time) central.ExecutionCommand {
+func validExecutionCommand(expiresAt time.Time) *executionpb.Command {
 	location := time.FixedZone("KST", 9*60*60)
-	return central.ExecutionCommand{
-		ID: "execution", MonitorID: "monitor", LeaseToken: "lease", LeaseExpiresAt: expiresAt,
-		Payload: central.ExecutionPayload{
-			ObservedAt: time.Date(2026, 8, 12, 19, 59, 0, 0, location),
-			Showtime: central.Showtime{
-				ID: "showtime", ProviderID: central.ProviderCGV, SourceKey: "0056/2026-08-20/0007/0003", TheaterID: "theater",
-				Movie:          central.Movie{ID: "movie_1", Title: "영화"},
-				Auditorium:     central.Auditorium{ID: "auditorium", Name: "IMAX"},
-				StartsAt:       time.Date(2026, 8, 20, 20, 0, 0, 0, location),
-				EndsAt:         time.Date(2026, 8, 20, 22, 0, 0, 0, location),
-				AvailableSeats: 10, Capacity: 100,
-			},
-		},
-	}
+	return executionpb.Command_builder{
+		Id: stringPointer("execution"), MonitorId: stringPointer("monitor"), LeaseToken: stringPointer("lease"), LeaseExpiresAt: timestamppb.New(expiresAt),
+		Payload: executionpb.Payload_builder{
+			ObservedAt: timestamppb.New(time.Date(2026, 8, 12, 19, 59, 0, 0, location)),
+			Showtime: catalogpb.Showtime_builder{
+				Id: stringPointer("showtime"), ProviderId: stringPointer("cgv"), SourceKey: stringPointer("0056/2026-08-20/0007/0003"), TheaterId: stringPointer("theater"),
+				Movie:      catalogpb.Movie_builder{Id: stringPointer("movie_1"), Title: stringPointer("영화")}.Build(),
+				Auditorium: catalogpb.Auditorium_builder{Id: stringPointer("auditorium"), Name: stringPointer("IMAX")}.Build(),
+				StartsAt:   timestamppb.New(time.Date(2026, 8, 20, 20, 0, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 20, 22, 0, 0, 0, location)),
+				AvailableSeats: int32Pointer(10), Capacity: int32Pointer(100),
+			}.Build(),
+		}.Build(),
+	}.Build()
 }
+
+func stringPointer(value string) *string { return &value }
+func int32Pointer(value int32) *int32    { return &value }

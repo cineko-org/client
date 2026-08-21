@@ -2,13 +2,13 @@ import { Box, Group, Stack, Text } from '@mantine/core';
 import { PrimaryButton } from '../../../components/core/Actions';
 import { Columns } from '../../../components/core/Columns';
 import { NumberField, SelectField } from '../../../components/core/Fields';
-import type { CatalogMovie, Preset } from '../../../api/types';
+import type { Movie, Preset } from '../../../api/proto';
 import type { MonitorForm } from '../model';
 import { ScheduleView } from './ScheduleView';
 import { MoviePicker } from './MoviePicker';
 
 export interface MonitorBuilderViewProps {
-  movies: CatalogMovie[];
+  movies: Movie[];
   presets: Preset[];
   form: MonitorForm;
   submitting: boolean;

@@ -1,7 +1,7 @@
 import { Group, Stack, Text } from '@mantine/core';
 import { PrimaryButton, SecondaryButton } from '../../../components/core/Actions';
 import { PasswordField, SelectField, TextAreaField, TextField } from '../../../components/core/Fields';
-import type { NetworkSettings } from '../../../api/types';
+import type { NetworkSettings } from '../../../api/proto';
 import { networkUsageDescription, type NetworkForm, type SettingsLoadState } from '../model';
 
 export interface ProxySettingsViewProps {
@@ -54,7 +54,7 @@ export function ProxySettingsView({
           <TextField label="공통 사용자 이름" value={form.proxyUsername}
             onChange={(event) => onChange({ ...form, proxyUsername: event.currentTarget.value })} disabled={!editable} />
           <PasswordField label="공통 비밀번호"
-            placeholder={settings.hasProxyPassword ? '저장된 비밀번호 유지' : undefined}
+            placeholder={settings.mode.case === 'proxy' && settings.mode.value.hasPassword ? '저장된 비밀번호 유지' : undefined}
             value={form.proxyPassword}
             onChange={(event) => onChange({ ...form, proxyPassword: event.currentTarget.value })} disabled={!editable} />
         </> : null}

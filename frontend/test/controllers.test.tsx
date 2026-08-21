@@ -1,6 +1,16 @@
+import { create, toJson, type Message } from '@bufbuild/protobuf';
+import type { GenMessage } from '@bufbuild/protobuf/codegenv2';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AppState, DesktopBridge, Monitor } from '../src/api/types';
+import type { DesktopBridge } from '../src/api/desktop';
+import { encodeDesktopProto } from '../src/api/desktop';
+import {
+	AppEventSchema, AuditoriumResponseSchema, AuditoriumSchema, CatalogIndexSchema, DirectNetworkSchema,
+	LayoutSchema, MonitorSchema, MonitorStateSchema, NetworkSettingsSchema, ResolutionSchema,
+	ResourceSchema, SettingsSchema, SnapshotSchema, TheaterSchema, WebUIAccountStateSchema,
+	WebUIActionStatusSchema, WebUIResourceListSchema, WebUIStateSchema, WebUITaskStatusResponseSchema,
+} from '../src/api/proto';
+import type { WebUIState } from '../src/api/proto';
 import { emptyAppState } from '../src/features/application/model';
 import { useApplicationState } from '../src/features/application/useApplicationState';
 import { useMonitorCommands } from '../src/features/monitors/useMonitorCommands';
@@ -21,14 +31,20 @@ const response = (value: unknown, status = 200) => new Response(JSON.stringify(v
 	headers: { 'Content-Type': 'application/json' },
 });
 
+const protoResponse = <T extends Message>(schema: GenMessage<T>, message: T, status = 200) => response(toJson(schema, message), status);
+
 describe('monitor editor controller', () => {
 	it('retries one monitor create command with the same idempotency key', async () => {
-		const monitor = { id: 'command', userId: 'user', status: 'pending' } as Monitor;
+		const monitor = create(MonitorSchema, {
+			id: 'command', userId: 'user', movieId: 'movie', movieTitle: 'Movie', presetId: 'preset',
+			state: create(MonitorStateSchema, { state: { case: 'pending', value: {} } }),
+		});
+		const resource = create(ResourceSchema, { resource: { case: 'monitor', value: monitor } });
 		const fetchMock = vi.fn<typeof fetch>()
-			.mockResolvedValueOnce(response({ error: 'temporary failure' }, 503))
-			.mockResolvedValueOnce(response(monitor, 202));
+			.mockResolvedValueOnce(response({ error: { message: 'temporary failure' } }, 503))
+			.mockResolvedValueOnce(protoResponse(ResourceSchema, resource, 202));
 		vi.stubGlobal('fetch', fetchMock);
-		const reload = vi.fn<() => Promise<AppState>>().mockResolvedValue(emptyAppState);
+		const reload = vi.fn<() => Promise<WebUIState>>().mockResolvedValue(emptyAppState);
 		const notify = vi.fn<(message: string) => void>();
 		const onSaved = vi.fn<() => void>();
 		const { result } = renderHook(() => useMonitorEditor(
@@ -43,10 +59,10 @@ describe('monitor editor controller', () => {
 		await act(async () => result.current.requestCreate());
 
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		const first = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as { idempotencyKey: string };
-		const second = JSON.parse(String(fetchMock.mock.calls[1][1]?.body)) as { idempotencyKey: string };
-		expect(first.idempotencyKey).toBeTruthy();
-		expect(second.idempotencyKey).toBe(first.idempotencyKey);
+		const first = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as { mutation?: { commandId?: string } };
+		const second = JSON.parse(String(fetchMock.mock.calls[1][1]?.body)) as { mutation?: { commandId?: string } };
+		expect(first.mutation?.commandId).toBeTruthy();
+		expect(second.mutation?.commandId).toBe(first.mutation?.commandId);
 		expect(fetchMock.mock.calls[0][0]).toBe('/api/monitors');
 		expect(onSaved).toHaveBeenCalledOnce();
 	});
@@ -65,9 +81,9 @@ describe('application connection controller', () => {
 
 		fetchMock.mockImplementation((input) => {
 			const path = String(input);
-			if (path.startsWith('/api/state')) return Promise.resolve(response(emptyAppState));
-			if (path === '/api/status') return Promise.resolve(response({}));
-			if (path === '/api/account') return Promise.resolve(response({ status: 'unauthenticated', authenticated: false }));
+			if (path.startsWith('/api/state')) return Promise.resolve(protoResponse(WebUIStateSchema, emptyAppState));
+			if (path === '/api/status') return Promise.resolve(protoResponse(WebUITaskStatusResponseSchema, create(WebUITaskStatusResponseSchema)));
+			if (path === '/api/account') return Promise.resolve(protoResponse(WebUIAccountStateSchema, create(WebUIAccountStateSchema, { state: { case: 'unauthenticated', value: {} } })));
 			return Promise.resolve(response([]));
 		});
 		await act(async () => result.current.retryConnection());
@@ -85,16 +101,25 @@ describe('application connection controller', () => {
 
 describe('monitor command controller', () => {
 	it('requires acknowledgement for payment retries and locks concurrent mutations', async () => {
-		const monitors = [
-			{ id: 'triggered', userId: 'user', status: 'triggered' },
-			{ id: 'pending', userId: 'user', status: 'pending' },
-		] as Monitor[];
+		const triggered = create(MonitorSchema, {
+			id: 'triggered', userId: 'user', state: create(MonitorStateSchema, { state: { case: 'triggered', value: {} } }),
+		});
+		const pending = create(MonitorSchema, {
+			id: 'pending', userId: 'user', state: create(MonitorStateSchema, { state: { case: 'pending', value: {} } }),
+		});
+		const state = create(WebUIStateSchema, {
+			userId: 'user',
+			resources: [
+				create(ResourceSchema, { resource: { case: 'monitor', value: triggered } }),
+				create(ResourceSchema, { resource: { case: 'monitor', value: pending } }),
+			],
+		});
 		let resolveRun: ((value: Response) => void) | undefined;
 		const fetchMock = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { resolveRun = resolve; }));
 		vi.stubGlobal('fetch', fetchMock);
-		const reload = vi.fn<() => Promise<AppState>>().mockResolvedValue(emptyAppState);
+		const reload = vi.fn<() => Promise<WebUIState>>().mockResolvedValue(emptyAppState);
 		const notify = vi.fn<(message: string) => void>();
-		const { result } = renderHook(() => useMonitorCommands(monitors, 'user', reload, notify));
+		const { result } = renderHook(() => useMonitorCommands(state, 'user', reload, notify));
 
 		act(() => result.current.retry('triggered'));
 		expect(fetchMock).not.toHaveBeenCalled();
@@ -108,7 +133,7 @@ describe('monitor command controller', () => {
 		await waitFor(() => expect(result.current.mutationId).toBe('triggered'));
 		act(() => result.current.retry('pending'));
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		resolveRun?.(response({ status: 'started' }, 202));
+		resolveRun?.(protoResponse(WebUIActionStatusSchema, create(WebUIActionStatusSchema, { result: { case: 'started', value: {} } }), 202));
 		await act(async () => retry!);
 		expect(result.current.mutationId).toBeNull();
 	});
@@ -116,8 +141,8 @@ describe('monitor command controller', () => {
 
 describe('settings controllers', () => {
 	it('does not save network or hook forms before stored settings finish loading', async () => {
-		let resolveNetwork: ((value: { mode: 'direct' }) => void) | undefined;
-		let resolveHooks: ((value: { targets: [] }) => void) | undefined;
+		let resolveNetwork: ((value: string) => void) | undefined;
+		let resolveHooks: ((value: string) => void) | undefined;
 		const bridge = {
 			GetNetworkSettings: vi.fn<DesktopBridge['GetNetworkSettings']>(() => new Promise((resolve) => { resolveNetwork = resolve; })),
 			SaveNetworkSettings: vi.fn<DesktopBridge['SaveNetworkSettings']>(),
@@ -142,8 +167,10 @@ describe('settings controllers', () => {
 		expect(bridge.SaveNetworkSettings).not.toHaveBeenCalled();
 		expect(bridge.SaveHookSettings).not.toHaveBeenCalled();
 
-		resolveNetwork?.({ mode: 'direct' });
-		resolveHooks?.({ targets: [] });
+		resolveNetwork?.(encodeDesktopProto(NetworkSettingsSchema, create(NetworkSettingsSchema, {
+			mode: { case: 'direct', value: create(DirectNetworkSchema) },
+		})));
+		resolveHooks?.(encodeDesktopProto(SettingsSchema, create(SettingsSchema)));
 		await waitFor(() => {
 			expect(result.current.network.loadState).toBe('ready');
 			expect(result.current.hooks.loadState).toBe('ready');
@@ -153,12 +180,16 @@ describe('settings controllers', () => {
 
 describe('notification controller', () => {
 	it('loads durable events and persists read and clear actions', async () => {
+		const event = create(AppEventSchema, {
+			id: 'event', userId: 'user', kind: 'monitor.completed', tone: { case: 'success', value: {} },
+			message: 'done', createdAt: { seconds: 1_786_320_000n, nanos: 0 },
+		});
+		const events = create(WebUIResourceListSchema, {
+			resources: [create(ResourceSchema, { resource: { case: 'appEvent', value: event } })],
+		});
 		const fetchMock = vi.fn<typeof fetch>()
-			.mockResolvedValueOnce(response([{
-				id: 'event', userId: 'user', kind: 'monitor.completed', tone: 'success',
-				message: 'done', createdAt: '2026-08-10T00:00:00Z',
-			}]))
-			.mockResolvedValue(response({ status: 'ok' }));
+			.mockResolvedValueOnce(protoResponse(WebUIResourceListSchema, events))
+			.mockResolvedValue(protoResponse(WebUIActionStatusSchema, create(WebUIActionStatusSchema, { result: { case: 'completed', value: {} } })));
 		vi.stubGlobal('fetch', fetchMock);
 		const { result } = renderHook(() => useNotifications());
 
@@ -184,19 +215,20 @@ describe('preset catalog controller', () => {
 					init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
 				});
 			}
-			return Promise.resolve(response([{ id: 'second', theaterId: 'theater-b', sourceKey: '서울/B/IMAX', name: 'IMAX', capacity: 1, seatMapVersion: '' }]));
+			return Promise.resolve(protoResponse(AuditoriumResponseSchema, create(AuditoriumResponseSchema, {
+				auditoriums: [create(AuditoriumSchema, { id: 'second', theaterId: 'theater-b', sourceKey: '서울/B/IMAX', name: 'IMAX', capacity: 1 })],
+			})));
 		});
 		vi.stubGlobal('fetch', fetchMock);
-		const state: AppState = {
-			...emptyAppState,
-			catalog: {
-				...emptyAppState.catalog,
+		const state = create(WebUIStateSchema, {
+			userId: 'user',
+			catalog: create(CatalogIndexSchema, {
 				theaters: [
-					{ id: 'theater-a', providerId: 'cgv', sourceKey: '서울/A', region: '서울', name: 'A' },
-					{ id: 'theater-b', providerId: 'cgv', sourceKey: '서울/B', region: '서울', name: 'B' },
+					create(TheaterSchema, { id: 'theater-a', providerId: 'cgv', sourceKey: '서울/A', region: '서울', name: 'A' }),
+					create(TheaterSchema, { id: 'theater-b', providerId: 'cgv', sourceKey: '서울/B', region: '서울', name: 'B' }),
 				],
-			},
-		};
+			}),
+		});
 		const notify = vi.fn<(message: string) => void>();
 		const { result } = renderHook(() => usePresetCatalog(state, notify));
 		act(() => result.current.setRegion('서울'));
@@ -213,10 +245,14 @@ describe('preset catalog controller', () => {
 	it('waits only for the selected auditorium until Central returns its stored seat map', async () => {
 		vi.useFakeTimers();
 		const fetchMock = vi.fn<typeof fetch>()
-			.mockResolvedValueOnce(response({ status: 'waiting', auditoriumId: 'auditorium-1' }))
-			.mockResolvedValueOnce(response({
-				auditoriumId: 'auditorium-1', version: 'layout-1', seats: [], zones: [],
-			}));
+			.mockResolvedValueOnce(protoResponse(ResolutionSchema, create(ResolutionSchema, {
+				result: { case: 'captureQueued', value: { taskId: 'task' } },
+			})))
+			.mockResolvedValueOnce(protoResponse(ResolutionSchema, create(ResolutionSchema, {
+				result: { case: 'ready', value: { snapshot: create(SnapshotSchema, {
+					id: 'layout-1', auditoriumId: 'auditorium-1', layoutHash: 'layout-1', layout: create(LayoutSchema),
+				}) } },
+			})));
 		vi.stubGlobal('fetch', fetchMock);
 		const notify = vi.fn<(message: string) => void>();
 		const { result } = renderHook(() => usePresetCatalog(emptyAppState, notify));
@@ -230,7 +266,7 @@ describe('preset catalog controller', () => {
 			await pending!;
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(result.current.seatMap?.version).toBe('layout-1');
+		expect(result.current.seatMap?.layoutHash).toBe('layout-1');
 		expect(result.current.catalogMessage).toBe('저장된 좌석 배치를 불러왔습니다.');
 		expect(notify).not.toHaveBeenCalled();
 	});

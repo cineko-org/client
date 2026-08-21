@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cineko-org/client/internal/domain"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type CancellationService struct {
@@ -29,64 +31,101 @@ func NewCancellationService(
 
 func (service *CancellationService) Cancel(
 	ctx context.Context,
-	userID, reservationID string,
-	commit bool,
-) (domain.CancellationDraft, error) {
-	reservation, err := service.reservations.GetReservation(ctx, reservationID)
-	if err != nil || reservation.UserID != userID {
-		return domain.CancellationDraft{}, ErrNotFound
+	request *clientpb.WebUIReservationCancellationRequest,
+) (*clientpb.WebUICancellationResult, error) {
+	if request == nil || request.GetReservation() == nil {
+		return nil, ErrNotFound
+	}
+	requestedReservation := request.GetReservation()
+	resource, err := service.reservations.GetReservation(ctx, requestedReservation.GetId())
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	reservation, revision, err := reservationMessage(resource)
+	if err != nil || reservation.GetUserId() != requestedReservation.GetUserId() {
+		return nil, ErrNotFound
 	}
 	draft, err := service.booking.PrepareCancellation(ctx, reservation)
-	if err != nil || !commit {
-		return draft, err
+	if err != nil {
+		return nil, err
 	}
+	result := cloneCancellationResult(draft)
+	if result.GetReservationId() == "" {
+		result.SetReservationId(reservation.GetId())
+	}
+	if !request.GetCommit() {
+		return result, nil
+	}
+	if err := service.commit(ctx, reservation, revision, draft); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (service *CancellationService) commit(
+	ctx context.Context,
+	reservation *clientpb.Reservation,
+	revision int64,
+	draft *clientpb.WebUICancellationResult,
+) error {
 	now := service.clock.Now()
-	operation := domain.ExternalOperation{
-		ID:     fmt.Sprintf("cancellation:%s:%d", reservation.ID, now.UnixNano()),
-		UserID: reservation.UserID, MonitorID: reservation.MonitorID, ReservationID: reservation.ID,
-		Kind: domain.ExternalOperationCancellation, Status: domain.ExternalOperationPrepared,
-		RefundAmount: draft.RefundAmount, CreatedAt: now, UpdatedAt: now,
-	}
-	reservation.Status = "cancellation_committing"
-	if err := service.reservations.PutReservation(ctx, reservation); err != nil {
-		return domain.CancellationDraft{}, err
+	operationID := fmt.Sprintf("cancellation:%s:%d", reservation.GetId(), now.UnixNano())
+	operation := clientpb.ExternalOperation_builder{
+		Id: &operationID, UserId: stringPointer(reservation.GetUserId()), MonitorId: stringPointer(reservation.GetMonitorId()),
+		ReservationId: stringPointer(reservation.GetId()), RefundAmount: stringPointer(draft.GetRefundAmount()),
+		CreatedAt: timestamppb.New(now), UpdatedAt: timestamppb.New(now),
+		Cancellation: clientpb.CancellationOperation_builder{}.Build(), Prepared: clientpb.OperationPrepared_builder{}.Build(),
+	}.Build()
+	reservation = cloneReservation(reservation)
+	reservation.SetCancellationCommitting(clientpb.ReservationCancellationCommitting_builder{}.Build())
+	if err := service.reservations.PutReservation(ctx, resourceForReservation(reservation, revision)); err != nil {
+		return err
 	}
 	if service.operations != nil {
-		if err := service.operations.PutExternalOperation(ctx, operation); err != nil {
-			return domain.CancellationDraft{}, err
+		operationResource := resourceForExternalOperation(operation)
+		if err := service.operations.PutExternalOperation(ctx, operationResource); err != nil {
+			return err
 		}
 	}
 	if err := service.booking.CommitCancellation(ctx); err != nil {
-		operation.Status = domain.ExternalOperationUnknown
-		operation.LastError = err.Error()
-		operation.UpdatedAt = service.clock.Now()
+		operation.SetUnknown(clientpb.OperationUnknown_builder{}.Build())
+		operation.SetLastError(err.Error())
+		operation.SetUpdatedAt(timestamppb.New(service.clock.Now()))
 		if service.operations != nil {
-			_ = service.operations.PutExternalOperation(context.WithoutCancel(ctx), operation)
+			_ = service.operations.PutExternalOperation(context.WithoutCancel(ctx), resourceForExternalOperation(operation))
 		}
-		reservation.Status = "cancellation_unknown"
-		_ = service.reservations.PutReservation(context.WithoutCancel(ctx), reservation)
-		return domain.CancellationDraft{}, err
+		reservation.SetCancellationUnknown(clientpb.ReservationCancellationUnknown_builder{}.Build())
+		_ = service.reservations.PutReservation(context.WithoutCancel(ctx), resourceForReservation(reservation, revision))
+		return err
 	}
-	operation.Status = domain.ExternalOperationConfirmed
-	operation.UpdatedAt = service.clock.Now()
+	operation.SetConfirmed(clientpb.OperationConfirmed_builder{}.Build())
+	operation.SetUpdatedAt(timestamppb.New(service.clock.Now()))
 	if service.operations != nil {
-		if err := service.operations.PutExternalOperation(context.WithoutCancel(ctx), operation); err != nil {
-			reservation.Status = "cancellation_unknown"
-			_ = service.reservations.PutReservation(context.WithoutCancel(ctx), reservation)
-			return domain.CancellationDraft{}, err
+		operationResource := resourceForExternalOperation(operation)
+		if err := service.operations.PutExternalOperation(context.WithoutCancel(ctx), operationResource); err != nil {
+			reservation.SetCancellationUnknown(clientpb.ReservationCancellationUnknown_builder{}.Build())
+			_ = service.reservations.PutReservation(context.WithoutCancel(ctx), resourceForReservation(reservation, revision))
+			return err
 		}
 	}
 	now = service.clock.Now()
-	reservation.Status = "cancelled"
-	reservation.CancelledAt = &now
-	reservation.RefundAmount = draft.RefundAmount
-	if err := service.reservations.PutReservation(ctx, reservation); err != nil {
-		return domain.CancellationDraft{}, err
+	reservation.SetCancelled(clientpb.ReservationCancelled_builder{}.Build())
+	reservation.SetCancelledAt(timestamppb.New(now))
+	reservation.SetRefundAmount(draft.GetRefundAmount())
+	if err := service.reservations.PutReservation(ctx, resourceForReservation(reservation, revision)); err != nil {
+		return err
 	}
-	operation.Status = domain.ExternalOperationReconciled
-	operation.UpdatedAt = service.clock.Now()
+	operation.SetReconciled(clientpb.OperationReconciled_builder{}.Build())
+	operation.SetUpdatedAt(timestamppb.New(service.clock.Now()))
 	if service.operations != nil {
-		_ = service.operations.PutExternalOperation(context.WithoutCancel(ctx), operation)
+		_ = service.operations.PutExternalOperation(context.WithoutCancel(ctx), resourceForExternalOperation(operation))
 	}
-	return draft, nil
+	return nil
+}
+
+func cloneCancellationResult(value *clientpb.WebUICancellationResult) *clientpb.WebUICancellationResult {
+	if value == nil {
+		return clientpb.WebUICancellationResult_builder{}.Build()
+	}
+	return proto.CloneOf(value)
 }

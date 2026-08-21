@@ -1,9 +1,13 @@
 import { useCallback, useState } from 'react';
+import { create } from '@bufbuild/protobuf';
 import { api, errorMessage } from '../../api/client';
-import type { AppState } from '../../api/types';
+import {
+	WebUICancellationResultSchema, WebUIReservationCancellationRequestSchema, type WebUIState,
+} from '../../api/proto';
+import { stateReservations } from '../../api/resources';
 import type { Notify } from '../../components/core/feedback';
 
-export function useReservations(state: AppState, userId: string, reload: () => Promise<AppState>, notify: Notify) {
+export function useReservations(state: WebUIState, userId: string, reload: () => Promise<WebUIState>, notify: Notify) {
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
@@ -11,10 +15,14 @@ export function useReservations(state: AppState, userId: string, reload: () => P
     setCancelId(null);
     setCancelling(true);
     try {
-      const draft = await api<{ refundAmount?: string }>('/api/reservations/cancel', { method: 'POST', body: {
-        userId, reservationId, commit, headful: true,
-      } });
-      notify(commit ? '예매를 취소했습니다.' : `취소 검토 완료 · ${draft.refundAmount || '환불액 화면 확인'}`, {
+		const reservation = stateReservations(state).find((item) => item.id === reservationId);
+		if (!reservation) return;
+		const draft = await api('/api/reservations/cancel', WebUICancellationResultSchema, { method: 'POST' },
+			WebUIReservationCancellationRequestSchema,
+				create(WebUIReservationCancellationRequestSchema, {
+					reservation, commit, headful: true,
+				}));
+		notify(commit ? '예매를 취소했습니다.' : `취소 검토 완료 · ${draft.refundAmount || '환불액 화면 확인'}`, {
         tone: commit ? 'warning' : 'info', important: commit,
       });
       await reload();
@@ -23,10 +31,10 @@ export function useReservations(state: AppState, userId: string, reload: () => P
     } finally {
       setCancelling(false);
     }
-  }, [notify, reload, userId]);
+	}, [notify, reload, state]);
 
   return {
-    reservations: state.reservations, cancelId, setCancelId, cancelling,
+		reservations: stateReservations(state), cancelId, setCancelId, cancelling,
     reviewCancellation: (id: string) => cancel(id, false),
     confirmCancellation: () => cancelId ? cancel(cancelId, true) : undefined,
   };

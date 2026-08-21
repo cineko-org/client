@@ -14,13 +14,16 @@ printf 'linux\n' >"$assets/cineko-playwright-1.62.1-linux-amd64.tar.gz"
 cat >"$test_root/bin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-payload=''
+source=''
+output=''
 while [[ $# -gt 0 ]]; do
-  if [[ "$1" == '--data' ]]; then shift; payload="$1"; fi
-  shift
+	if [[ "$1" == '--data-binary' ]]; then shift; source="${1#@}"; fi
+	if [[ "$1" == '--output' ]]; then shift; output="$1"; fi
+	shift
 done
-printf '%s\n' "$payload" >>"$FAKE_PAYLOADS"
-printf '{"generation":9}\n'
+cat "$source" >>"$FAKE_PAYLOADS"
+printf '\n' >>"$FAKE_PAYLOADS"
+printf '{}\n' >"$output"
 SH
 chmod +x "$test_root/bin/curl"
 
@@ -33,11 +36,10 @@ CINEKO_PLAYWRIGHT_RELEASE_BASE=https://github.example/releases/download/playwrig
 
 jq -se '
   length == 1 and
-  .[0].schemaVersion == 2 and
-  (.[0].payload.releases | length == 3) and
-  ([.[0].payload.releases[] | .platform + "/" + .arch] | sort ==
+  (.[0].releases | length == 3) and
+  ([.[0].releases[] | .platform + "/" + .architecture] | sort ==
     ["darwin/arm64", "linux/amd64", "windows/amd64"]) and
-  all(.[0].payload.releases[];
+  all(.[0].releases[];
     .version == "1.62.1" and
     (.artifact.url | startswith("https://github.example/releases/download/playwright-v1.62.1/")) and
     (.artifact.sha256 | length == 64)

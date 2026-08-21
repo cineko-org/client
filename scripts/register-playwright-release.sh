@@ -23,7 +23,7 @@ if [[ "$public_base" != https://* ]]; then
   exit 2
 fi
 
-for command in curl jq sha256sum wc; do
+for command in curl go; do
   command -v "$command" >/dev/null || {
     printf '%s is required on the release publisher runner\n' "$command" >&2
     exit 2
@@ -33,15 +33,16 @@ done
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/cineko-playwright-register.XXXXXX")"
 readonly temporary_root
 trap 'rm -rf "$temporary_root"' EXIT
-readonly releases_file="$temporary_root/releases.jsonl"
-: >"$releases_file"
+readonly release_contract="$temporary_root/releasecontract"
+GOWORK=off go build -mod=vendor -o "$release_contract" ./cmd/releasecontract
+release_paths=()
 
 append_release() {
   local platform="$1"
-  local arch="$2"
+  local architecture="$2"
   local extension="$3"
   local executable="$4"
-  local filename="cineko-playwright-${version}-${platform}-${arch}.${extension}"
+  local filename="cineko-playwright-${version}-${platform}-${architecture}.${extension}"
   local artifact_path="${assets_dir}/${filename}"
 
   if [[ ! -f "$artifact_path" ]]; then
@@ -49,41 +50,26 @@ append_release() {
     return 1
   fi
 
-  local size sha256
-  size="$(wc -c <"$artifact_path" | tr -d '[:space:]')"
-  sha256="$(sha256sum "$artifact_path" | awk '{print $1}')"
-  jq -cn \
-    --arg channel stable \
-    --arg platform "$platform" \
-    --arg arch "$arch" \
-    --arg version "$version" \
-    --arg url "${public_base}/${filename}" \
-    --arg sha256 "$sha256" \
-    --arg executable "$executable" \
-    --arg publishedAt "$published_at" \
-    --argjson size "$size" \
-    '{
-      channel:$channel,
-      platform:$platform,
-      arch:$arch,
-      version:$version,
-      artifact:{url:$url,size:$size,sha256:$sha256,executable:$executable},
-      publishedAt:$publishedAt
-    }' >>"$releases_file"
+  local release_path="$temporary_root/${platform}-${architecture}.json"
+  "$release_contract" release playwright "$version" "$platform/$architecture" "$artifact_path" "$executable" \
+    "${public_base}/${filename}" "$published_at" >"$release_path"
+  release_paths+=("$release_path")
 }
 
 append_release darwin arm64 tar.gz node
 append_release windows amd64 zip node.exe
 append_release linux amd64 tar.gz node
 
-payload="$(jq -sc '{schemaVersion:2,payload:{releases:.}}' "$releases_file")"
+readonly payload="$temporary_root/playwright-release-set.json"
+"$release_contract" set playwright "${release_paths[@]}" >"$payload"
+readonly response="$temporary_root/publish-response.json"
 curl --fail-with-body --retry 3 --retry-all-errors \
   --request POST \
   --header "Authorization: Bearer ${CINEKO_RELEASE_PUBLISH_TOKEN}" \
   --header 'Content-Type: application/json' \
-  --header 'X-Cineko-Protocol: 3' \
-  --data "$payload" \
-  "${CINEKO_CENTRAL_URL%/}/v1/release-registry/playwright" |
-  jq -e '.generation | numbers | select(. >= 0)' >/dev/null
+  --data-binary "@$payload" \
+  --output "$response" \
+  "${CINEKO_CENTRAL_URL%/}/v1/release-registry/playwright"
+"$release_contract" verify-response playwright "$response"
 
 printf 'registered Playwright %s for all supported platforms\n' "$version"

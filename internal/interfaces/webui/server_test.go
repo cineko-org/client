@@ -12,9 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func TestListenLoopbackRejectsPublicBinding(t *testing.T) {
@@ -69,7 +74,7 @@ func TestAccountCheckUsesStableAccountSession(t *testing.T) {
 	if gotPurpose != AutomationSession || gotSessionKey != "account" {
 		t.Fatalf("account check browser = %q/%q", gotPurpose, gotSessionKey)
 	}
-	if !server.account.Authenticated || server.account.Status != "authenticated" {
+	if server.account.GetAuthenticated() == nil {
 		t.Fatalf("account state = %+v", server.account)
 	}
 }
@@ -91,20 +96,22 @@ func TestRefreshBookingDemandRequiresAuthenticatedSessionAndActiveMonitor(t *tes
 	if active := <-demands; active {
 		t.Fatal("unauthenticated account created warm demand")
 	}
-	monitor := domain.MonitorJob{
-		ID: "monitor", UserID: "user", PresetID: "preset", Mode: domain.MonitorModeOpening,
-		MovieID: "movie_1", Movie: "영화", TargetDates: []string{"2026-08-20"}, Status: domain.MonitorPending,
-	}
-	if err := store.PutMonitor(ctx, monitor); err != nil {
+	monitor := monitorProtoFixture(
+		"preset", "movie_1", "영화", []string{"2026-08-20"},
+		clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build(), "",
+	)
+	if err := store.PutMonitor(ctx, resourceFromMonitor(monitor)); err != nil {
 		t.Fatal(err)
 	}
-	server.account = accountState{Status: "authenticated", Authenticated: true}
+	server.account = clientpb.WebUIAccountState_builder{
+		Authenticated: clientpb.WebUIAccountAuthenticated_builder{}.Build(),
+	}.Build()
 	server.refreshBookingDemand(ctx)
 	if active := <-demands; !active {
 		t.Fatal("active opening monitor did not create warm demand")
 	}
-	monitor.Mode = domain.MonitorModeCancellation
-	if err := store.PutMonitor(ctx, monitor); err != nil {
+	monitor.SetMode(clientpb.MonitorMode_builder{Cancellation: clientpb.CancellationMonitor_builder{}.Build()}.Build())
+	if err := store.PutMonitor(ctx, resourceFromMonitor(monitor)); err != nil {
 		t.Fatal(err)
 	}
 	server.refreshBookingDemand(ctx)
@@ -120,7 +127,7 @@ func TestAccountCheckDoesNotStartStoredLogin(t *testing.T) {
 	server := &Server{
 		rootContext: t.Context(), clock: webTestClock{time.Date(2026, 8, 21, 7, 0, 0, 0, time.UTC)},
 		credentials: &webCredentialVault{credentials: domain.AccountCredentials{ID: "member", Password: "secret"}},
-		userID:      "user", tasks: make(map[string]taskState), taskCancels: make(map[string]context.CancelFunc),
+		userID:      "user", tasks: make(map[string]*clientpb.WebUITaskState), taskCancels: make(map[string]context.CancelFunc),
 		factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
 			return &webProbeAutomation{probes: &atomic.Int32{}, authenticated: &authenticated, savedLogin: savedLogin}, nil
 		},
@@ -132,7 +139,7 @@ func TestAccountCheckDoesNotStartStoredLogin(t *testing.T) {
 		t.Fatal("account check started stored login without user action")
 	default:
 	}
-	if server.account.Status != "unauthenticated" {
+	if server.account.GetUnauthenticated() == nil {
 		t.Fatalf("account state = %+v", server.account)
 	}
 }
@@ -167,7 +174,7 @@ func TestSavedAccountCredentialsRestoreSessionWithoutReturningPassword(t *testin
 	authenticated := false
 	server := &Server{
 		rootContext: t.Context(), clock: webTestClock{time.Date(2026, 8, 19, 7, 0, 0, 0, time.UTC)},
-		credentials: vault, userID: "user", tasks: make(map[string]taskState),
+		credentials: vault, userID: "user", tasks: make(map[string]*clientpb.WebUITaskState),
 		taskCancels: make(map[string]context.CancelFunc),
 		factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
 			return &webProbeAutomation{probes: &atomic.Int32{}, authenticated: &authenticated, savedLogin: savedLogin}, nil
@@ -195,7 +202,7 @@ func TestSavedAccountCredentialsRestoreSessionWithoutReturningPassword(t *testin
 		server.accountMu.RLock()
 		state := server.account
 		server.accountMu.RUnlock()
-		if state.Authenticated && state.CredentialsSaved && state.AccountID == "member" {
+		if state.GetAuthenticated() != nil && state.GetCredentialsSaved() && state.GetAccountId() == "member" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -219,7 +226,7 @@ func TestRestoreAuthenticationExplainsMissingSavedCredentials(t *testing.T) {
 	t.Parallel()
 	server := &Server{
 		rootContext: t.Context(), credentials: &webCredentialVault{}, userID: "user",
-		tasks: make(map[string]taskState), taskCancels: make(map[string]context.CancelFunc),
+		tasks: make(map[string]*clientpb.WebUITaskState), taskCancels: make(map[string]context.CancelFunc),
 	}
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/auth/restore", nil)
 	response := httptest.NewRecorder()
@@ -246,7 +253,7 @@ func TestSeatMapRequestReturnsWaitingWithoutOpeningBrowser(t *testing.T) {
 	)
 	response := httptest.NewRecorder()
 	server.apiRoutes().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"status":"waiting"`) {
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"captureQueued"`) {
 		t.Fatalf("seat-map request = %d, %s", response.Code, response.Body.String())
 	}
 	if browserOpens.Load() != 0 {
@@ -262,7 +269,7 @@ func TestSeatMapRequestReturnsCentralStoredLayoutWithoutOpeningBrowser(t *testin
 		AuditoriumID: "auditorium", Version: "layout-hash",
 		Seats: []domain.Seat{{ID: "seat-1", AuditoriumID: "auditorium", Label: "A1"}},
 	}
-	if err := repository.PutSeatMap(t.Context(), want); err != nil {
+	if err := repository.PutSeatMap(t.Context(), seatMapSnapshot(want)); err != nil {
 		t.Fatal(err)
 	}
 	server := &Server{
@@ -279,7 +286,7 @@ func TestSeatMapRequestReturnsCentralStoredLayoutWithoutOpeningBrowser(t *testin
 	)
 	response := httptest.NewRecorder()
 	server.apiRoutes().ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"version":"layout-hash"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"layoutHash":"layout-hash"`) {
 		t.Fatalf("seat-map request = %d, %s", response.Code, response.Body.String())
 	}
 	if browserOpens.Load() != 0 {
@@ -305,11 +312,11 @@ type webAtomicIDs struct{ value atomic.Int32 }
 func (ids *webAtomicIDs) NewID() string { return fmt.Sprintf("id-%d", ids.value.Add(1)) }
 
 type webEventPublisher struct {
-	events []domain.AppEvent
+	events []*clientpb.AppEvent
 	err    error
 }
 
-func (publisher *webEventPublisher) Publish(_ context.Context, event domain.AppEvent) error {
+func (publisher *webEventPublisher) Publish(_ context.Context, event *clientpb.AppEvent) error {
 	publisher.events = append(publisher.events, event)
 	return publisher.err
 }
@@ -320,7 +327,16 @@ type webProbeAutomation struct {
 	savedLogin    chan domain.AccountCredentials
 }
 
-func (automation *webProbeAutomation) FindShowtimes(context.Context, application.ShowtimeQuery) ([]domain.Showtime, error) {
+func (automation *webProbeAutomation) FindShowtimes(
+	context.Context,
+	*catalogpb.Theater,
+	*catalogpb.Auditorium,
+	string,
+	[]string,
+	[]int32,
+	*commonpb.LocalTime,
+	*commonpb.LocalTime,
+) ([]*catalogpb.Showtime, error) {
 	automation.probes.Add(1)
 	return nil, nil
 }
@@ -329,16 +345,16 @@ func (*webProbeAutomation) CaptureSchedules(context.Context, domain.Theater, []s
 }
 func (*webProbeAutomation) OpenSeatSelection(
 	context.Context,
-	domain.Showtime,
+	*catalogpb.Showtime,
 	int,
-) (domain.SeatSelection, error) {
-	return domain.SeatSelection{}, nil
+) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+	return nil, nil, nil
 }
-func (*webProbeAutomation) PreparePayment(context.Context, domain.Showtime, []string) (domain.BookingDraft, error) {
-	return domain.BookingDraft{}, nil
+func (*webProbeAutomation) PreparePayment(context.Context, *catalogpb.Showtime, []string) (*clientpb.Reservation, error) {
+	return nil, nil
 }
-func (*webProbeAutomation) PrepareCancellation(context.Context, domain.Reservation) (domain.CancellationDraft, error) {
-	return domain.CancellationDraft{}, nil
+func (*webProbeAutomation) PrepareCancellation(context.Context, *clientpb.Reservation) (*clientpb.WebUICancellationResult, error) {
+	return nil, nil
 }
 func (*webProbeAutomation) CommitCancellation(context.Context) error { return nil }
 func (*webProbeAutomation) AuthenticateManuallyUntil(context.Context, time.Duration) error {
@@ -393,16 +409,16 @@ func TestEventAPIUsesDurableStore(t *testing.T) {
 	handler := server.apiRoutes()
 
 	create := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/events",
-		strings.NewReader(`{"userId":"user","kind":"test","tone":"success","message":"done"}`))
+		strings.NewReader(`{"userId":"user","kind":"test","message":"done","success":{}}`))
 	created := httptest.NewRecorder()
 	handler.ServeHTTP(created, create)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create event status/body = %d/%s", created.Code, created.Body.String())
 	}
-	if len(publisher.events) != 1 || publisher.events[0].ID == "" || publisher.events[0].Message != "done" {
+	if len(publisher.events) != 1 || publisher.events[0].GetId() == "" || publisher.events[0].GetMessage() != "done" {
 		t.Fatalf("published events = %+v", publisher.events)
 	}
-	server.RecordLocalSystemEvent("user", "hook.delivery_failed", domain.EventError, "local only")
+	server.RecordLocalSystemEvent(appErrorEvent("user", "hook.delivery_failed", "local only"))
 	if len(publisher.events) != 1 {
 		t.Fatalf("local event was republished: %+v", publisher.events)
 	}
@@ -429,15 +445,15 @@ func TestCreateMonitorIsIdempotent(t *testing.T) {
 	t.Parallel()
 	store := memoryrepo.New()
 	now := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
-	if err := store.PutPreset(context.Background(), domain.Preset{
-		ID: "preset", UserID: "user", Name: "seat", TheaterID: "theater", AuditoriumID: "auditorium", SeatCount: 1,
-	}); err != nil {
+	if err := store.PutPreset(context.Background(), resourceFromPreset(
+		presetProtoFixture("theater", "auditorium", nil),
+	)); err != nil {
 		t.Fatal(err)
 	}
 	server := &Server{
 		repository: store, ids: &webAtomicIDs{}, clock: webTestClock{now},
 	}
-	body := `{"idempotencyKey":"command","userId":"user","presetId":"preset","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":180000000000,"pollIntervalMax":480000000000}`
+	body := monitorMutationJSON(t, "command", "user", "preset", "movie_1", "Movie")
 	for range 2 {
 		request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/monitors", strings.NewReader(body))
 		response := httptest.NewRecorder()
@@ -447,9 +463,40 @@ func TestCreateMonitorIsIdempotent(t *testing.T) {
 		}
 	}
 	monitors, err := store.ListMonitorsByUser(context.Background(), "user")
-	if err != nil || len(monitors) != 1 || monitors[0].ID != "command" {
+	if err != nil || len(monitors) != 1 || monitors[0].GetIdentity().GetId() != "command" {
 		t.Fatalf("idempotent monitors = %+v, %v", monitors, err)
 	}
+}
+
+func monitorMutationJSON(t *testing.T, commandID, userID, presetID, movieID, movieTitle string) string {
+	t.Helper()
+	year, month, day := int32(2026), int32(8), int32(20)
+	command := commandID
+	revision := int64(0)
+	user := userID
+	preset := presetID
+	movie := movieID
+	title := movieTitle
+	value := clientpb.WebUIResourceMutation_builder{
+		Mutation: commonpb.MutationIdentity_builder{CommandId: &command, ExpectedRevision: &revision}.Build(),
+		Monitor: clientpb.Monitor_builder{
+			UserId: &user, PresetId: &preset, MovieId: &movie, MovieTitle: &title,
+			Mode: clientpb.MonitorMode_builder{
+				Opening: clientpb.OpeningMonitor_builder{}.Build(),
+			}.Build(),
+			TargetDates:         []*commonpb.LocalDate{commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()},
+			PollInterval:        durationpb.New(3 * time.Minute),
+			MaximumPollInterval: durationpb.New(8 * time.Minute),
+			State: clientpb.MonitorState_builder{
+				Pending: clientpb.MonitorPending_builder{}.Build(),
+			}.Build(),
+		}.Build(),
+	}.Build()
+	payload, err := protojson.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal monitor mutation: %v", err)
+	}
+	return string(payload)
 }
 
 func TestSecureAcceptsLoopbackSameOriginJSON(t *testing.T) {
@@ -558,15 +605,19 @@ func TestEmbeddedUIContainsMantineApplication(t *testing.T) {
 
 func TestConfigurationTransferDetectsActiveTasks(t *testing.T) {
 	t.Parallel()
-	server := &Server{tasks: map[string]taskState{}}
+	server := &Server{tasks: map[string]*clientpb.WebUITaskState{}}
 	if server.HasActiveTasks() {
 		t.Fatal("empty task set reported active work")
 	}
-	server.tasks["scan"] = taskState{Status: "running"}
+	server.tasks["scan"] = clientpb.WebUITaskState_builder{
+		Running: clientpb.WebUITaskRunning_builder{}.Build(),
+	}.Build()
 	if !server.HasActiveTasks() {
 		t.Fatal("running task was not detected")
 	}
-	server.tasks["scan"] = taskState{Status: "completed"}
+	server.tasks["scan"] = clientpb.WebUITaskState_builder{
+		Completed: clientpb.WebUITaskCompleted_builder{}.Build(),
+	}.Build()
 	if server.HasActiveTasks() {
 		t.Fatal("completed task still blocks transfer")
 	}

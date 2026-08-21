@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
 
 type rawSeat struct {
@@ -23,23 +24,16 @@ type rawSeat struct {
 
 func (adapter *Adapter) OpenSeatSelection(
 	ctx context.Context,
-	showtime domain.Showtime,
+	showtimeMessage *catalogpb.Showtime,
 	seatCount int,
-) (domain.SeatSelection, error) {
+) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+	showtime := showtimeDomainFromProto(showtimeMessage)
 	selection, err := adapter.openSeats(ctx, showtime, seatCount)
 	if err != nil {
-		return domain.SeatSelection{}, err
+		return nil, nil, err
 	}
-	return domain.SeatSelection{
-		SeatMap: domain.SeatMap{
-			AuditoriumID: showtime.AuditoriumID,
-			Seats:        selection.snapshot.Seats,
-			Zones:        selection.snapshot.Zones,
-			Blocks:       selection.snapshot.Blocks,
-			ObservedAt:   selection.snapshot.Captured,
-		},
-		LiveSeats: selection.live,
-	}, nil
+	snapshot := seatSnapshotProto(selection.snapshot, showtime.AuditoriumID)
+	return snapshot, availableSeatsProto(snapshot, selection.live), nil
 }
 
 // RefreshSeatSelection reuses the exact seat page opened by
@@ -47,32 +41,29 @@ func (adapter *Adapter) OpenSeatSelection(
 // showtime navigation while still validating that the page has not drifted.
 func (adapter *Adapter) RefreshSeatSelection(
 	ctx context.Context,
-	showtime domain.Showtime,
-) (domain.SeatSelection, error) {
+	showtimeMessage *catalogpb.Showtime,
+) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+	showtime := showtimeDomainFromProto(showtimeMessage)
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return domain.SeatSelection{}, err
+		return nil, nil, err
 	}
+	showtime.TheaterRegion = adapter.selectedRegion
+	showtime.TheaterName = adapter.selectedTheater
 	if err := adapter.verifySeatPageShowtime(showtime); err != nil {
-		return domain.SeatSelection{}, err
+		return nil, nil, err
 	}
 	snapshot, err := adapter.refreshSeatSnapshot(ctx, showtime.AuditoriumID)
 	if err != nil {
-		return domain.SeatSelection{}, err
+		return nil, nil, err
 	}
 	raw, err := adapter.validatedSeatNodes(snapshot)
 	if err != nil {
-		return domain.SeatSelection{}, err
+		return nil, nil, err
 	}
-	return domain.SeatSelection{
-		SeatMap: domain.SeatMap{
-			AuditoriumID: showtime.AuditoriumID,
-			Seats:        snapshot.Seats, Zones: snapshot.Zones, Blocks: snapshot.Blocks,
-			ObservedAt: snapshot.Captured,
-		},
-		LiveSeats: intersectAvailability(snapshot.Live, raw),
-	}, nil
+	protoSnapshot := seatSnapshotProto(snapshot, showtime.AuditoriumID)
+	return protoSnapshot, availableSeatsProto(protoSnapshot, intersectAvailability(snapshot.Live, raw)), nil
 }
 
 type seatSelection struct {
@@ -91,6 +82,8 @@ func (adapter *Adapter) openSeats(
 	if err := ctx.Err(); err != nil {
 		return seatSelection{}, err
 	}
+	showtime.TheaterRegion = adapter.selectedRegion
+	showtime.TheaterName = adapter.selectedTheater
 	if adapter.selectedRegion == "" {
 		return seatSelection{}, fmt.Errorf("%w: theater context is unavailable", ErrUIContractChanged)
 	}
@@ -177,7 +170,7 @@ func commandedShowtime(rows []providerScheduleRow, command domain.Showtime) (dom
 		if showtimeSourceKey(row.SiteNo, row.Date, row.AuditoriumNo, row.Sequence) != command.SourceKey {
 			continue
 		}
-		if contracts.CatalogID(contracts.ProviderCGV, "movie", row.MovieNo) != command.MovieID {
+		if catalogID(providerCGV, "movie", row.MovieNo) != command.MovieID {
 			return domain.Showtime{}, fmt.Errorf("%w: provider tuple movie does not match command", ErrUIContractChanged)
 		}
 		matches = append(matches, row)
@@ -385,7 +378,7 @@ func (adapter *Adapter) verifySeatPageShowtime(showtime domain.Showtime) error {
 
 func validateShowtimeIdentity(showtime domain.Showtime) error {
 	parts := strings.Split(strings.TrimSpace(showtime.SourceKey), "/")
-	if strings.TrimSpace(showtime.ProviderID) != contracts.ProviderCGV || len(parts) != 4 {
+	if strings.TrimSpace(showtime.ProviderID) != providerCGV || len(parts) != 4 {
 		return fmt.Errorf("%w: provider showtime tuple is incomplete", ErrUIContractChanged)
 	}
 	for _, part := range parts {

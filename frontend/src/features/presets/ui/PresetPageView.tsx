@@ -5,7 +5,8 @@ import { Columns } from '../../../components/core/Columns';
 import { NumberField, SelectField, TextField } from '../../../components/core/Fields';
 import { PageHeader } from '../../../components/core/PageHeader';
 import { Section } from '../../../components/core/Section';
-import type { Auditorium, CatalogIndex, SeatMap, SeatType } from '../../../api/types';
+import type { Auditorium, CatalogIndex, Snapshot } from '../../../api/proto';
+import type { SeatType } from '../model';
 import type { PresetForm } from '../model';
 import { catalogRegions, catalogTheaters } from '../model';
 import { SeatMapView } from './SeatMapView';
@@ -17,7 +18,7 @@ export interface PresetPageViewProps {
   theater: string;
   auditoriumId: string;
   auditoriums: Auditorium[];
-  seatMap: SeatMap | null;
+  seatMap: Snapshot | null;
   pickedSeats: string[];
   catalogMessage: string;
   loadingCatalog: boolean;
@@ -87,7 +88,7 @@ export function PresetPageView(props: PresetPageViewProps) {
             />
             <Box component="form" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
               <Stack gap="md">
-                <Group justify="space-between"><Text fw={700}>선호 규칙</Text>{seatMap ? <Text size="xs" c="dimmed">{seatMap.seats.length}석 · {seatMap.zones.length}존</Text> : null}</Group>
+                <Group justify="space-between"><Text fw={700}>선호 규칙</Text>{seatMap ? <Text size="xs" c="dimmed">{seatMap.layout?.seats.length ?? 0}석 · {seatMap.layout?.zones.length ?? 0}존</Text> : null}</Group>
                 <TextField label="이름" placeholder="용산 IMAX 중앙 2석" required value={form.name} onChange={(event) => onFormChange({ ...form, name: event.currentTarget.value })} />
                 <Columns>
                   <NumberField label="인원" min={1} max={8} value={form.seatCount} onChange={(value) => onFormChange({ ...form, seatCount: typeof value === 'number' ? value : 1 })} />

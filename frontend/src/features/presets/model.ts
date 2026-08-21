@@ -1,4 +1,10 @@
-import type { Preset, Seat, SeatType, Theater } from '../../api/types';
+import { create } from '@bufbuild/protobuf';
+import {
+	MutationIdentitySchema, PresetSchema, SeatPreferenceSchema, WebUIResourceMutationSchema,
+	type Preset, type Seat, type Theater, type WebUIResourceMutation,
+} from '../../api/proto';
+
+export type SeatType = string;
 
 export function catalogRegions(theaters: Theater[]): string[] {
   return [...new Set(theaters.map((theater) => theater.region.trim()).filter(Boolean))]
@@ -24,7 +30,7 @@ export interface SeatTypePresentation {
   label: string;
 }
 
-export const seatTypePresentation: Record<SeatType, SeatTypePresentation> = {
+export const seatTypePresentation: Record<string, SeatTypePresentation> = {
   standard: { color: '#707070', label: '일반석' },
   wheelchair: { color: '#79BBF8', label: '장애인석' },
   companion: { color: '#91D7FF', label: '보호자석' },
@@ -37,6 +43,10 @@ export const seatTypePresentation: Record<SeatType, SeatTypePresentation> = {
   unknown: { color: '#707070', label: '기타 좌석' },
 };
 
+export function seatPresentation(type: string): SeatTypePresentation {
+  return seatTypePresentation[type] ?? seatTypePresentation.unknown;
+}
+
 export interface PresetForm {
 	revision: number;
 	id: string;
@@ -44,24 +54,6 @@ export interface PresetForm {
   seatCount: number;
   seatType: SeatType;
   preferredRows: string;
-}
-
-export interface PresetSaveRequest {
-	revision: number;
-	id: string;
-  userId: string;
-  name: string;
-  theaterId: string;
-  auditoriumId: string;
-  seatCount: number;
-  seatPreference: {
-    candidateSeats: string[];
-    preferredRows: string[];
-    preferredZones: never[];
-    preferredTypes: SeatType[];
-    adjacency: 'required';
-    avoidEdges: boolean;
-  };
 }
 
 export const initialPresetForm: PresetForm = {
@@ -75,16 +67,16 @@ export function csv(value: string): string[] {
 export function formFromPreset(preset: Preset): PresetForm {
 	return {
 		id: preset.id,
-		revision: preset.revision ?? 0,
+		revision: 0,
     name: preset.name,
     seatCount: preset.seatCount,
-    seatType: (preset.seatPreference.preferredTypes[0] as SeatType | undefined) ?? 'standard',
-    preferredRows: preset.seatPreference.preferredRows.join(', '),
+    seatType: preset.seatPreference?.preferredTypes[0] ?? 'standard',
+    preferredRows: preset.seatPreference?.preferredRows.join(', ') ?? '',
   };
 }
 
 export function presetSummary(preset: Preset): string {
-  const candidates = preset.seatPreference.candidateSeats.slice(0, 8).join(' · ');
+  const candidates = preset.seatPreference?.explicitSeats.slice(0, 8).join(' · ') ?? '';
   if (!candidates) {
     return preset.seatCount === 1 ? '실시간 좌석에서 1석 자동 선택' : `실시간 좌석에서 ${preset.seatCount}석 연석 자동 선택`;
   }
@@ -122,22 +114,18 @@ export function presetSaveRequest(
   theaterId: string,
   auditoriumId: string,
   pickedSeats: string[],
-): PresetSaveRequest {
-	return {
-		id: form.id,
-		revision: form.revision,
-    userId,
-    name: form.name.trim(),
-    theaterId,
-    auditoriumId,
-    seatCount: form.seatCount,
-    seatPreference: {
-      candidateSeats: [...pickedSeats],
-      preferredRows: csv(form.preferredRows),
-      preferredZones: [],
-      preferredTypes: [form.seatType],
-      adjacency: 'required',
-      avoidEdges: true,
-    },
-  };
+): WebUIResourceMutation {
+	return create(WebUIResourceMutationSchema, {
+		mutation: create(MutationIdentitySchema, { expectedRevision: BigInt(form.revision) }),
+		resource: {
+			case: 'preset',
+			value: create(PresetSchema, {
+				id: form.id, userId, name: form.name.trim(), theaterId, auditoriumId, seatCount: form.seatCount,
+				seatPreference: create(SeatPreferenceSchema, {
+					explicitSeats: [...pickedSeats], preferredRows: csv(form.preferredRows), preferredTypes: [form.seatType],
+					together: true, avoidEdges: true,
+				}),
+			}),
+		},
+	});
 }

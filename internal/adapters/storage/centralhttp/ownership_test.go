@@ -7,38 +7,14 @@ import (
 	"testing"
 
 	"github.com/cineko-org/client/internal/application"
-	"github.com/cineko-org/client/internal/domain"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 )
 
 type ownershipRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function ownershipRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
-}
-
-func TestEmbeddedResourceOwnershipRejectsForeignOrEmptyOwners(t *testing.T) {
-	t.Parallel()
-	store := &Store{userID: "user-one"}
-	for _, payload := range [][]byte{
-		[]byte(`{"userId":"user-two"}`),
-		[]byte(`{"userId":""}`),
-		[]byte(`{"userId":"   "}`),
-	} {
-		if err := store.validateEmbeddedOwnership(payload); !errors.Is(err, application.ErrNotFound) {
-			t.Errorf("validateEmbeddedOwnership(%s) = %v", payload, err)
-		}
-	}
-	for _, payload := range [][]byte{
-		[]byte(`{"userId":"user-one"}`),
-		[]byte(`{"id":"shared-theater"}`),
-	} {
-		if err := store.validateEmbeddedOwnership(payload); err != nil {
-			t.Errorf("validateEmbeddedOwnership(%s) = %v", payload, err)
-		}
-	}
-	if err := store.validateEmbeddedOwnership([]byte(`{`)); err == nil {
-		t.Fatal("malformed ownership payload accepted")
-	}
 }
 
 func TestPutRejectsForeignEmbeddedOwnerBeforeNetworkUse(t *testing.T) {
@@ -50,10 +26,12 @@ func TestPutRejectsForeignEmbeddedOwnerBeforeNetworkUse(t *testing.T) {
 			return nil, errors.New("unexpected request")
 		})},
 	}
-	err := store.PutPreset(context.Background(), domain.Preset{
-		ID: "preset", UserID: "user-two", Name: "foreign", TheaterID: "theater",
-		AuditoriumID: "auditorium", SeatCount: 1,
-	})
+	id, revision, userID, presetID, name := "preset", int64(0), "user-two", "preset", "foreign"
+	resource := clientpb.Resource_builder{
+		Identity: commonpb.ResourceIdentity_builder{Id: &id, Revision: &revision}.Build(),
+		Preset:   clientpb.Preset_builder{Id: &presetID, UserId: &userID, Name: &name}.Build(),
+	}.Build()
+	err := store.PutPreset(context.Background(), resource)
 	if !errors.Is(err, application.ErrNotFound) {
 		t.Fatalf("PutPreset(foreign owner) = %v", err)
 	}

@@ -2,11 +2,11 @@ import { Box, Group, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core'
 import { useMemo } from 'react';
 import { SecondaryButton } from '../../../components/core/Actions';
 import { EmptyState } from '../../../components/core/Section';
-import type { Seat, SeatMap } from '../../../api/types';
-import { seatTypePresentation } from '../model';
+import type { Seat, Snapshot } from '../../../api/proto';
+import { seatPresentation } from '../model';
 
 export interface SeatMapViewProps {
-  seatMap: SeatMap | null;
+  seatMap: Snapshot | null;
   pickedSeats: string[];
   onToggleSeat: (label: string) => void;
   onClear: () => void;
@@ -54,25 +54,28 @@ function layoutMetrics(seats: Seat[], requestedAspectRatio?: number, requestedSe
 
 function seatBackground(seat: Seat, selected: boolean): string {
   if (selected) return 'var(--mantine-color-cineko-5)';
-  const color = seatTypePresentation[seat.type].color;
+  const color = seatPresentation(seat.type).color;
   return `linear-gradient(135deg, ${color} 0 44%, var(--mantine-color-dark-8) 45% 55%, ${color} 56% 100%)`;
 }
+
+const emptySeats: Seat[] = [];
 
 export function SeatMapView({
   seatMap, pickedSeats, onToggleSeat, onClear, auditoriumName, reportedCapacity, layoutAspectRatio,
   seatSizeRatio, emptyMessage = '상영관을 선택하면 좌석 배치를 불러옵니다.',
 }: SeatMapViewProps) {
   const picked = new Set(pickedSeats);
+  const seats = seatMap?.layout?.seats ?? emptySeats;
   const metrics = useMemo(
-    () => layoutMetrics(seatMap?.seats ?? [], layoutAspectRatio, seatSizeRatio),
-    [layoutAspectRatio, seatMap, seatSizeRatio],
+    () => layoutMetrics(seats, layoutAspectRatio, seatSizeRatio),
+    [layoutAspectRatio, seatSizeRatio, seats],
   );
   const visibleTypes = useMemo(
-    () => [...new Set((seatMap?.seats ?? []).map((seat) => seat.type))],
-    [seatMap],
+    () => [...new Set(seats.map((seat) => seat.type))],
+    [seats],
   );
   const capacityDiffers = Boolean(
-    seatMap && reportedCapacity && reportedCapacity !== seatMap.seats.length,
+    seatMap && reportedCapacity && reportedCapacity !== seats.length,
   );
   return (
     <Stack gap="md">
@@ -81,14 +84,14 @@ export function SeatMapView({
           <Text fw={600}>{auditoriumName || '좌석 배치'}</Text>
           {seatMap ? (
             <Text size="xs" c="dimmed">
-              배치 {seatMap.seats.length}석{capacityDiffers ? ` · 회차 정원 ${reportedCapacity}석` : ''}
+              배치 {seats.length}석{capacityDiffers ? ` · 회차 정원 ${reportedCapacity}석` : ''}
             </Text>
           ) : null}
         </Stack>
         {seatMap ? (
           <Group gap="md">
             {visibleTypes.map((type) => {
-              const presentation = seatTypePresentation[type];
+              const presentation = seatPresentation(type);
               return <Group key={type} gap={6}><Box w={8} h={8} bg={presentation.color} /><Text size="xs" c="dimmed">{presentation.label}</Text></Group>;
             })}
           </Group>
@@ -102,7 +105,7 @@ export function SeatMapView({
           </Stack>
           {!seatMap ? <EmptyState>{emptyMessage}</EmptyState> : (
             <Box pos="relative" w="100%" style={{ aspectRatio: metrics.aspectRatio }}>
-              {seatMap.seats.map((seat) => {
+              {seats.map((seat) => {
                 const title = `${seat.label} · ${seat.zoneName || '존 미지정'} · ${seat.saleFormName || seat.type}`;
                 return (
                   <Tooltip key={seat.id} label={title} openDelay={250}>

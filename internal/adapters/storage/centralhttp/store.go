@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,14 +21,22 @@ import (
 	"sync/atomic"
 	"time"
 
+	"buf.build/go/protovalidate"
 	"github.com/cineko-org/client/internal/application"
-	"github.com/cineko-org/client/internal/domain"
-	central "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
-	maximumResponseBody = 8 << 20
-	sessionRefreshSkew  = time.Minute
+	maximumResponseBody     = 8 << 20
+	sessionRefreshSkew      = time.Minute
+	releaseGenerationHeader = "X-Cineko-Release-Generation"
 )
 
 var errCentralUnauthorized = errors.New("central session is unauthorized")
@@ -46,21 +54,9 @@ type Config struct {
 	HTTPClient     *http.Client
 }
 
-type LaunchConfig struct {
-	BaseURL                  string
-	LaunchTicket             string
-	ClientNonce              string
-	InstallationID           string
-	DeviceID                 string
-	ReleaseGeneration        int64
-	ClientVersion            string
-	ArtifactSHA256           string
-	Protocol                 int
-	BrowserRevision          string
-	BrowserArtifactSHA256    string
-	PlaywrightVersion        string
-	PlaywrightArtifactSHA256 string
-	HTTPClient               *http.Client
+type LaunchOptions struct {
+	BaseURL    string
+	HTTPClient *http.Client
 }
 
 type Store struct {
@@ -93,32 +89,36 @@ type monitorLease struct {
 	expiresAt time.Time
 }
 
-type resourceEnvelope struct {
-	Kind      string          `json:"kind"`
-	ID        string          `json:"id"`
-	Revision  int64           `json:"revision"`
-	Data      json.RawMessage `json:"data"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
-}
-
-type resourceList struct {
-	Data []resourceEnvelope `json:"data"`
-}
-
-type apiErrorEnvelope struct {
-	Error struct {
-		Code      string `json:"code"`
-		Message   string `json:"message"`
-		Retryable bool   `json:"retryable"`
-		RequestID string `json:"requestId"`
-	} `json:"error"`
-}
-
 type centralAPIError struct {
 	status    int
 	code      string
 	retryable bool
+}
+
+func mutationIdentity(commandID string, expectedRevision int64) *commonpb.MutationIdentity {
+	return commonpb.MutationIdentity_builder{
+		CommandId:        &commandID,
+		ExpectedRevision: &expectedRevision,
+	}.Build()
+}
+
+func resourceKind(kind string) (*clientpb.ResourceKind, error) {
+	switch kind {
+	case "settings":
+		return clientpb.ResourceKind_builder{Settings: &clientpb.SettingsResource{}}.Build(), nil
+	case "presets":
+		return clientpb.ResourceKind_builder{Preset: &clientpb.PresetResource{}}.Build(), nil
+	case "monitors":
+		return clientpb.ResourceKind_builder{Monitor: &clientpb.MonitorResource{}}.Build(), nil
+	case "reservations":
+		return clientpb.ResourceKind_builder{Reservation: &clientpb.ReservationResource{}}.Build(), nil
+	case "external-operations":
+		return clientpb.ResourceKind_builder{ExternalOperation: &clientpb.ExternalOperationResource{}}.Build(), nil
+	case "app-events":
+		return clientpb.ResourceKind_builder{AppEvent: &clientpb.AppEventResource{}}.Build(), nil
+	default:
+		return nil, fmt.Errorf("unsupported Central resource kind %q", kind)
+	}
 }
 
 func (failure centralAPIError) Error() string {
@@ -138,82 +138,84 @@ func Open(ctx context.Context, config Config) (*Store, error) {
 	if config.UserID == "" || config.AccessToken == "" {
 		return nil, errors.New("central user ID and access token are required")
 	}
-	var auth central.AuthExchangeResponse
+	credentials := &clientpb.TokenExchangeRequest{}
+	credentials.SetUserId(config.UserID)
+	credentials.SetAccessToken(config.AccessToken)
+	request := servicepb.ExchangeTokenRequest_builder{Request: credentials}.Build()
+	response := &servicepb.ExchangeTokenResponse{}
 	if err := store.request(ctx, http.MethodPost, "/v1/auth/exchange", false, map[string]string{
 		"Content-Type": "application/json",
-	}, central.AuthExchangeRequest{UserID: config.UserID, AccessToken: config.AccessToken}, &auth); err != nil {
+	}, request, response); err != nil {
 		return nil, fmt.Errorf("authenticate with Central: %w", err)
 	}
+	auth := response.GetAuthentication()
 	if err := store.acceptSession(auth); err != nil {
 		return nil, errors.New("central returned an invalid client session")
 	}
 	return store, nil
 }
 
-func OpenLaunched(ctx context.Context, config LaunchConfig) (*Store, error) {
-	config = normalizeLaunchConfig(config)
-	if err := validateLaunchConfig(config); err != nil {
+func OpenLaunched(ctx context.Context, envelope *clientpb.LaunchEnvelope, options LaunchOptions) (*Store, error) {
+	if err := validateLaunchEnvelope(envelope); err != nil {
 		return nil, err
 	}
-	store, err := newStore(config.BaseURL, "", config.HTTPClient)
+	store, err := newStore(options.BaseURL, "", options.HTTPClient)
 	if err != nil {
 		return nil, err
 	}
-	store.releaseGeneration.Store(config.ReleaseGeneration)
-	var auth central.AuthExchangeResponse
+	store.releaseGeneration.Store(envelope.GetContext().GetReleaseGeneration())
+	clientNonce, err := launchClientNonce()
+	if err != nil {
+		return nil, err
+	}
+	launch := &clientpb.SessionExchangeRequest{}
+	launch.SetLaunchTicket(envelope.GetLaunchTicket())
+	launch.SetClientNonce(clientNonce)
+	launchRequest := servicepb.ExchangeSessionRequest_builder{Request: launch}.Build()
+	launchResponse := &servicepb.ExchangeSessionResponse{}
 	if err := store.request(
 		ctx,
 		http.MethodPost,
 		"/v1/client-sessions",
 		false,
 		map[string]string{"Content-Type": "application/json"},
-		central.ClientSessionExchangeRequest{
-			LaunchTicket: config.LaunchTicket,
-			ClientNonce:  config.ClientNonce,
-		},
-		&auth,
+		launchRequest, launchResponse,
 	); err != nil {
 		return nil, fmt.Errorf("exchange Central launch ticket: %w", err)
 	}
 	if store.releaseUpdateNeeded() {
 		return nil, ErrReleaseUpdateRequired
 	}
-	store.userID = strings.TrimSpace(auth.User.ID)
-	if store.userID == "" || !launchContextMatches(auth.Launch, config) || store.acceptSession(auth) != nil {
+	auth := launchResponse.GetAuthentication()
+	store.userID = strings.TrimSpace(auth.GetUser().GetId())
+	if store.userID == "" || !proto.Equal(auth.GetLaunch(), envelope.GetContext()) || store.acceptSession(auth) != nil {
 		return nil, errors.New("central returned an invalid launched client session")
 	}
 	return store, nil
 }
 
-func normalizeLaunchConfig(config LaunchConfig) LaunchConfig {
-	config.LaunchTicket = strings.TrimSpace(config.LaunchTicket)
-	config.ClientNonce = strings.TrimSpace(config.ClientNonce)
-	config.InstallationID = strings.TrimSpace(config.InstallationID)
-	config.DeviceID = strings.TrimSpace(config.DeviceID)
-	config.ClientVersion = strings.TrimSpace(config.ClientVersion)
-	config.ArtifactSHA256 = strings.ToLower(strings.TrimSpace(config.ArtifactSHA256))
-	config.BrowserRevision = strings.TrimSpace(config.BrowserRevision)
-	config.BrowserArtifactSHA256 = strings.ToLower(strings.TrimSpace(config.BrowserArtifactSHA256))
-	config.PlaywrightVersion = strings.TrimSpace(config.PlaywrightVersion)
-	config.PlaywrightArtifactSHA256 = strings.ToLower(strings.TrimSpace(config.PlaywrightArtifactSHA256))
-	return config
-}
-
-func validateLaunchConfig(config LaunchConfig) error {
+func validateLaunchEnvelope(envelope *clientpb.LaunchEnvelope) error {
+	if envelope == nil {
+		return errors.New("launched client identity is incomplete")
+	}
+	if err := protovalidate.Validate(envelope); err != nil {
+		return fmt.Errorf("validate launched client identity: %w", err)
+	}
+	launchContext := envelope.GetContext()
 	required := []string{
-		config.LaunchTicket, config.InstallationID, config.DeviceID, config.ClientVersion,
-		config.BrowserRevision, config.PlaywrightVersion,
+		envelope.GetLaunchTicket(), launchContext.GetInstallationId(), launchContext.GetDeviceId(),
+		launchContext.GetClientVersion(), launchContext.GetBrowserRevision(), launchContext.GetPlaywrightVersion(),
 	}
 	for _, value := range required {
-		if value == "" {
+		if strings.TrimSpace(value) == "" {
 			return errors.New("launched client identity is incomplete")
 		}
 	}
-	if len(config.ClientNonce) < 16 || config.ReleaseGeneration < 1 || config.Protocol != central.ProtocolVersion {
+	if launchContext.GetReleaseGeneration() < 1 {
 		return errors.New("launched client identity is incomplete")
 	}
 	for _, digest := range []string{
-		config.ArtifactSHA256, config.BrowserArtifactSHA256, config.PlaywrightArtifactSHA256,
+		launchContext.GetArtifactSha256(), launchContext.GetBrowserArtifactSha256(), launchContext.GetPlaywrightArtifactSha256(),
 	} {
 		if !validSHA256(digest) {
 			return errors.New("launched client identity is incomplete")
@@ -222,15 +224,12 @@ func validateLaunchConfig(config LaunchConfig) error {
 	return nil
 }
 
-func launchContextMatches(context *central.ClientLaunchContext, config LaunchConfig) bool {
-	return context != nil && context.InstallationID == config.InstallationID &&
-		context.DeviceID == config.DeviceID && context.ClientVersion == config.ClientVersion &&
-		context.ReleaseGeneration == config.ReleaseGeneration &&
-		strings.ToLower(context.ArtifactSHA256) == config.ArtifactSHA256 &&
-		context.Protocol == config.Protocol && context.BrowserRevision == config.BrowserRevision &&
-		strings.ToLower(context.BrowserArtifactSHA256) == config.BrowserArtifactSHA256 &&
-		context.PlaywrightVersion == config.PlaywrightVersion &&
-		strings.ToLower(context.PlaywrightArtifactSHA256) == config.PlaywrightArtifactSHA256
+func launchClientNonce() (string, error) {
+	value := make([]byte, 24)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate launch client nonce: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
 }
 
 func validSHA256(value string) bool {
@@ -277,33 +276,43 @@ func (store *Store) releaseUpdateNeeded() bool {
 
 func (store *Store) Close() error { return nil }
 
-func (store *Store) GetSettings(ctx context.Context, output any) (int64, error) {
-	var envelope resourceEnvelope
-	if err := store.request(ctx, http.MethodGet, "/v1/settings", true, nil, nil, &envelope); err != nil {
+func (store *Store) GetSettings(ctx context.Context, output *clientpb.Settings) (int64, error) {
+	kind, err := resourceKind("settings")
+	if err != nil {
 		return 0, err
 	}
-	if output == nil {
-		return envelope.Revision, nil
-	}
-	if err := store.validateEmbeddedOwnership(envelope.Data); err != nil {
+	id := "settings"
+	request := servicepb.GetResourceRequest_builder{Kind: kind, Id: &id}.Build()
+	response := &servicepb.GetResourceResponse{}
+	if err := store.request(ctx, http.MethodGet, "/v1/settings", true,
+		map[string]string{"Content-Type": "application/json"}, request, response); err != nil {
 		return 0, err
 	}
-	if err := json.Unmarshal(envelope.Data, output); err != nil {
-		return 0, fmt.Errorf("decode Central settings: %w", err)
+	resource := response.GetResource()
+	if resource == nil || resource.GetSettings() == nil || resource.GetIdentity() == nil {
+		return 0, errors.New("central returned an invalid settings resource")
 	}
-	return envelope.Revision, nil
+	if output != nil {
+		proto.Reset(output)
+		proto.Merge(output, resource.GetSettings())
+	}
+	return resource.GetIdentity().GetRevision(), nil
 }
 
-func (store *Store) PutSettings(ctx context.Context, input any, expectedRevision int64) error {
+func (store *Store) PutSettings(ctx context.Context, input *clientpb.Settings, expectedRevision int64) error {
 	if expectedRevision < 0 {
 		return errors.New("settings revision cannot be negative")
 	}
-	payload, err := json.Marshal(input)
+	if input == nil {
+		return errors.New("settings are required")
+	}
+	resource, err := resourceFor("settings", "settings", expectedRevision, input)
 	if err != nil {
 		return fmt.Errorf("encode Central settings: %w", err)
 	}
-	if err := store.validateEmbeddedOwnership(payload); err != nil {
-		return err
+	payload, err := protojson.MarshalOptions{UseProtoNames: false}.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("encode Central settings: %w", err)
 	}
 	headers := map[string]string{"Content-Type": "application/json"}
 	if expectedRevision > 0 {
@@ -311,66 +320,83 @@ func (store *Store) PutSettings(ctx context.Context, input any, expectedRevision
 	} else {
 		headers["If-None-Match"] = "*"
 	}
-	headers["Idempotency-Key"] = commandID("put", "settings", "settings", expectedRevision, payload)
-	var saved resourceEnvelope
-	return store.request(ctx, http.MethodPut, "/v1/settings", true, headers, map[string]any{
-		"id": "settings", "data": json.RawMessage(payload),
-	}, &saved)
+	command := commandID("put", "settings", "settings", expectedRevision, payload)
+	headers["Idempotency-Key"] = command
+	request := servicepb.PutResourceRequest_builder{
+		Mutation: mutationIdentity(command, expectedRevision),
+		Resource: resource,
+	}.Build()
+	response := &servicepb.PutResourceResponse{}
+	if err := store.request(ctx, http.MethodPut, "/v1/settings", true, headers, request, response); err != nil {
+		return err
+	}
+	if response.GetResource() == nil || response.GetResource().GetSettings() == nil || response.GetResource().GetIdentity() == nil {
+		return errors.New("central returned an invalid settings mutation response")
+	}
+	return nil
 }
 
 func (store *Store) Logout(ctx context.Context) error {
-	return store.request(ctx, http.MethodPost, "/v1/auth/logout", true, nil, nil, nil)
+	return store.request(ctx, http.MethodPost, "/v1/auth/logout", true,
+		map[string]string{"Content-Type": "application/json"},
+		&servicepb.LogoutRequest{}, &servicepb.LogoutResponse{})
 }
 
 func (store *Store) RegisterDevice(
 	ctx context.Context,
-	device central.ClientDevice,
-) (central.ClientDevice, error) {
-	var registered central.ClientDevice
+	device *clientpb.Device,
+) (*clientpb.Device, error) {
+	request := servicepb.UpsertDeviceRequest_builder{Device: device}.Build()
+	response := &servicepb.UpsertDeviceResponse{}
 	if err := store.request(
-		ctx, http.MethodPut, "/v1/devices/"+url.PathEscape(device.InstallationID), true,
-		map[string]string{"Content-Type": "application/json"}, device, &registered,
+		ctx, http.MethodPut, "/v1/devices/"+url.PathEscape(device.GetInstallationId()), true,
+		map[string]string{"Content-Type": "application/json"}, request, response,
 	); err != nil {
-		return central.ClientDevice{}, err
+		return nil, err
 	}
-	return registered, nil
+	if response.GetDevice() == nil {
+		return nil, errors.New("central returned an invalid device response")
+	}
+	return response.GetDevice(), nil
 }
 
 func (store *Store) IssueProbeBootstrapTicket(
 	ctx context.Context,
-	request central.ProbeBootstrapTicketRequest,
-) (central.ProbeBootstrapTicketResponse, error) {
-	var response central.ProbeBootstrapTicketResponse
+	request *clientpb.ProbeBootstrapTicketRequest,
+) (*clientpb.ProbeBootstrapTicketResponse, error) {
+	serviceRequest := servicepb.CreateProbeBootstrapTicketRequest_builder{Request: request}.Build()
+	response := &servicepb.CreateProbeBootstrapTicketResponse{}
 	if err := store.request(
 		ctx,
 		http.MethodPost,
 		"/v1/probe-bootstrap-tickets",
 		true,
 		map[string]string{"Content-Type": "application/json"},
-		request,
-		&response,
+		serviceRequest,
+		response,
 	); err != nil {
-		return central.ProbeBootstrapTicketResponse{}, err
+		return nil, err
 	}
-	return response, nil
+	if response.GetResponse() == nil {
+		return nil, errors.New("central returned an invalid probe bootstrap response")
+	}
+	return response.GetResponse(), nil
 }
 
 func (store *Store) ClaimExecution(
 	ctx context.Context,
 	installationID string,
-) (*central.ExecutionCommand, error) {
-	var command central.ExecutionCommand
+) (*executionpb.Command, error) {
+	response := &executionpb.ClaimResponse{}
+	request := executionpb.ClaimRequest_builder{InstallationId: &installationID}.Build()
 	if err := store.request(
 		ctx, http.MethodPost, "/v1/executions:claim", true,
 		map[string]string{"Content-Type": "application/json"},
-		central.ExecutionClaimRequest{InstallationID: installationID}, &command,
+		request, response,
 	); err != nil {
 		return nil, err
 	}
-	if command.ID == "" {
-		return nil, nil
-	}
-	return &command, nil
+	return response.GetCommand(), nil
 }
 
 func (*Store) ExecutionClaimRetryable(err error) bool {
@@ -392,14 +418,15 @@ func (store *Store) HeartbeatExecution(
 	ctx context.Context,
 	commandID string,
 	leaseToken string,
-) (central.ExecutionHeartbeatResponse, error) {
-	var response central.ExecutionHeartbeatResponse
+) (*executionpb.HeartbeatResponse, error) {
+	response := &executionpb.HeartbeatResponse{}
+	request := executionpb.HeartbeatRequest_builder{CommandId: &commandID, LeaseToken: &leaseToken}.Build()
 	if err := store.request(
 		ctx, http.MethodPut, "/v1/executions/"+url.PathEscape(commandID)+"/heartbeat", true,
 		map[string]string{"Content-Type": "application/json"},
-		central.ExecutionHeartbeatRequest{LeaseToken: leaseToken}, &response,
+		request, response,
 	); err != nil {
-		return central.ExecutionHeartbeatResponse{}, err
+		return nil, err
 	}
 	return response, nil
 }
@@ -407,143 +434,129 @@ func (store *Store) HeartbeatExecution(
 func (store *Store) CompleteExecution(
 	ctx context.Context,
 	commandID string,
-	request central.ExecutionResultRequest,
+	request *executionpb.ResultRequest,
 ) error {
+	if request == nil {
+		return errors.New("execution result request is required")
+	}
+	request = proto.CloneOf(request)
+	request.SetCommandId(commandID)
+	serviceRequest := servicepb.CompleteRequest_builder{Result: request}.Build()
 	return store.request(
 		ctx, http.MethodPut, "/v1/executions/"+url.PathEscape(commandID)+"/result", true,
-		map[string]string{"Content-Type": "application/json"}, request, nil,
+		map[string]string{"Content-Type": "application/json"}, serviceRequest, &servicepb.CompleteResponse{},
 	)
 }
 
-func (store *Store) GetTheater(ctx context.Context, id string) (domain.Theater, error) {
-	catalog, err := store.GetCatalog(ctx)
-	if err != nil {
-		return domain.Theater{}, err
-	}
-	for _, value := range catalog.Theaters {
-		if value.ID == id {
-			return fromContractTheater(value), nil
-		}
-	}
-	return domain.Theater{}, application.ErrNotFound
-}
-
-func (store *Store) ListTheaters(ctx context.Context) ([]domain.Theater, error) {
+func (store *Store) GetTheater(ctx context.Context, id string) (*catalogpb.Theater, error) {
 	catalog, err := store.GetCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
-	values := make([]domain.Theater, 0, len(catalog.Theaters))
-	for _, value := range catalog.Theaters {
-		values = append(values, fromContractTheater(value))
-	}
-	return values, nil
-}
-
-func (store *Store) GetAuditorium(ctx context.Context, id string) (domain.Auditorium, error) {
-	catalog, err := store.GetCatalog(ctx)
-	if err != nil {
-		return domain.Auditorium{}, err
-	}
-	for _, value := range catalog.Auditoriums {
-		if value.ID == id {
-			return fromContractAuditorium(value), nil
+	for _, value := range catalog.GetTheaters() {
+		if value.GetId() == id {
+			return value, nil
 		}
 	}
-	return domain.Auditorium{}, application.ErrNotFound
+	return nil, application.ErrNotFound
 }
 
-func (store *Store) ListAuditoriumsByTheater(ctx context.Context, theaterID string) ([]domain.Auditorium, error) {
+func (store *Store) ListTheaters(ctx context.Context) ([]*catalogpb.Theater, error) {
 	catalog, err := store.GetCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
-	values := make([]domain.Auditorium, 0)
-	for _, value := range catalog.Auditoriums {
-		if value.TheaterID == theaterID {
-			values = append(values, fromContractAuditorium(value))
+	values := append([]*catalogpb.Theater(nil), catalog.GetTheaters()...)
+	return values, nil
+}
+
+func (store *Store) GetAuditorium(ctx context.Context, id string) (*catalogpb.Auditorium, error) {
+	catalog, err := store.GetCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, value := range catalog.GetAuditoriums() {
+		if value.GetId() == id {
+			return value, nil
+		}
+	}
+	return nil, application.ErrNotFound
+}
+
+func (store *Store) ListAuditoriumsByTheater(ctx context.Context, theaterID string) ([]*catalogpb.Auditorium, error) {
+	catalog, err := store.GetCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]*catalogpb.Auditorium, 0)
+	for _, value := range catalog.GetAuditoriums() {
+		if value.GetTheaterId() == theaterID {
+			values = append(values, value)
 		}
 	}
 	return values, nil
 }
 
-func (store *Store) GetSeatMap(ctx context.Context, auditoriumID string) (domain.SeatMap, error) {
-	var version central.SeatMapVersion
-	if err := store.request(ctx, http.MethodGet,
-		"/v1/catalog/auditoriums/"+url.PathEscape(auditoriumID)+"/seat-map", true,
-		nil, nil, &version); err != nil {
-		return domain.SeatMap{}, err
+func (store *Store) GetSeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Snapshot, error) {
+	resolution, err := store.ResolveSeatMap(ctx, auditoriumID)
+	if err != nil {
+		return nil, err
 	}
-	return seatMapFromVersion(version)
-}
-
-func seatMapFromVersion(version central.SeatMapVersion) (domain.SeatMap, error) {
-	var layout struct {
-		Seats  []domain.Seat        `json:"seats"`
-		Zones  []domain.LayoutZone  `json:"zones"`
-		Blocks []domain.LayoutBlock `json:"blocks"`
+	if ready := resolution.GetReady(); ready != nil && ready.GetSnapshot() != nil {
+		return ready.GetSnapshot(), nil
 	}
-	if err := json.Unmarshal(version.Layout, &layout); err != nil {
-		return domain.SeatMap{}, fmt.Errorf("decode Central seat map layout: %w", err)
-	}
-	return domain.SeatMap{
-		AuditoriumID: version.AuditoriumID, Version: version.LayoutHash,
-		Seats: layout.Seats, Zones: layout.Zones, Blocks: layout.Blocks,
-		ObservedAt: version.ObservedAt,
-	}, nil
+	return nil, application.ErrNotFound
 }
 
 // ResolveSeatMap asks Central for its current layout without exposing whether
 // Central used stored data or scheduled a Probe capture.
-func (store *Store) ResolveSeatMap(ctx context.Context, auditoriumID string) (domain.SeatMap, bool, error) {
-	var resolution central.SeatMapResolution
+func (store *Store) ResolveSeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Resolution, error) {
+	request := servicepb.ResolveSeatMapRequest_builder{AuditoriumId: &auditoriumID}.Build()
+	response := &servicepb.ResolveSeatMapResponse{}
 	if err := store.request(ctx, http.MethodPost,
 		"/v1/catalog/auditoriums/"+url.PathEscape(auditoriumID)+"/seat-map:resolve", true,
-		nil, nil, &resolution); err != nil {
-		return domain.SeatMap{}, false, err
+		map[string]string{"Content-Type": "application/json"}, request, response); err != nil {
+		return nil, err
 	}
-	if resolution.Status == central.SeatMapResolutionWaiting && resolution.SeatMap == nil {
-		return domain.SeatMap{}, false, nil
+	resolution := response.GetResolution()
+	if resolution.GetReady() == nil && resolution.GetCaptureQueued() == nil && resolution.GetUnverifiable() == nil {
+		return nil, errors.New("central returned an invalid seat-map resolution")
 	}
-	if resolution.Status != central.SeatMapResolutionReady || resolution.SeatMap == nil {
-		return domain.SeatMap{}, false, errors.New("central returned an invalid seat-map resolution")
-	}
-	value, err := seatMapFromVersion(*resolution.SeatMap)
-	return value, err == nil, err
+	return resolution, nil
 }
 
-func (store *Store) PutPreset(ctx context.Context, value domain.Preset) error {
-	return store.put(ctx, "presets", value.ID, value)
+func (store *Store) PutPreset(ctx context.Context, resource *clientpb.Resource) error {
+	return store.put(ctx, "presets", resource)
 }
 
-func (store *Store) GetPreset(ctx context.Context, id string) (domain.Preset, error) {
-	return getValue[domain.Preset](ctx, store, "presets", id)
+func (store *Store) GetPreset(ctx context.Context, id string) (*clientpb.Resource, error) {
+	return store.getResource(ctx, "presets", id)
 }
 
-func (store *Store) ListPresetsByUser(ctx context.Context, userID string) ([]domain.Preset, error) {
+func (store *Store) ListPresetsByUser(ctx context.Context, userID string) ([]*clientpb.Resource, error) {
 	if err := store.owns(userID); err != nil {
 		return nil, err
 	}
-	return listValues[domain.Preset](ctx, store, "presets")
+	return store.listResources(ctx, "presets")
 }
 
 func (store *Store) DeletePreset(ctx context.Context, id string) error {
 	return store.delete(ctx, "presets", id)
 }
 
-func (store *Store) PutMonitor(ctx context.Context, value domain.MonitorJob) error {
-	return store.put(ctx, "monitors", value.ID, value)
+func (store *Store) PutMonitor(ctx context.Context, resource *clientpb.Resource) error {
+	return store.put(ctx, "monitors", resource)
 }
 
-func (store *Store) GetMonitor(ctx context.Context, id string) (domain.MonitorJob, error) {
-	return getValue[domain.MonitorJob](ctx, store, "monitors", id)
+func (store *Store) GetMonitor(ctx context.Context, id string) (*clientpb.Resource, error) {
+	return store.getResource(ctx, "monitors", id)
 }
 
-func (store *Store) ListMonitorsByUser(ctx context.Context, userID string) ([]domain.MonitorJob, error) {
+func (store *Store) ListMonitorsByUser(ctx context.Context, userID string) ([]*clientpb.Resource, error) {
 	if err := store.owns(userID); err != nil {
 		return nil, err
 	}
-	return listValues[domain.MonitorJob](ctx, store, "monitors")
+	return store.listResources(ctx, "monitors")
 }
 
 func (store *Store) DeleteMonitor(ctx context.Context, id string) error {
@@ -556,15 +569,18 @@ func (store *Store) AcquireMonitor(
 	owner string,
 	now time.Time,
 	ttl time.Duration,
-) (domain.MonitorJob, error) {
+) (*clientpb.Resource, error) {
 	store.leaseMu.Lock()
 	defer store.leaseMu.Unlock()
 	if lease, exists := store.leases[id]; exists && lease.owner != owner && lease.expiresAt.After(now) {
-		return domain.MonitorJob{}, application.ErrConflict
+		return nil, application.ErrConflict
 	}
 	monitor, err := store.GetMonitor(ctx, id)
 	if err != nil {
-		return domain.MonitorJob{}, err
+		return nil, err
+	}
+	if monitor.GetMonitor() == nil || monitor.GetMonitor().GetUserId() != store.userID {
+		return nil, application.ErrNotFound
 	}
 	store.leases[id] = monitorLease{owner: owner, expiresAt: now.Add(ttl)}
 	return monitor, nil
@@ -596,57 +612,46 @@ func (store *Store) ReleaseMonitor(_ context.Context, id string, owner string) e
 	return nil
 }
 
-func (store *Store) PutReservation(ctx context.Context, value domain.Reservation) error {
-	return store.put(ctx, "reservations", value.ID, value)
+func (store *Store) PutReservation(ctx context.Context, resource *clientpb.Resource) error {
+	return store.put(ctx, "reservations", resource)
 }
 
-func (store *Store) GetReservation(ctx context.Context, id string) (domain.Reservation, error) {
-	return getValue[domain.Reservation](ctx, store, "reservations", id)
+func (store *Store) GetReservation(ctx context.Context, id string) (*clientpb.Resource, error) {
+	return store.getResource(ctx, "reservations", id)
 }
 
-func (store *Store) ListReservationsByUser(ctx context.Context, userID string) ([]domain.Reservation, error) {
+func (store *Store) ListReservationsByUser(ctx context.Context, userID string) ([]*clientpb.Resource, error) {
 	if err := store.owns(userID); err != nil {
 		return nil, err
 	}
-	return listValues[domain.Reservation](ctx, store, "reservations")
+	return store.listResources(ctx, "reservations")
 }
 
-func (store *Store) PutExternalOperation(ctx context.Context, value domain.ExternalOperation) error {
-	return store.put(ctx, "external-operations", value.ID, value)
+func (store *Store) PutExternalOperation(ctx context.Context, resource *clientpb.Resource) error {
+	return store.put(ctx, "external-operations", resource)
 }
 
-func (store *Store) GetCatalog(ctx context.Context) (central.CatalogIndex, error) {
-	var catalog central.CatalogIndex
-	if err := store.request(ctx, http.MethodGet, "/v1/catalog", true, nil, nil, &catalog); err != nil {
-		return central.CatalogIndex{}, err
+func (store *Store) GetCatalog(ctx context.Context) (*catalogpb.CatalogIndex, error) {
+	response := &servicepb.GetCatalogResponse{}
+	if err := store.request(ctx, http.MethodGet, "/v1/catalog", true,
+		map[string]string{"Content-Type": "application/json"}, &servicepb.GetCatalogRequest{}, response); err != nil {
+		return nil, err
 	}
-	return catalog, nil
-}
-
-func fromContractTheater(value central.Theater) domain.Theater {
-	return domain.Theater{
-		ID: value.ID, ProviderID: value.ProviderID, SourceKey: value.SourceKey,
-		Region: value.Region, Name: value.Name,
+	if response.GetCatalog() == nil {
+		return nil, errors.New("central returned an invalid catalog response")
 	}
+	return response.GetCatalog(), nil
 }
 
-func fromContractAuditorium(value central.Auditorium) domain.Auditorium {
-	return domain.Auditorium{
-		ID: value.ID, TheaterID: value.TheaterID, SourceKey: value.SourceKey,
-		Name: value.Name, ScreenTypes: value.ScreenTypes, Capacity: value.Capacity,
-		SeatMapVersion: value.SeatMapVersion,
-	}
+func (store *Store) PutAppEvent(ctx context.Context, resource *clientpb.Resource) error {
+	return store.put(ctx, "app-events", resource)
 }
 
-func (store *Store) PutAppEvent(ctx context.Context, value domain.AppEvent) error {
-	return store.put(ctx, "app-events", value.ID, value)
-}
-
-func (store *Store) ListAppEvents(ctx context.Context, userID string, limit int) ([]domain.AppEvent, error) {
+func (store *Store) ListAppEvents(ctx context.Context, userID string, limit int) ([]*clientpb.Resource, error) {
 	if err := store.owns(userID); err != nil {
 		return nil, err
 	}
-	values, err := listValues[domain.AppEvent](ctx, store, "app-events")
+	values, err := store.listResources(ctx, "app-events")
 	if err != nil {
 		return nil, err
 	}
@@ -662,8 +667,8 @@ func (store *Store) MarkAppEventsRead(ctx context.Context, userID string, at tim
 		return err
 	}
 	for _, value := range values {
-		if value.ReadAt == nil {
-			value.ReadAt = &at
+		if value.GetAppEvent() != nil && value.GetAppEvent().GetReadAt() == nil {
+			value.GetAppEvent().SetReadAt(timestamp(at))
 			if err := store.PutAppEvent(ctx, value); err != nil {
 				return err
 			}
@@ -678,7 +683,7 @@ func (store *Store) DeleteAppEvents(ctx context.Context, userID string) error {
 		return err
 	}
 	for _, value := range values {
-		if err := store.delete(ctx, "app-events", value.ID); err != nil {
+		if err := store.delete(ctx, "app-events", value.GetIdentity().GetId()); err != nil {
 			return err
 		}
 	}
@@ -691,8 +696,9 @@ func (store *Store) DeleteAppEventsBefore(ctx context.Context, cutoff time.Time)
 		return err
 	}
 	for _, value := range values {
-		if value.CreatedAt.Before(cutoff) {
-			if err := store.delete(ctx, "app-events", value.ID); err != nil {
+		createdAt := value.GetIdentity().GetCreatedAt()
+		if createdAt != nil && createdAt.AsTime().Before(cutoff) {
+			if err := store.delete(ctx, "app-events", value.GetIdentity().GetId()); err != nil {
 				return err
 			}
 		}
@@ -700,8 +706,8 @@ func (store *Store) DeleteAppEventsBefore(ctx context.Context, cutoff time.Time)
 	return nil
 }
 
-func (store *Store) RecoverInterruptedWork(context.Context, time.Time) ([]domain.AppEvent, error) {
-	return []domain.AppEvent{}, nil
+func (store *Store) RecoverInterruptedWork(context.Context, time.Time) ([]*clientpb.Resource, error) {
+	return []*clientpb.Resource{}, nil
 }
 
 func (store *Store) owns(userID string) error {
@@ -711,59 +717,110 @@ func (store *Store) owns(userID string) error {
 	return nil
 }
 
-func (store *Store) put(ctx context.Context, kind string, id string, value any) error {
-	payload, err := resourcePayload(value)
+func (store *Store) put(ctx context.Context, kind string, resource *clientpb.Resource) error {
+	if resource == nil || resource.GetIdentity() == nil {
+		return fmt.Errorf("encode Central %s resource: resource and identity are required", kind)
+	}
+	id := resource.GetIdentity().GetId()
+	if id == "" {
+		return fmt.Errorf("encode Central %s resource: resource ID is required", kind)
+	}
+	if err := validateResourceKind(kind, resource); err != nil {
+		return err
+	}
+	if owner := resourceOwner(resource); owner != "" {
+		if err := store.owns(owner); err != nil {
+			return err
+		}
+	}
+	destination := resource
+	revision := resource.GetIdentity().GetRevision()
+	resource = proto.CloneOf(resource)
+	payload, err := protojson.MarshalOptions{UseProtoNames: false}.Marshal(resource)
 	if err != nil {
 		return fmt.Errorf("encode Central %s resource: %w", kind, err)
 	}
-	if err := store.validateEmbeddedOwnership(payload); err != nil {
-		return err
-	}
 	headers := map[string]string{"Content-Type": "application/json"}
 	method, path := http.MethodPut, resourcePath(kind, id)
-	revision := observedRevision(value)
 	if revision == 0 {
 		method, path = http.MethodPost, "/v1/"+url.PathEscape(kind)
 		headers["If-None-Match"] = "*"
 	} else {
 		headers["If-Match"] = strconv.FormatInt(revision, 10)
 	}
-	headers["Idempotency-Key"] = commandID("put", kind, id, revision, payload)
-	body := map[string]any{"id": id, "data": json.RawMessage(payload)}
-	var saved resourceEnvelope
-	if err := store.request(ctx, method, path, true, headers, body, &saved); err != nil {
+	command := commandID("put", kind, id, revision, payload)
+	headers["Idempotency-Key"] = command
+	request := servicepb.PutResourceRequest_builder{
+		Mutation: mutationIdentity(command, revision),
+		Resource: resource,
+	}.Build()
+	response := &servicepb.PutResourceResponse{}
+	if err := store.request(ctx, method, path, true, headers, request, response); err != nil {
 		return err
 	}
+	if response.GetResource() == nil || response.GetResource().GetIdentity() == nil {
+		return errors.New("central returned an invalid resource mutation response")
+	}
+	proto.Reset(destination)
+	proto.Merge(destination, response.GetResource())
 	return nil
 }
 
 func (store *Store) delete(ctx context.Context, kind string, id string) error {
-	current, err := store.getEnvelope(ctx, kind, id)
+	current, err := store.getResource(ctx, kind, id)
 	if errors.Is(err, application.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	var deleted resourceEnvelope
+	identity := current.GetIdentity()
+	command := commandID("delete", kind, id, identity.GetRevision(), nil)
+	resourceType, err := resourceKind(kind)
+	if err != nil {
+		return err
+	}
+	request := servicepb.DeleteResourceRequest_builder{
+		Mutation: mutationIdentity(command, identity.GetRevision()),
+		Kind:     resourceType,
+		Id:       &id,
+	}.Build()
 	return store.request(ctx, http.MethodDelete, resourcePath(kind, id), true, map[string]string{
-		"Idempotency-Key": commandID("delete", kind, id, current.Revision, nil),
-		"If-Match":        strconv.FormatInt(current.Revision, 10),
-	}, nil, &deleted)
+		"Content-Type":    "application/json",
+		"Idempotency-Key": command,
+		"If-Match":        strconv.FormatInt(identity.GetRevision(), 10),
+	}, request, &servicepb.DeleteResourceResponse{})
 }
 
-func (store *Store) getEnvelope(ctx context.Context, kind string, id string) (resourceEnvelope, error) {
-	var envelope resourceEnvelope
-	err := store.request(ctx, http.MethodGet, resourcePath(kind, id), true, nil, nil, &envelope)
-	return envelope, err
-}
-
-func (store *Store) listEnvelopes(ctx context.Context, kind string) ([]resourceEnvelope, error) {
-	var response resourceList
-	if err := store.request(ctx, http.MethodGet, "/v1/"+url.PathEscape(kind), true, nil, nil, &response); err != nil {
+func (store *Store) getResource(ctx context.Context, kind string, id string) (*clientpb.Resource, error) {
+	resourceType, err := resourceKind(kind)
+	if err != nil {
 		return nil, err
 	}
-	return response.Data, nil
+	request := servicepb.GetResourceRequest_builder{Kind: resourceType, Id: &id}.Build()
+	response := &servicepb.GetResourceResponse{}
+	if err := store.request(ctx, http.MethodGet, resourcePath(kind, id), true,
+		map[string]string{"Content-Type": "application/json"}, request, response); err != nil {
+		return nil, err
+	}
+	if response.GetResource() == nil {
+		return nil, errors.New("central returned an invalid resource response")
+	}
+	return response.GetResource(), nil
+}
+
+func (store *Store) listResources(ctx context.Context, kind string) ([]*clientpb.Resource, error) {
+	resourceType, err := resourceKind(kind)
+	if err != nil {
+		return nil, err
+	}
+	request := servicepb.ListResourcesRequest_builder{Kind: resourceType}.Build()
+	response := &servicepb.ListResourcesResponse{}
+	if err := store.request(ctx, http.MethodGet, "/v1/"+url.PathEscape(kind), true,
+		map[string]string{"Content-Type": "application/json"}, request, response); err != nil {
+		return nil, err
+	}
+	return response.GetResources(), nil
 }
 
 func (store *Store) request(
@@ -772,8 +829,8 @@ func (store *Store) request(
 	path string,
 	authenticated bool,
 	headers map[string]string,
-	input any,
-	output any,
+	input proto.Message,
+	output proto.Message,
 ) error {
 	if !authenticated {
 		return store.doRequest(ctx, method, path, "", headers, input, output)
@@ -799,23 +856,18 @@ func (store *Store) doRequest(
 	path string,
 	token string,
 	headers map[string]string,
-	input any,
-	output any,
+	input proto.Message,
+	output proto.Message,
 ) error {
-	var body io.Reader
-	if input != nil {
-		encoded, err := json.Marshal(input)
-		if err != nil {
-			return fmt.Errorf("encode Central request: %w", err)
-		}
-		body = bytes.NewReader(encoded)
+	body, err := encodeRequestBody(input)
+	if err != nil {
+		return err
 	}
 	endpoint := store.baseURL + path
 	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return fmt.Errorf("create Central request: %w", err)
 	}
-	request.Header.Set("X-Cineko-Protocol", strconv.Itoa(central.ProtocolVersion))
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -827,7 +879,7 @@ func (store *Store) doRequest(
 		return fmt.Errorf("send Central request: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	if err := store.observeReleaseGeneration(response.Header.Get(central.ReleaseGenerationHeader)); err != nil {
+	if err := store.observeReleaseGeneration(response.Header.Get(releaseGenerationHeader)); err != nil {
 		return err
 	}
 	contents, err := io.ReadAll(io.LimitReader(response.Body, maximumResponseBody+1))
@@ -840,13 +892,33 @@ func (store *Store) doRequest(
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return decodeAPIError(response.StatusCode, contents)
 	}
-	if output == nil || len(contents) == 0 {
+	if output == nil {
 		return nil
 	}
-	if err := json.Unmarshal(contents, output); err != nil {
+	if len(contents) == 0 {
+		return errors.New("central returned an empty protobuf response")
+	}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(contents, output); err != nil {
 		return fmt.Errorf("decode Central response: %w", err)
 	}
+	if err := protovalidate.Validate(output); err != nil {
+		return fmt.Errorf("validate Central response: %w", err)
+	}
 	return nil
+}
+
+func encodeRequestBody(input proto.Message) (io.Reader, error) {
+	if input == nil {
+		return nil, nil
+	}
+	if err := protovalidate.Validate(input); err != nil {
+		return nil, fmt.Errorf("validate Central request: %w", err)
+	}
+	encoded, err := (protojson.MarshalOptions{UseProtoNames: false}).Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("encode Central request: %w", err)
+	}
+	return bytes.NewReader(encoded), nil
 }
 
 func (store *Store) observeReleaseGeneration(value string) error {
@@ -872,8 +944,8 @@ func (store *Store) observeReleaseGeneration(value string) error {
 }
 
 // WatchEvents follows Central's existing user event stream. Release changes are
-// carried by the response header and heartbeat comments, so this does not add a
-// version polling loop or a second update-only connection.
+// carried by the response header and generated control messages, so this does
+// not add a polling loop or a second update-only connection.
 func (store *Store) WatchEvents(ctx context.Context) error {
 	backoff := 250 * time.Millisecond
 	for {
@@ -948,12 +1020,19 @@ func (store *Store) watchEventsOnce(ctx context.Context) error {
 }
 
 func (store *Store) watchEventsWithToken(ctx context.Context, token string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, store.baseURL+"/v1/events/stream", nil)
+	afterSequence := store.eventCursor.Load()
+	input := servicepb.StreamEventsRequest_builder{AfterSequence: &afterSequence}.Build()
+	body, err := encodeRequestBody(input)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, store.baseURL+"/v1/events/stream", body)
 	if err != nil {
 		return fmt.Errorf("create Central event stream request: %w", err)
 	}
-	request.Header.Set(central.ProtocolHeader, central.ProtocolHeaderValue())
 	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
 	if cursor := store.eventCursor.Load(); cursor > 0 {
 		request.Header.Set("Last-Event-ID", strconv.FormatInt(cursor, 10))
 	}
@@ -971,7 +1050,7 @@ func (store *Store) watchEventsWithToken(ctx context.Context, token string) erro
 }
 
 func (store *Store) validateEventStreamResponse(response *http.Response) error {
-	if err := store.observeReleaseGeneration(response.Header.Get(central.ReleaseGenerationHeader)); err != nil {
+	if err := store.observeReleaseGeneration(response.Header.Get(releaseGenerationHeader)); err != nil {
 		return err
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -1027,146 +1106,65 @@ func (store *Store) sessionToken(ctx context.Context, forceRefresh bool) (string
 	if store.refreshToken == "" || !store.refreshExpiresAt.After(now) {
 		return "", errCentralUnauthorized
 	}
-	var auth central.AuthExchangeResponse
+	credentials := &clientpb.TokenRefreshRequest{}
+	credentials.SetRefreshToken(store.refreshToken)
+	request := servicepb.RefreshTokenRequest_builder{Request: credentials}.Build()
+	response := &servicepb.RefreshTokenResponse{}
 	if err := store.doRequest(
 		ctx,
 		http.MethodPost,
 		"/v1/auth/refresh",
 		"",
 		map[string]string{"Content-Type": "application/json"},
-		central.AuthRefreshRequest{RefreshToken: store.refreshToken},
-		&auth,
+		request, response,
 	); err != nil {
 		return "", fmt.Errorf("refresh Central session: %w", err)
 	}
-	if err := store.acceptSessionLocked(auth, now); err != nil {
+	if err := store.acceptSessionLocked(response.GetAuthentication(), now); err != nil {
 		return "", err
 	}
 	return store.token, nil
 }
 
-func (store *Store) acceptSession(auth central.AuthExchangeResponse) error {
+func (store *Store) acceptSession(auth *clientpb.AuthenticationResponse) error {
 	store.authMu.Lock()
 	defer store.authMu.Unlock()
 	return store.acceptSessionLocked(auth, store.clock())
 }
 
-func (store *Store) acceptSessionLocked(auth central.AuthExchangeResponse, now time.Time) error {
-	if strings.TrimSpace(auth.AccessToken) == "" || strings.TrimSpace(auth.RefreshToken) == "" ||
-		auth.User.ID != store.userID || !auth.ExpiresAt.After(now) ||
-		!auth.RefreshExpiresAt.After(auth.ExpiresAt) {
+func (store *Store) acceptSessionLocked(auth *clientpb.AuthenticationResponse, now time.Time) error {
+	if auth == nil || strings.TrimSpace(auth.GetAccessToken()) == "" || strings.TrimSpace(auth.GetRefreshToken()) == "" ||
+		auth.GetUser().GetId() != store.userID || auth.GetExpiresAt() == nil || auth.GetRefreshExpiresAt() == nil ||
+		!auth.GetExpiresAt().AsTime().After(now) || !auth.GetRefreshExpiresAt().AsTime().After(auth.GetExpiresAt().AsTime()) {
 		return errors.New("invalid Central client session")
 	}
-	store.token = auth.AccessToken
-	store.expiresAt = auth.ExpiresAt
-	store.refreshToken = auth.RefreshToken
-	store.refreshExpiresAt = auth.RefreshExpiresAt
-	return nil
-}
-
-func getValue[T any](ctx context.Context, store *Store, kind string, id string) (T, error) {
-	var zero T
-	envelope, err := store.getEnvelope(ctx, kind, id)
-	if err != nil {
-		return zero, err
-	}
-	if err := store.validateEmbeddedOwnership(envelope.Data); err != nil {
-		return zero, err
-	}
-	var value T
-	if err := json.Unmarshal(envelope.Data, &value); err != nil {
-		return zero, fmt.Errorf("decode Central %s resource: %w", kind, err)
-	}
-	setObservedRevision(&value, envelope.Revision)
-	return value, nil
-}
-
-func listValues[T any](ctx context.Context, store *Store, kind string) ([]T, error) {
-	envelopes, err := store.listEnvelopes(ctx, kind)
-	if err != nil {
-		return nil, err
-	}
-	values := make([]T, len(envelopes))
-	for index, envelope := range envelopes {
-		if err := store.validateEmbeddedOwnership(envelope.Data); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(envelope.Data, &values[index]); err != nil {
-			return nil, fmt.Errorf("decode Central %s resource: %w", kind, err)
-		}
-		setObservedRevision(&values[index], envelope.Revision)
-	}
-	return values, nil
-}
-
-func observedRevision(value any) int64 {
-	switch typed := value.(type) {
-	case domain.Preset:
-		return typed.Revision
-	case domain.MonitorJob:
-		return typed.Revision
-	default:
-		return 0
-	}
-}
-
-func resourcePayload(value any) ([]byte, error) {
-	switch typed := value.(type) {
-	case domain.Preset:
-		typed.Revision = 0
-		return json.Marshal(typed)
-	case domain.MonitorJob:
-		typed.Revision = 0
-		return json.Marshal(typed)
-	default:
-		return json.Marshal(value)
-	}
-}
-
-func setObservedRevision(value any, revision int64) {
-	switch typed := value.(type) {
-	case *domain.Preset:
-		typed.Revision = revision
-	case *domain.MonitorJob:
-		typed.Revision = revision
-	}
-}
-
-func (store *Store) validateEmbeddedOwnership(payload []byte) error {
-	var identity struct {
-		UserID *string `json:"userId"`
-	}
-	if err := json.Unmarshal(payload, &identity); err != nil {
-		return errors.New("central resource ownership is invalid")
-	}
-	if identity.UserID == nil {
-		return nil
-	}
-	if strings.TrimSpace(*identity.UserID) == "" || strings.TrimSpace(*identity.UserID) != store.userID {
-		// Treat an inconsistent embedded owner as absent. The authenticated
-		// Central namespace is authoritative and a poisoned resource must never
-		// be persisted or consumed under a different user.
-		return application.ErrNotFound
-	}
+	store.token = auth.GetAccessToken()
+	store.expiresAt = auth.GetExpiresAt().AsTime()
+	store.refreshToken = auth.GetRefreshToken()
+	store.refreshExpiresAt = auth.GetRefreshExpiresAt().AsTime()
 	return nil
 }
 
 func decodeAPIError(status int, contents []byte) error {
-	var envelope apiErrorEnvelope
-	if err := json.Unmarshal(contents, &envelope); err != nil || envelope.Error.Code == "" {
+	response := &commonpb.APIErrorResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(contents, response); err != nil {
 		return centralAPIError{status: status, retryable: status >= http.StatusInternalServerError}
 	}
-	switch envelope.Error.Code {
+	if err := protovalidate.Validate(response); err != nil || response.GetError() == nil || response.GetError().GetCode() == "" {
+		return centralAPIError{status: status, retryable: status >= http.StatusInternalServerError}
+	}
+	failure := response.GetError()
+	switch failure.GetCode() {
 	case "not_found":
 		return application.ErrNotFound
 	case "revision_conflict", "idempotency_conflict":
 		return application.ErrConflict
 	case "unauthorized":
-		return fmt.Errorf("%w: %s", errCentralUnauthorized, envelope.Error.Message)
+		return fmt.Errorf("%w: %s", errCentralUnauthorized, failure.GetMessage())
 	case "rate_limited":
-		return fmt.Errorf("%w: %s", ErrPINRateLimited, envelope.Error.Message)
+		return fmt.Errorf("%w: %s", ErrPINRateLimited, failure.GetMessage())
 	default:
-		return centralAPIError{status: status, code: envelope.Error.Code, retryable: envelope.Error.Retryable}
+		return centralAPIError{status: status, code: failure.GetCode(), retryable: failure.GetRetryable()}
 	}
 }
 

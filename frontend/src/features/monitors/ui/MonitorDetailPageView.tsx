@@ -4,7 +4,8 @@ import { Columns } from '../../../components/core/Columns';
 import { Metric } from '../../../components/core/Metric';
 import { PageHeader } from '../../../components/core/PageHeader';
 import { EmptyState, Section } from '../../../components/core/Section';
-import type { Monitor } from '../../../api/types';
+import type { Monitor } from '../../../api/proto';
+import { monitorMode, monitorMovie, monitorStatus } from '../../../api/resources';
 import { monitorIntervalLabel, monitorScheduleLabel, monitorStatusLabel, monitorTimeLabel } from '../model';
 
 interface MonitorDetailPageViewProps {
@@ -24,15 +25,16 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
       </Stack>
     );
   }
-  const awaitingPayment = monitor.status === 'triggered';
-  const paymentUnknown = monitor.status === 'payment_unknown';
-  const running = monitor.status === 'running';
+	const status = monitorStatus(monitor);
+	const awaitingPayment = status === 'triggered';
+	const paymentUnknown = status === 'payment_unknown';
+	const running = status === 'running';
   const retryLabel = paymentUnknown ? '확인 후 다시 찾기' : '다시 찾기';
   return (
     <Stack gap="xl">
       <PageHeader
-        title={monitor.movie}
-        description={monitor.mode === 'cancellation' ? '취소표 전용 모니터' : '예매 오픈·취소표 모니터'}
+		title={monitorMovie(monitor)}
+		description={monitorMode(monitor) === 'cancellation' ? '취소표 전용 모니터' : '예매 오픈·취소표 모니터'}
         actions={(
           <Group gap="xs">
             <SecondaryButton onClick={onBack}>목록</SecondaryButton>
@@ -46,12 +48,12 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
       <Columns>
         <Metric
           label="상태"
-          value={monitorStatusLabel(monitor.status)}
+		  value={monitorStatusLabel(status)}
           detail={paymentUnknown
             ? 'CGV 예매 내역을 확인한 뒤 다시 실행하세요.'
             : awaitingPayment
             ? '결제 화면을 최대 15분 동안 유지합니다.'
-            : monitor.updatedAt ? new Date(monitor.updatedAt).toLocaleString('ko-KR') : '업데이트 기록 없음'}
+			: monitor.updatedAt ? new Date(Number(monitor.updatedAt.seconds) * 1000).toLocaleString('ko-KR') : '업데이트 기록 없음'}
           color={awaitingPayment || paymentUnknown ? 'orange' : running ? 'blue' : 'gray'}
           processing={running}
         />
@@ -68,7 +70,7 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
             </Text>
           ) : null}
           {paymentUnknown ? <Text size="sm" c="orange.4">중복 예매를 막기 위해 자동으로 다시 실행하지 않았습니다.</Text> : null}
-          {monitor.lastError ? <Text size="sm" c="red">최근 실행에서 오류가 발생했습니다.</Text> : null}
+			{monitor.state?.state.case === 'failed' ? <Text size="sm" c="red">최근 실행에서 오류가 발생했습니다.</Text> : null}
         </Stack>
       </Section>
     </Stack>

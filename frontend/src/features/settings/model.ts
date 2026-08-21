@@ -1,4 +1,7 @@
-import type { NetworkSettings, NetworkSettingsInput } from '../../api/types';
+import { create } from '@bufbuild/protobuf';
+import {
+	DirectNetworkSchema, NetworkSettingsSchema, ProxyNetworkSchema, type NetworkSettings,
+} from '../../api/proto';
 
 export type SettingsLoadState = 'unavailable' | 'idle' | 'loading' | 'ready' | 'error';
 
@@ -11,23 +14,25 @@ export interface NetworkForm {
 
 export function networkForm(settings?: NetworkSettings): NetworkForm {
   return {
-		mode: settings?.mode === 'proxy' ? 'proxy' : 'direct',
-    proxyUrls: settings?.proxyUrls?.join('\n') ?? '',
-    proxyUsername: settings?.proxyUsername ?? '',
+		mode: settings?.mode.case === 'proxy' ? 'proxy' : 'direct',
+	    proxyUrls: settings?.mode.case === 'proxy' ? settings.mode.value.urls.join('\n') : '',
+	    proxyUsername: settings?.mode.case === 'proxy' ? settings.mode.value.username : '',
     proxyPassword: '',
   };
 }
 
-export function networkSettingsInput(form: NetworkForm): NetworkSettingsInput {
-  return {
-    mode: form.mode,
-    proxyUrls: form.proxyUrls.split(/[,\n]/).map((value) => value.trim()).filter(Boolean),
-    proxyUsername: form.proxyUsername.trim(),
-    proxyPassword: form.proxyPassword,
-  };
+export function networkSettingsInput(form: NetworkForm): NetworkSettings {
+	return create(NetworkSettingsSchema, {
+		mode: form.mode === 'proxy'
+			? { case: 'proxy', value: create(ProxyNetworkSchema, {
+				urls: form.proxyUrls.split(/[,\n]/).map((value) => value.trim()).filter(Boolean),
+				username: form.proxyUsername.trim(), password: form.proxyPassword,
+			}) }
+			: { case: 'direct', value: create(DirectNetworkSchema) },
+	});
 }
 
 export function networkUsageDescription(settings?: NetworkSettings): string {
-	if (settings?.mode === 'proxy') return `${settings.proxyUrls?.length ?? 0}개 표준 프록시`;
+	if (settings?.mode.case === 'proxy') return `${settings.mode.value.urls.length}개 표준 프록시`;
 	return '사용 안 함';
 }

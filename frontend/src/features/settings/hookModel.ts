@@ -1,6 +1,14 @@
-import type { HookSettings, HookSettingsInput, HookTargetInput } from '../../api/types';
+import { create } from '@bufbuild/protobuf';
+import { WebhookTargetSchema, type WebhookTarget } from '../../api/proto';
 
-export interface HookTargetForm extends HookTargetInput {
+export interface HookTargetForm {
+  id: string;
+  name: string;
+  kind: 'discord' | 'slack' | 'webhook';
+  url: string;
+  secret: string;
+  eventKinds: string[];
+  enabled: boolean;
   hasSecret?: boolean;
 }
 
@@ -24,10 +32,11 @@ export const hookEventGroups = [
 
 export const hookEventKinds = hookEventGroups.flatMap((group) => group.events.map((event) => event.kind));
 
-export function hookForms(settings?: HookSettings): HookTargetForm[] {
-  return (settings?.targets ?? []).map((target) => ({
-    id: target.id, name: target.name, kind: target.kind, url: target.url,
-    secret: '', eventKinds: [...target.eventKinds], enabled: target.enabled,
+export function hookForms(settings?: WebhookTarget[]): HookTargetForm[] {
+	return (settings ?? []).map((target) => ({
+    id: target.id, name: target.name,
+    kind: target.url.includes('discord.com') ? 'discord' : target.url.includes('slack.com') ? 'slack' : 'webhook',
+    url: target.url, secret: '', eventKinds: [...target.eventKinds], enabled: target.enabled,
     hasSecret: target.hasSecret,
   }));
 }
@@ -39,15 +48,13 @@ export function newHookForm(): HookTargetForm {
   };
 }
 
-export function hookSettingsInput(forms: HookTargetForm[]): HookSettingsInput {
-  return {
-    targets: forms.map(({ hasSecret: _hasSecret, eventKinds, ...target }) => ({
-      ...target,
-      name: target.name.trim(),
-      url: target.url.trim(),
-      eventKinds: [...new Set(eventKinds)],
-    })),
-  };
+export function hookSettingsInput(forms: HookTargetForm[]): WebhookTarget[] {
+	return forms.map(({ kind: _kind, hasSecret: _hasSecret, eventKinds, ...target }) => create(WebhookTargetSchema, {
+		...target,
+		name: target.name.trim(),
+		url: target.url.trim(),
+		eventKinds: [...new Set(eventKinds)],
+	}));
 }
 
 export function selectAllHookEvents(selected: boolean): string[] {

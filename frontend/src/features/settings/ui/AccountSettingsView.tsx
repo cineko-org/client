@@ -2,10 +2,11 @@ import { Group, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { useState } from 'react';
 import { DangerButton, PrimaryButton, SecondaryButton } from '../../../components/core/Actions';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
-import type { AccountState } from '../../../api/types';
+import type { WebUIAccountState } from '../../../api/proto';
+import { accountAuthenticated } from '../../../api/resources';
 
 interface AccountSettingsViewProps {
-  account: AccountState;
+	account: WebUIAccountState;
   onAuthenticate: () => void;
   onSave: (id: string, password: string) => void;
   onRestore: () => void;
@@ -15,21 +16,22 @@ interface AccountSettingsViewProps {
 export function AccountSettingsView({
   account, onAuthenticate, onSave, onRestore, onDelete,
 }: AccountSettingsViewProps) {
-  const [id, setId] = useState(account.accountId ?? '');
+	const authenticated = accountAuthenticated(account);
+	const [id, setId] = useState(account.accountId ?? '');
   const [password, setPassword] = useState('');
 
   return (
     <Stack gap="md">
       <Group justify="space-between">
         <Stack gap={2}>
-          <StatusIndicator label="CGV" color={account.authenticated ? 'green' : 'gray'} muted={!account.authenticated} />
+		  <StatusIndicator label="CGV" color={authenticated ? 'green' : 'gray'} muted={!authenticated} />
           <Text size="xs" c="dimmed">
-            {account.credentialsSaved
+			{account.credentialsSaved
               ? '저장 정보로 입력을 도와드립니다. CAPTCHA와 로그인은 직접 완료해야 합니다.'
               : '로그인하지 않아도 좌석 선택까지 진행할 수 있습니다.'}
           </Text>
         </Stack>
-        <SecondaryButton onClick={onAuthenticate}>{account.authenticated ? '브라우저에서 확인' : '직접 로그인'}</SecondaryButton>
+		<SecondaryButton onClick={onAuthenticate}>{authenticated ? '브라우저에서 확인' : '직접 로그인'}</SecondaryButton>
       </Group>
 
       {account.credentialsSaved ? (

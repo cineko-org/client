@@ -14,7 +14,7 @@ import { AccountSettingsView } from '../features/settings/ui/AccountSettingsView
 import { HookSettingsView } from '../features/settings/ui/HookSettingsView';
 import { ProxySettingsView } from '../features/settings/ui/ProxySettingsView';
 import { IconBell } from '@tabler/icons-react';
-import { noop, reservations, seatMap } from './fixtures';
+import { authenticatedAccount, noop, proxyNetwork, reservations, seatMap } from './fixtures';
 import { imaxSeatMapFixture } from './liveSeatMaps';
 
 const meta = { title: 'Client/Components' } satisfies Meta;
@@ -59,7 +59,7 @@ export const CancellationSchedule: Story = {
 };
 
 export const AccountAndProxy: Story = {
-  render: () => <Canvas><Stack maw={760} gap="xl"><AccountSettingsView account={{ status: 'authenticated', authenticated: true, credentialsSaved: true, accountId: 'cineko-user' }} onAuthenticate={noop} onSave={noop} onRestore={noop} onDelete={noop} /><Divider /><ProxySettingsView available settings={{ mode: 'proxy', proxyUrls: ['socks5://127.0.0.1:1080'] }} form={{ mode: 'proxy', proxyUrls: 'socks5://127.0.0.1:1080', proxyUsername: '', proxyPassword: '' }} loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} /></Stack></Canvas>,
+  render: () => <Canvas><Stack maw={760} gap="xl"><AccountSettingsView account={authenticatedAccount} onAuthenticate={noop} onSave={noop} onRestore={noop} onDelete={noop} /><Divider /><ProxySettingsView available settings={proxyNetwork} form={{ mode: 'proxy', proxyUrls: 'socks5://127.0.0.1:1080', proxyUsername: '', proxyPassword: '' }} loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} /></Stack></Canvas>,
 };
 
 export const ExternalNotifications: Story = {

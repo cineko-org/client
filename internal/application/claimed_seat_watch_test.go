@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 )
 
 type recordingWaiter struct {
@@ -54,9 +56,10 @@ func TestAttemptClaimedShowtimeWithoutRefreshCapability(t *testing.T) {
 		live: []domain.LiveSeat{{Label: "H10", Available: false}},
 	}}
 	worker := claimedSeatWatchWorker(repository, gateway, time.Now())
-	claimed := claimedSeatWatchBooking(repository)
+	showtime := claimedSeatWatchShowtime()
+	job, preset, showtimeMessage := claimedSeatWatchInputs(repository, showtime)
 	_, err := worker.attemptClaimedShowtime(
-		t.Context(), claimed.Monitor, claimed.Preset, claimed.Showtime,
+		t.Context(), job, preset, showtimeMessage,
 	)
 	if !errors.Is(err, ErrSeatUnavailable) || gateway.openCalls != 1 {
 		t.Fatalf("single attempt = %v, opens %d", err, gateway.openCalls)
@@ -81,9 +84,10 @@ func TestAttemptClaimedShowtimeBoundsWaitAndRefresh(t *testing.T) {
 			MinInterval: time.Millisecond, MaxInterval: time.Millisecond,
 		},
 	)
-	claimed := claimedSeatWatchBooking(repository)
+	showtime := claimedSeatWatchShowtime()
+	job, preset, showtimeMessage := claimedSeatWatchInputs(repository, showtime)
 	_, err := worker.attemptClaimedShowtime(
-		t.Context(), claimed.Monitor, claimed.Preset, claimed.Showtime,
+		t.Context(), job, preset, showtimeMessage,
 	)
 	if !errors.Is(err, refreshErr) || len(waiter.delays) != 1 || waiter.delays[0] != 500*time.Microsecond {
 		t.Fatalf("bounded refresh = %v, delays %v", err, waiter.delays)
@@ -92,7 +96,8 @@ func TestAttemptClaimedShowtimeBoundsWaitAndRefresh(t *testing.T) {
 
 func TestAttemptClaimedShowtimeStopsOnWaitAndDeadline(t *testing.T) {
 	repository := claimedSeatWatchRepository()
-	claimed := claimedSeatWatchBooking(repository)
+	showtime := claimedSeatWatchShowtime()
+	job, preset, showtimeMessage := claimedSeatWatchInputs(repository, showtime)
 	newGateway := func() *refreshingShowtimeGateway {
 		return &refreshingShowtimeGateway{
 			exactShowtimeGateway: &exactShowtimeGateway{workerGateway: &workerGateway{
@@ -114,7 +119,7 @@ func TestAttemptClaimedShowtimeStopsOnWaitAndDeadline(t *testing.T) {
 			},
 		)
 		_, err := worker.attemptClaimedShowtime(
-			t.Context(), claimed.Monitor, claimed.Preset, claimed.Showtime,
+			t.Context(), job, preset, showtimeMessage,
 		)
 		if !errors.Is(err, waitErr) || gateway.refreshCalls != 0 {
 			t.Fatalf("wait result = %v, refreshes %d", err, gateway.refreshCalls)
@@ -131,7 +136,7 @@ func TestAttemptClaimedShowtimeStopsOnWaitAndDeadline(t *testing.T) {
 			},
 		)
 		_, err := worker.attemptClaimedShowtime(
-			t.Context(), claimed.Monitor, claimed.Preset, claimed.Showtime,
+			t.Context(), job, preset, showtimeMessage,
 		)
 		if !errors.Is(err, ErrSeatUnavailable) || gateway.refreshCalls != 0 {
 			t.Fatalf("deadline result = %v, refreshes %d", err, gateway.refreshCalls)
@@ -147,12 +152,16 @@ func TestAttemptClaimedShowtimeStopsOnWaitAndDeadline(t *testing.T) {
 			},
 		)
 		_, err := worker.attemptClaimedShowtime(
-			t.Context(), claimed.Monitor, claimed.Preset, claimed.Showtime,
+			t.Context(), job, preset, showtimeMessage,
 		)
 		if !errors.Is(err, ErrSeatUnavailable) || gateway.refreshCalls != 1 {
 			t.Fatalf("limit result = %v, refreshes %d", err, gateway.refreshCalls)
 		}
 	})
+}
+
+func claimedSeatWatchInputs(repository *workerRepository, showtime domain.Showtime) (*clientpb.Monitor, *clientpb.Preset, *catalogpb.Showtime) {
+	return cloneMonitor(repository.job), clonePreset(repository.preset), showtimeProtoFromDomain(showtime)
 }
 
 type claimedSeatWatchGateway interface {

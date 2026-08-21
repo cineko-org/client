@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { create } from '@bufbuild/protobuf';
 import { api, desktopBridge, errorMessage } from '../../api/client';
-import type { AccountState, AppState, ApplicationConnection, TaskState } from '../../api/types';
+import {
+	AccountCredentialsSchema, WebUIAccountStateSchema, WebUIActionStatusSchema, WebUIStateSchema,
+	WebUITaskStatusResponseSchema, type WebUIAccountState, type WebUIState,
+} from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
-import { emptyAppState, initialApplicationConnection } from './model';
+import { emptyAppState, initialApplicationConnection, type ApplicationConnection } from './model';
 
-const checkingAccount: AccountState = { status: 'checking', authenticated: false };
+const checkingAccount = create(WebUIAccountStateSchema, { state: { case: 'checking', value: {} } });
 
 export function useApplicationState(notify: Notify, loadNotices: (userId: string) => Promise<void>) {
-  const [state, setState] = useState<AppState>(emptyAppState);
+	const [state, setState] = useState<WebUIState>(emptyAppState);
   const [userId, setUserId] = useState('local-user');
-  const [account, setAccount] = useState<AccountState>(checkingAccount);
+	const [account, setAccount] = useState<WebUIAccountState>(checkingAccount);
   const [loading, setLoading] = useState(true);
   const [connection, setConnection] = useState<ApplicationConnection>(initialApplicationConnection);
   const userIdRef = useRef('local-user');
@@ -39,12 +43,12 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
     setConnection({ status: 'ready', message: '', lastSuccessfulAt: synchronizedAt, retrying: false });
   }, []);
 
-  const loadState = useCallback(async (activeUserId = userIdRef.current) => {
+	const loadState = useCallback(async (activeUserId = userIdRef.current) => {
     const request = ++stateRequest.current;
     try {
-      const next = await api<AppState>(`/api/state?user=${encodeURIComponent(activeUserId)}`);
+		const next = await api(`/api/state?user=${encodeURIComponent(activeUserId)}`, WebUIStateSchema);
       if (request !== stateRequest.current) return next;
-      setState({ ...emptyAppState, ...next });
+		setState(next);
       markConnectionReady();
       return next;
     } catch (error) {
@@ -58,22 +62,22 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
     window.clearTimeout(pollTimer.current);
     try {
       const [tasks, accountState] = await Promise.all([
-        api<Record<string, TaskState>>('/api/status'),
-        api<AccountState>('/api/account'),
-      ]);
+			api('/api/status', WebUITaskStatusResponseSchema),
+			api('/api/account', WebUIAccountStateSchema),
+		]);
       if (request !== statusRequest.current) return;
-      const running = Object.values(tasks).filter((task) => task.status === 'running').length;
-      setAccount(accountState);
-      for (const [id, task] of Object.entries(tasks)) {
-        const reportKey = `${id}:${task.status}:${task.updatedAt}`;
-        if (task.status === 'running' || reportedTasks.current.has(reportKey)) continue;
-        reportedTasks.current.add(reportKey);
-        if (task.status === 'failed') {
-          notify(task.message || `${id} 작업이 실패했습니다.`, { tone: 'error', important: true });
+		const running = tasks.tasks.filter((task) => task.state.case === 'running').length;
+		setAccount(accountState);
+		for (const task of tasks.tasks) {
+			const reportKey = `${task.id}:${task.state.case}:${task.updatedAt?.seconds ?? 0n}`;
+			if (task.state.case === 'running' || reportedTasks.current.has(reportKey)) continue;
+			reportedTasks.current.add(reportKey);
+			if (task.state.case === 'failed') {
+				notify(task.message || `${task.id} 작업이 실패했습니다.`, { tone: 'error', important: true });
         }
       }
       await Promise.all([loadState(activeUserId), loadNotices(activeUserId)]);
-      if (running > 0 || accountState.status === 'checking') {
+		if (running > 0 || accountState.state.case === 'checking') {
         pollTimer.current = window.setTimeout(() => void pollStatusForUser(activeUserId), 2500);
       }
     } catch (error) {
@@ -122,7 +126,7 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
 
   const openAuthentication = useCallback(async () => {
     try {
-      await api('/api/auth/open', { method: 'POST', body: {} });
+		await api('/api/auth/open', WebUIActionStatusSchema, { method: 'POST' });
       notify('CGV 로그인을 위한 Chrome을 열었습니다.');
       void pollStatus();
     } catch (error) {
@@ -132,7 +136,8 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
 
   const saveAccountCredentials = useCallback(async (id: string, password: string) => {
     try {
-      await api('/api/account/credentials', { method: 'PUT', body: { id, password } });
+		await api('/api/account/credentials', WebUIActionStatusSchema, { method: 'PUT' }, AccountCredentialsSchema,
+			create(AccountCredentialsSchema, { id, password }));
       notify('로그인 정보를 안전하게 저장하고 CGV 로그인을 시작했습니다.');
       void pollStatus();
     } catch (error) {
@@ -142,7 +147,7 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
 
   const restoreAuthentication = useCallback(async () => {
     try {
-      await api('/api/auth/restore', { method: 'POST', body: {} });
+		await api('/api/auth/restore', WebUIActionStatusSchema, { method: 'POST' });
       notify('저장된 정보로 CGV 로그인을 시작했습니다.');
       void pollStatus();
     } catch (error) {
@@ -152,7 +157,7 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
 
   const deleteAccountCredentials = useCallback(async () => {
     try {
-      await api('/api/account/credentials', { method: 'DELETE' });
+		await api('/api/account/credentials', WebUIActionStatusSchema, { method: 'DELETE' });
       notify('저장된 CGV 로그인 정보를 삭제했습니다.');
       void pollStatus();
     } catch (error) {
