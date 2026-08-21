@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { HomePage } from './HomePage';
 import { MonitorDetailPageView } from '../features/monitors/ui/MonitorDetailPageView';
 import { useApplicationState } from '../features/application/useApplicationState';
@@ -13,6 +12,7 @@ import { PresetEditorPage } from './pages/PresetEditorPage';
 import { PresetsPage } from './pages/PresetsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import type { Route } from './router';
+import { useEditorRouteInitialization } from './useEditorRouteInitialization';
 
 interface AppRoutesProps {
   route: Route;
@@ -184,10 +184,7 @@ interface MonitorEditorRouteProps {
 
 function MonitorEditorRoute({ monitorId, controller, ...props }: MonitorEditorRouteProps) {
 	const { edit, newMonitor } = controller;
-	useEffect(() => {
-		if (monitorId) edit(monitorId);
-		else newMonitor();
-	}, [edit, monitorId, newMonitor]);
+	useEditorRouteInitialization(monitorId, edit, newMonitor);
 	if (monitorId && controller.form.id !== monitorId) return null;
 	return <MonitorEditorPage {...props} controller={controller} />;
 }
@@ -202,10 +199,7 @@ interface PresetEditorRouteProps {
 
 function PresetEditorRoute({ presetId, controller, ...props }: PresetEditorRouteProps) {
 	const { edit, newPreset } = controller;
-	useEffect(() => {
-		if (presetId) edit(presetId);
-		else newPreset();
-	}, [edit, newPreset, presetId]);
+	useEditorRouteInitialization(presetId, edit, newPreset);
 	if (presetId && controller.form.id !== presetId) return null;
 	return <PresetEditorPage {...props} controller={controller} />;
 }
