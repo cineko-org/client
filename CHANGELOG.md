@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/cineko-org/client/compare/v2.5.6...v2.6.0) (2026-08-22)
+
+
+### Features
+
+* use generated protobuf contracts end to end ([#22](https://github.com/cineko-org/client/issues/22)) ([97660c8](https://github.com/cineko-org/client/commit/97660c8a73ba71c61ce3f20aeb2dbfbdc8f5590f))
+
 ## [2.5.6](https://github.com/cineko-org/client/compare/v2.5.5...v2.5.6) (2026-08-21)
 
 
