@@ -1,9 +1,12 @@
 package cgv
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"buf.build/go/protovalidate"
 	"github.com/cineko-org/client/internal/domain"
 )
 
@@ -30,6 +33,63 @@ func TestParseSeatSnapshotUsesSaleYNAndStatusForAvailability(t *testing.T) {
 	sold := liveSeatByLabel(snapshot.Live, "B1")
 	if sold.Available {
 		t.Fatal("B1 should not be available")
+	}
+}
+
+func TestSeatLayoutHashIgnoresAvailabilityAndProviderOrdering(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 9, 20, 40, 0, 0, time.UTC)
+	baseline, err := parseSeatSnapshot([]byte(seatSnapshotFixture), "auditorium-1", now)
+	if err != nil {
+		t.Fatalf("parse baseline seat snapshot: %v", err)
+	}
+	availabilityChanged := strings.ReplaceAll(seatSnapshotFixture, `"seatSaleYn":"Y"`, `"seatSaleYn":"N"`)
+	availabilityChanged = strings.ReplaceAll(availabilityChanged, `"seatStusCd":"00"`, `"seatStusCd":"04"`)
+	changed, err := parseSeatSnapshot([]byte(availabilityChanged), "auditorium-1", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("parse changed seat snapshot: %v", err)
+	}
+	if baseline.Hash != changed.Hash {
+		t.Fatalf("availability changed layout hash: %s != %s", baseline.Hash, changed.Hash)
+	}
+
+	reordered := baseline
+	reordered.Seats = slices.Clone(baseline.Seats)
+	reordered.Zones = slices.Clone(baseline.Zones)
+	slices.Reverse(reordered.Seats)
+	slices.Reverse(reordered.Zones)
+	hash, err := canonicalLayoutHash(reordered)
+	if err != nil {
+		t.Fatalf("hash reordered layout: %v", err)
+	}
+	if hash != baseline.Hash {
+		t.Fatalf("provider ordering changed layout hash: %s != %s", hash, baseline.Hash)
+	}
+}
+
+func TestLiveSeatObservationKeepsLayoutWhenNoSeatIsAvailable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 9, 20, 40, 0, 0, time.UTC)
+	unavailable := strings.ReplaceAll(seatSnapshotFixture, `"seatSaleYn":"Y"`, `"seatSaleYn":"N"`)
+	snapshot, err := parseSeatSnapshot([]byte(unavailable), "auditorium-1", now)
+	if err != nil {
+		t.Fatalf("parse unavailable snapshot: %v", err)
+	}
+	layout := seatSnapshotProto(snapshot, "auditorium-1")
+	observation := liveSeatObservationProto(layout, "showtime-1", snapshot.Live)
+	if err := protovalidate.Validate(observation); err != nil {
+		t.Fatalf("validate zero-seat observation: %v", err)
+	}
+	if len(observation.GetLayout().GetLayout().GetSeats()) == 0 {
+		t.Fatal("zero availability discarded the layout")
+	}
+	if got := len(observation.GetAvailability().GetAvailableSeats()); got != 0 {
+		t.Fatalf("available seats = %d, want 0", got)
+	}
+	if observation.GetAvailability().GetLayoutHash() != observation.GetLayout().GetLayoutHash() {
+		t.Fatal("layout and availability revisions diverged")
 	}
 }
 

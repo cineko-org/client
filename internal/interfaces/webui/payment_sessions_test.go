@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type webPaymentAutomation struct {
@@ -22,11 +25,41 @@ func (*webPaymentAutomation) OpenSeatSelection(
 	context.Context,
 	*catalogpb.Showtime,
 	int,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+) (*seatmappb.LiveSeatObservation, error) {
 	snapshot := seatMapSnapshot(domain.SeatMap{AuditoriumID: "auditorium", Seats: []domain.Seat{{
 		Label: "H10", Row: "H", Number: 10, X: .5, Y: .5, Type: domain.SeatTypeStandard,
 	}}})
-	return snapshot, snapshot.GetLayout().GetSeats(), nil
+	return gatewayLiveObservationForWeb(snapshot), nil
+}
+
+func gatewayLiveObservationForWeb(snapshot *seatmappb.Snapshot) *seatmappb.LiveSeatObservation {
+	snapshot = proto.CloneOf(snapshot)
+	auditoriumID := snapshot.GetAuditoriumId()
+	snapshotID := "snapshot-web"
+	layoutHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	capacity := int32(1)
+	observedAt := timestamppb.New(time.Date(2026, time.August, 23, 8, 0, 0, 0, time.UTC))
+	snapshot.SetId(snapshotID)
+	snapshot.SetLayoutHash(layoutHash)
+	snapshot.SetCapacity(capacity)
+	snapshot.SetObservedAt(observedAt)
+	for index, seat := range snapshot.GetLayout().GetSeats() {
+		if seat.GetId() == "" {
+			seat.SetId(fmt.Sprintf("seat-%d", index+1))
+		}
+		seat.SetAuditoriumId(auditoriumID)
+	}
+	showtimeID := "showtime"
+	available := make([]*seatmappb.AvailableSeat, 0, len(snapshot.GetLayout().GetSeats()))
+	for _, seat := range snapshot.GetLayout().GetSeats() {
+		seatID := seat.GetId()
+		available = append(available, seatmappb.AvailableSeat_builder{SeatId: &seatID}.Build())
+	}
+	availability := seatmappb.AvailabilitySnapshot_builder{
+		ShowtimeId: &showtimeID, AuditoriumId: &auditoriumID,
+		LayoutHash: &layoutHash, AvailableSeats: available, ObservedAt: observedAt,
+	}.Build()
+	return seatmappb.LiveSeatObservation_builder{Layout: snapshot, Availability: availability}.Build()
 }
 
 func (*webPaymentAutomation) PreparePayment(

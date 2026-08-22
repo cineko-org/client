@@ -12,6 +12,8 @@ import (
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestMonitorServiceDefaultsRollingWeekdayHorizon(t *testing.T) {
@@ -138,9 +140,9 @@ func (gateway *workerGateway) OpenSeatSelection(
 	context.Context,
 	*catalogpb.Showtime,
 	int,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+) (*seatmappb.LiveSeatObservation, error) {
 	snapshot := gatewaySeatSnapshot()
-	return snapshot, gatewayAvailableSeats(snapshot, gateway.live), nil
+	return gatewayLiveObservation(snapshot, gateway.live), nil
 }
 
 func gatewaySeatMap() domain.SeatMap {
@@ -175,11 +177,51 @@ type noWaiter struct{}
 
 func (noWaiter) Wait(context.Context, time.Duration) error { return nil }
 
+type liveObservationRepositoryFake struct {
+	requests            []*servicepb.SubmitLiveSeatObservationRequest
+	err                 error
+	snapshot            *seatmappb.Snapshot
+	response            *servicepb.SubmitLiveSeatObservationResponse
+	onSubmit            func(*servicepb.SubmitLiveSeatObservationRequest)
+	waitForCancellation bool
+}
+
+func (repository *liveObservationRepositoryFake) SubmitLiveSeatObservation(
+	ctx context.Context,
+	request *servicepb.SubmitLiveSeatObservationRequest,
+) (*servicepb.SubmitLiveSeatObservationResponse, error) {
+	repository.requests = append(repository.requests, request)
+	if repository.onSubmit != nil {
+		repository.onSubmit(request)
+	}
+	if repository.waitForCancellation {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if repository.err != nil {
+		return nil, repository.err
+	}
+	if repository.response != nil {
+		return repository.response, nil
+	}
+	snapshot := repository.snapshot
+	if snapshot == nil {
+		snapshot = request.GetObservation().GetLayout()
+	}
+	return servicepb.SubmitLiveSeatObservationResponse_builder{Snapshot: snapshot}.Build(), nil
+}
+
 func gatewaySeatSnapshot() *seatmappb.Snapshot {
 	seatID, auditoriumID, label, row := "seat", "auditorium-1", "H10", "H"
+	snapshotID, layoutHash := "snapshot", testLayoutHashForApplication
+	capacity := int32(1)
 	number := int32(10)
 	seat := seatmappb.Seat_builder{Id: &seatID, AuditoriumId: &auditoriumID, Label: &label, Row: &row, Number: &number, Type: stringPointerForTest("standard")}.Build()
-	return seatmappb.Snapshot_builder{AuditoriumId: &auditoriumID, Layout: seatmappb.Layout_builder{Seats: []*seatmappb.Seat{seat}}.Build()}.Build()
+	return seatmappb.Snapshot_builder{
+		Id: &snapshotID, AuditoriumId: &auditoriumID, LayoutHash: &layoutHash,
+		Capacity: &capacity, Layout: seatmappb.Layout_builder{Seats: []*seatmappb.Seat{seat}}.Build(),
+		ObservedAt: timestamppb.New(time.Date(2026, time.August, 23, 8, 0, 0, 0, time.UTC)),
+	}.Build()
 }
 
 func gatewayAvailableSeats(snapshot *seatmappb.Snapshot, live []domain.LiveSeat) []*seatmappb.Seat {
@@ -196,4 +238,23 @@ func gatewayAvailableSeats(snapshot *seatmappb.Snapshot, live []domain.LiveSeat)
 	return result
 }
 
+func gatewayLiveObservation(snapshot *seatmappb.Snapshot, live []domain.LiveSeat) *seatmappb.LiveSeatObservation {
+	showtimeID := "showtime"
+	available := gatewayAvailableSeats(snapshot, live)
+	availableIDs := make([]*seatmappb.AvailableSeat, 0, len(available))
+	for _, seat := range available {
+		seatID := seat.GetId()
+		availableIDs = append(availableIDs, seatmappb.AvailableSeat_builder{SeatId: &seatID}.Build())
+	}
+	auditoriumID, layoutHash := snapshot.GetAuditoriumId(), snapshot.GetLayoutHash()
+	availability := seatmappb.AvailabilitySnapshot_builder{
+		ShowtimeId: &showtimeID, AuditoriumId: &auditoriumID,
+		LayoutHash: &layoutHash, AvailableSeats: availableIDs,
+		ObservedAt: snapshot.GetObservedAt(),
+	}.Build()
+	return seatmappb.LiveSeatObservation_builder{Layout: snapshot, Availability: availability}.Build()
+}
+
 func stringPointerForTest(value string) *string { return &value }
+
+const testLayoutHashForApplication = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

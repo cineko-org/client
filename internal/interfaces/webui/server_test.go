@@ -398,8 +398,8 @@ func (*webProbeAutomation) OpenSeatSelection(
 	context.Context,
 	*catalogpb.Showtime,
 	int,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
-	return nil, nil, nil
+) (*seatmappb.LiveSeatObservation, error) {
+	return nil, nil
 }
 func (*webProbeAutomation) PreparePayment(context.Context, *catalogpb.Showtime, []string) (*clientpb.Reservation, error) {
 	return nil, nil

@@ -26,14 +26,14 @@ func (adapter *Adapter) OpenSeatSelection(
 	ctx context.Context,
 	showtimeMessage *catalogpb.Showtime,
 	seatCount int,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+) (*seatmappb.LiveSeatObservation, error) {
 	showtime := showtimeDomainFromProto(showtimeMessage)
 	selection, err := adapter.openSeats(ctx, showtime, seatCount)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	snapshot := seatSnapshotProto(selection.snapshot, showtime.AuditoriumID)
-	return snapshot, availableSeatsProto(snapshot, selection.live), nil
+	return liveSeatObservationProto(snapshot, showtime.ID, selection.live), nil
 }
 
 // RefreshSeatSelection reuses the exact seat page opened by
@@ -42,28 +42,28 @@ func (adapter *Adapter) OpenSeatSelection(
 func (adapter *Adapter) RefreshSeatSelection(
 	ctx context.Context,
 	showtimeMessage *catalogpb.Showtime,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+) (*seatmappb.LiveSeatObservation, error) {
 	showtime := showtimeDomainFromProto(showtimeMessage)
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	showtime.TheaterRegion = adapter.selectedRegion
 	showtime.TheaterName = adapter.selectedTheater
 	if err := adapter.verifySeatPageShowtime(showtime); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	snapshot, err := adapter.refreshSeatSnapshot(ctx, showtime.AuditoriumID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	raw, err := adapter.validatedSeatNodes(snapshot)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	protoSnapshot := seatSnapshotProto(snapshot, showtime.AuditoriumID)
-	return protoSnapshot, availableSeatsProto(protoSnapshot, intersectAvailability(snapshot.Live, raw)), nil
+	return liveSeatObservationProto(protoSnapshot, showtime.ID, intersectAvailability(snapshot.Live, raw)), nil
 }
 
 type seatSelection struct {

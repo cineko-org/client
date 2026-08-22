@@ -26,10 +26,10 @@ func (automation *executionAutomation) OpenSeatSelection(
 	ctx context.Context,
 	showtime *catalogpb.Showtime,
 	_ int,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+) (*seatmappb.LiveSeatObservation, error) {
 	automation.opened <- showtime
 	<-ctx.Done()
-	return nil, nil, ctx.Err()
+	return nil, ctx.Err()
 }
 
 func (*executionAutomation) PreparePayment(context.Context, *catalogpb.Showtime, []string) (*clientpb.Reservation, error) {

@@ -1,8 +1,6 @@
 package cgv
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -112,15 +110,18 @@ func parseSeatSnapshot(body []byte, auditoriumID string, now time.Time) (parsedS
 	if len(envelope.Data.Items) == 0 {
 		return parsedSeatSnapshot{}, errors.New("CGV seat snapshot contained no layout")
 	}
-	snapshot := parsedSeatSnapshot{
-		Hash: snapshotHash(body), Captured: now,
-	}
+	snapshot := parsedSeatSnapshot{Captured: now}
 	labels := make(map[string]struct{})
 	for _, item := range envelope.Data.Items {
 		if err := appendSeatDataItem(&snapshot, item, auditoriumID, now, labels); err != nil {
 			return parsedSeatSnapshot{}, err
 		}
 	}
+	layoutHash, err := canonicalLayoutHash(snapshot)
+	if err != nil {
+		return parsedSeatSnapshot{}, fmt.Errorf("hash canonical CGV seat layout: %w", err)
+	}
+	snapshot.Hash = layoutHash
 	return snapshot, nil
 }
 
@@ -249,9 +250,4 @@ func seatFeatures(source seatDataSeat, saleFormName string) []string {
 		features = append(features, "wheelchair-area", "removable")
 	}
 	return features
-}
-
-func snapshotHash(body []byte) string {
-	hash := sha256.Sum256(body)
-	return hex.EncodeToString(hash[:])
 }

@@ -8,6 +8,7 @@ import (
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 )
 
 var (
@@ -55,6 +56,15 @@ type CatalogRepository interface {
 	GetCatalog(context.Context) (*catalogpb.CatalogIndex, error)
 }
 
+// LiveSeatObservationRepository persists the exact layout and availability
+// observed in the authenticated provider browser as one generated contract.
+type LiveSeatObservationRepository interface {
+	SubmitLiveSeatObservation(
+		context.Context,
+		*servicepb.SubmitLiveSeatObservationRequest,
+	) (*servicepb.SubmitLiveSeatObservationResponse, error)
+}
+
 type PresetRepository interface {
 	PutPreset(context.Context, *clientpb.Resource) error
 	GetPreset(context.Context, string) (*clientpb.Resource, error)
@@ -80,7 +90,7 @@ type ExternalOperationRepository interface {
 }
 
 type BookingGateway interface {
-	OpenSeatSelection(context.Context, *catalogpb.Showtime, int) (*seatmappb.Snapshot, []*seatmappb.Seat, error)
+	OpenSeatSelection(context.Context, *catalogpb.Showtime, int) (*seatmappb.LiveSeatObservation, error)
 	PreparePayment(context.Context, *catalogpb.Showtime, []string) (*clientpb.Reservation, error)
 	PrepareCancellation(context.Context, *clientpb.Reservation) (*clientpb.WebUICancellationResult, error)
 	CommitCancellation(context.Context) error
@@ -90,5 +100,5 @@ type BookingGateway interface {
 // repeating cinema, date, or showtime navigation. Booking gateways that do not
 // support this capability continue to use the single-attempt contract above.
 type LiveSeatSelectionRefresher interface {
-	RefreshSeatSelection(context.Context, *catalogpb.Showtime) (*seatmappb.Snapshot, []*seatmappb.Seat, error)
+	RefreshSeatSelection(context.Context, *catalogpb.Showtime) (*seatmappb.LiveSeatObservation, error)
 }

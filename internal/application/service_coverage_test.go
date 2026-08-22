@@ -700,8 +700,8 @@ func (*bookingGatewayFake) OpenSeatSelection(
 	context.Context,
 	*catalogpb.Showtime,
 	int,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
-	return nil, nil, nil
+) (*seatmappb.LiveSeatObservation, error) {
+	return nil, nil
 }
 
 func (*bookingGatewayFake) PreparePayment(

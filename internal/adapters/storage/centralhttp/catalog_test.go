@@ -11,6 +11,7 @@ import (
 
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 )
@@ -148,6 +149,50 @@ func TestResolveSeatMapRejectsInvalidCentralResolution(t *testing.T) {
 	}
 }
 
+func TestSubmitLiveSeatObservationUsesGeneratedAtomicContract(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	commandID := "client-live-seat-command"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set(releaseGenerationHeader, "17")
+		switch request.URL.Path {
+		case "/v1/auth/exchange":
+			writeSession(t, writer, "access", "refresh", time.Now().UTC())
+		case "/v1/catalog/live-seat-observations":
+			if request.Method != http.MethodPost || request.Header.Get("Authorization") != "Bearer access" {
+				t.Errorf("live observation request = %s, authorization %q", request.Method, request.Header.Get("Authorization"))
+			}
+			if request.Header.Get("Idempotency-Key") != commandID {
+				t.Errorf("idempotency key = %q", request.Header.Get("Idempotency-Key"))
+			}
+			input := &servicepb.SubmitLiveSeatObservationRequest{}
+			decodeRequest(t, request, input)
+			if input.GetMutation().GetExpectedRevision() != 0 || len(input.GetObservation().GetAvailability().GetAvailableSeats()) != 0 {
+				t.Errorf("live observation = %s", input)
+			}
+			writeProto(t, writer, servicepb.SubmitLiveSeatObservationResponse_builder{
+				Snapshot: input.GetObservation().GetLayout(),
+			}.Build())
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	store := openCatalogStore(t, server, now)
+	observation := liveSeatObservation(now)
+	expectedRevision := int64(0)
+	request := servicepb.SubmitLiveSeatObservationRequest_builder{
+		Mutation: commonpb.MutationIdentity_builder{
+			CommandId: &commandID, ExpectedRevision: &expectedRevision,
+		}.Build(),
+		Observation: observation,
+	}.Build()
+	response, err := store.SubmitLiveSeatObservation(t.Context(), request)
+	if err != nil || response.GetSnapshot().GetLayoutHash() != testLayoutHash {
+		t.Fatalf("SubmitLiveSeatObservation() = %s, %v", response, err)
+	}
+}
+
 func TestWatchSeatMapConsumesTypedCentralStream(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 14, 8, 0, 0, 0, time.UTC)
@@ -206,6 +251,19 @@ func seatMapSnapshot(observedAt time.Time) *seatmappb.Snapshot {
 			seatmappb.Seat_builder{Id: &seatID, AuditoriumId: &auditoriumID, Label: &seatLabel}.Build(),
 		}}.Build(),
 		ObservedAt: timestamp(observedAt),
+	}.Build()
+}
+
+func liveSeatObservation(observedAt time.Time) *seatmappb.LiveSeatObservation {
+	snapshot := seatMapSnapshot(observedAt)
+	showtimeID := "showtime-1"
+	auditoriumID, layoutHash := snapshot.GetAuditoriumId(), snapshot.GetLayoutHash()
+	return seatmappb.LiveSeatObservation_builder{
+		Layout: snapshot,
+		Availability: seatmappb.AvailabilitySnapshot_builder{
+			ShowtimeId: &showtimeID, AuditoriumId: &auditoriumID,
+			LayoutHash: &layoutHash, ObservedAt: timestamp(observedAt),
+		}.Build(),
 	}.Build()
 }
 

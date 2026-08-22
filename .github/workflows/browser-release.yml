@@ -36,8 +36,6 @@ jobs:
       revision: ${{ steps.browser.outputs.revision }}
       chrome_version: ${{ steps.browser.outputs.chrome_version }}
       playwright_version: ${{ steps.browser.outputs.playwright_version }}
-      tag: ${{ steps.browser.outputs.tag }}
-      exists: ${{ steps.browser.outputs.exists }}
       published_at: ${{ steps.browser.outputs.published_at }}
       source_sha: ${{ steps.browser.outputs.source_sha }}
     steps:
@@ -63,26 +61,20 @@ jobs:
           browsers_json=playwright-runtime/package/browsers.json
           revision="$(scripts/playwright-browser-version.sh "$browsers_json" revision)"
           chrome_version="$(scripts/playwright-browser-version.sh "$browsers_json" version)"
-          tag="browser-r${revision}"
+          published_at="$(gh release view "$playwright_tag" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)"
           {
             printf 'revision=%s\n' "$revision"
             printf 'chrome_version=%s\n' "$chrome_version"
             printf 'playwright_version=%s\n' "$playwright_version"
-            printf 'tag=%s\n' "$tag"
             printf 'source_sha=%s\n' "$(git rev-parse HEAD)"
-            printf 'published_at=%s\n' \
-              "$(node -e 'console.log(new Date(Number(process.argv[1]) * 1000).toISOString())' "$(git show -s --format=%ct HEAD)")"
+            printf 'published_at=%s\n' "$published_at"
           } >> "$GITHUB_OUTPUT"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            printf 'exists=true\n' >> "$GITHUB_OUTPUT"
-          else
-            printf 'exists=false\n' >> "$GITHUB_OUTPUT"
-          fi
 
   generate:
-    if: needs.prepare.outputs.exists != 'true'
     needs: prepare
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
     env:
       CINEKO_RELEASE_PUBLISHED_AT: ${{ needs.prepare.outputs.published_at }}
       CINEKO_BROWSER_RELEASE_PAYLOAD_OUT: build/release/browser-release-set.json
@@ -101,6 +93,11 @@ jobs:
             "${{ needs.prepare.outputs.revision }}" \
             "${{ needs.prepare.outputs.chrome_version }}" \
             "${{ needs.prepare.outputs.playwright_version }}"
+      - id: identity
+        name: Derive the semantic immutable tag
+        run: |
+          fingerprint="$(GOWORK=off go run -mod=vendor ./cmd/releasecontract fingerprint browser build/release/browser-release-set.json)"
+          printf 'tag=browser-r%s-%s\n' "${{ needs.prepare.outputs.revision }}" "$fingerprint" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
           name: browser-release-set
@@ -111,7 +108,7 @@ jobs:
     if: >-
       always() &&
       needs.prepare.result == 'success' &&
-      (needs.generate.result == 'success' || needs.generate.result == 'skipped')
+      needs.generate.result == 'success'
     needs:
       - prepare
       - generate
@@ -122,7 +119,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       CINEKO_CENTRAL_URL: ${{ secrets.CINEKO_CENTRAL_URL }}
       CINEKO_RELEASE_PUBLISH_TOKEN: ${{ secrets.CINEKO_RELEASE_PUBLISH_TOKEN }}
-      BROWSER_TAG: ${{ needs.prepare.outputs.tag }}
+      BROWSER_TAG: ${{ needs.generate.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -132,24 +129,26 @@ jobs:
           go-version-file: go.mod
           cache: true
       - uses: actions/download-artifact@v8
-        if: needs.prepare.outputs.exists != 'true'
         with:
           name: browser-release-set
           path: release-assets
-      - name: Publish the immutable browser manifest
-        if: needs.prepare.outputs.exists != 'true'
+      - name: Publish or verify the immutable browser manifest
         run: |
-          gh release create "$BROWSER_TAG" release-assets/browser-release-set.json \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "${{ needs.prepare.outputs.source_sha }}" \
-            --title "Browser Runtime r${{ needs.prepare.outputs.revision }}" \
-            --notes "Official Chrome for Testing runtime metadata used by Cineko Client." \
-            --latest=false
-      - name: Download the existing immutable browser manifest
-        if: needs.prepare.outputs.exists == 'true'
-        run: |
-          mkdir -p release-assets
-          gh release download "$BROWSER_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern browser-release-set.json --dir release-assets
+          if gh release view "$BROWSER_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            mkdir -p existing-release
+            gh release download "$BROWSER_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern browser-release-set.json --dir existing-release
+            cmp --silent release-assets/browser-release-set.json existing-release/browser-release-set.json || {
+              printf 'content-addressed browser release differs from its immutable asset\n' >&2
+              exit 1
+            }
+          else
+            gh release create "$BROWSER_TAG" release-assets/browser-release-set.json \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "${{ needs.prepare.outputs.source_sha }}" \
+              --title "Browser Runtime r${{ needs.prepare.outputs.revision }}" \
+              --notes "Official Chrome for Testing runtime metadata used by Cineko Client." \
+              --latest=false
+          fi
       - name: Register the stable browser set
         run: scripts/register-browser-release.sh release-assets/browser-release-set.json
