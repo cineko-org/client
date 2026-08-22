@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.2](https://github.com/cineko-org/client/compare/v2.7.1...v2.7.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* harden live seat selection flow ([#29](https://github.com/cineko-org/client/issues/29)) ([31d836f](https://github.com/cineko-org/client/commit/31d836f78e5b39aba4577d853ba6909de1ffbc0a))
+
 ## [2.7.1](https://github.com/cineko-org/client/compare/v2.7.0...v2.7.1) (2026-08-22)
 
 
