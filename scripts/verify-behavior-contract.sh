@@ -111,8 +111,8 @@ if ((${#contract_sources[@]} > 0)) &&
 fi
 
 if ((${#contract_sources[@]} > 0)) &&
-	grep -En 'github\.com/cineko-org/contracts/v[0-9]+|github\.com/cineko-org/contracts/internal/protocol' "${contract_sources[@]}"; then
-	printf 'Client sources must import only the latest generated protobuf packages\n' >&2
+	grep -En 'github\.com/cineko-org/contracts/(gen|internal/protocol)|github\.com/cineko-org/contracts/v[12]/' "${contract_sources[@]}"; then
+	printf 'Client sources must import only github.com/cineko-org/contracts/v3 generated protobuf packages\n' >&2
 	exit 1
 fi
 
@@ -174,11 +174,11 @@ if ((${#proto_sources[@]} > 0)) && grep -En '^[[:space:]]*reserved([[:space:]]|$
 	exit 1
 fi
 
-grep -Fq 'github.com/cineko-org/contracts/gen/go/cineko/release' cmd/releasecontract/main.go || {
+grep -Fq 'github.com/cineko-org/contracts/v3/gen/go/cineko/release' cmd/releasecontract/main.go || {
 	printf 'Client release publisher is not using the generated release contract\n' >&2
 	exit 1
 }
-grep -Fq 'github.com/cineko-org/contracts/gen/go/cineko/service' cmd/releasecontract/main.go || {
+grep -Fq 'github.com/cineko-org/contracts/v3/gen/go/cineko/service' cmd/releasecontract/main.go || {
 	printf 'Client release response validation is not using the generated service contract\n' >&2
 	exit 1
 }
@@ -209,6 +209,7 @@ readonly templates=(
 	'/v1/executions/{executionId}/heartbeat'
 	'/v1/executions/{executionId}/result'
 	'/v1/catalog/auditoriums/{auditoriumId}/seat-map:resolve'
+	'/v1/catalog/auditoriums/{auditoriumId}/seat-map:watch'
 	'/v1/presets'
 	'/v1/presets/{id}'
 	'/v1/monitors'
@@ -235,6 +236,16 @@ grep -Fq 'const executionReadyEventType = "'"$execution_event"'"' internal/adapt
 
 grep -Fq "\`$execution_event\`" "$document" || {
 	printf 'Client behavior contract is missing event type %s\n' "$execution_event" >&2
+	exit 1
+}
+
+readonly seat_map_event='cineko.seat-map'
+grep -Fq 'const seatMapEventType = "'"$seat_map_event"'"' internal/adapters/storage/centralhttp/seat_map_stream.go || {
+	printf 'Client seat-map stream is missing canonical event type %s\n' "$seat_map_event" >&2
+	exit 1
+}
+grep -Fq "\`$seat_map_event\`" "$document" || {
+	printf 'Client behavior contract is missing event type %s\n' "$seat_map_event" >&2
 	exit 1
 }
 

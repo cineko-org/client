@@ -23,12 +23,12 @@ import (
 
 	"buf.build/go/protovalidate"
 	"github.com/cineko-org/client/internal/application"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
-	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -494,8 +494,8 @@ func (store *Store) GetSeatMap(ctx context.Context, auditoriumID string) (*seatm
 	if err != nil {
 		return nil, err
 	}
-	if ready := resolution.GetReady(); ready != nil && ready.GetSnapshot() != nil {
-		return ready.GetSnapshot(), nil
+	if snapshot := resolution.GetSnapshot(); snapshot != nil {
+		return snapshot, nil
 	}
 	return nil, application.ErrNotFound
 }
@@ -511,7 +511,7 @@ func (store *Store) ResolveSeatMap(ctx context.Context, auditoriumID string) (*s
 		return nil, err
 	}
 	resolution := response.GetResolution()
-	if resolution.GetReady() == nil && resolution.GetCaptureQueued() == nil && resolution.GetUnverifiable() == nil {
+	if resolution == nil || resolution.GetState() == nil {
 		return nil, errors.New("central returned an invalid seat-map resolution")
 	}
 	return resolution, nil

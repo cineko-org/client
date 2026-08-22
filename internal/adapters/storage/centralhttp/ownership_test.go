@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/cineko-org/client/internal/application"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 )
 
 type ownershipRoundTripFunc func(*http.Request) (*http.Response, error)

@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"buf.build/go/protovalidate"
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
-	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"

@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 )
 
 type centralFenceRepository struct {
@@ -304,7 +304,7 @@ func TestClaimedBookingValidationBoundaries(t *testing.T) {
 		}},
 		{"outside schedule", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
 			year, month, day := int32(2026), int32(8), int32(21)
-			showtime.SetScheduleDate(commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build())
+			showtime.GetIdentity().GetCgv().SetScheduleDate(commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build())
 		}},
 	}
 	for _, test := range tests {

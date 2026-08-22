@@ -65,17 +65,17 @@ workflow-check:
 	node --test scripts/release-metadata.test.mjs
 
 contract-check:
-	grep -Eq '^# github.com/cineko-org/contracts v0.0.0-20260822085048-37a628469be1( => ../contracts)?$$' vendor/modules.txt
+	grep -Eq '^# github.com/cineko-org/contracts/v3 v3.5.1( => ../contracts)?$$' vendor/modules.txt
 
 contract-release-check:
 	@! grep -Eq '^[[:space:]]*replace([[:space:]]|\()' go.mod
-	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts v0.0.0-20260822085048-37a628469be1$$' go.mod
-	@grep -Eq '^# github.com/cineko-org/contracts v0.0.0-20260822085048-37a628469be1$$' vendor/modules.txt
-	@grep -Eq '^github.com/cineko-org/contracts v0.0.0-20260822085048-37a628469be1 h1:' go.sum
+	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3.5.1$$' go.mod
+	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3.5.1$$' vendor/modules.txt
+	@grep -Eq '^github.com/cineko-org/contracts/v3 v3.5.1 h1:' go.sum
 
 behavior-contract-check:
 	bash scripts/verify-behavior-contract.sh
 
 check: lint security coverage test frontend-check workflow-check contract-check behavior-contract-check
 	node --check internal/interfaces/webui/assets/app.js
-	grep -Eq '^# github.com/cineko-org/probe/v2 v2.5.2-0.20260821180948-c007dfe6ecb0( => ../probe)?$$' vendor/modules.txt
+	grep -Eq '^# github.com/cineko-org/probe/v2 v2.7.0( => ../probe)?$$' vendor/modules.txt

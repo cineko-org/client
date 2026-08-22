@@ -6,8 +6,8 @@ import (
 	"net"
 	"testing"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 )
 
 func TestExecutionClaimRetryClassification(t *testing.T) {

@@ -14,10 +14,10 @@ import (
 
 	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
 	"github.com/cineko-org/client/internal/interfaces/webui"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 	"github.com/cineko-org/probe/v2/probe"
 )
 

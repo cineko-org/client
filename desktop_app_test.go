@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cineko-org/client/internal/adapters/egress"
 	"github.com/cineko-org/client/internal/application"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type recordingEgressConfigurator struct {
@@ -30,6 +35,35 @@ type memoryDesktopSettings struct {
 	putErr    error
 	conflicts int
 	putCalls  int
+}
+
+type desktopSeatMapRepository struct {
+	*memoryDesktopSettings
+	resolution *seatmappb.Resolution
+	started    chan string
+	canceled   chan struct{}
+}
+
+func (repository *desktopSeatMapRepository) WatchSeatMap(
+	ctx context.Context,
+	auditoriumID string,
+	consume func(*seatmappb.Resolution) error,
+) error {
+	if err := consume(repository.resolution); err != nil {
+		return err
+	}
+	repository.started <- auditoriumID
+	<-ctx.Done()
+	close(repository.canceled)
+	return ctx.Err()
+}
+
+func queuedSeatMapResolution() *seatmappb.Resolution {
+	trigger := &collectionpb.Trigger{}
+	trigger.SetOperatorRequest(&collectionpb.OperatorRequest{})
+	state := &collectionpb.State{}
+	state.SetQueued(collectionpb.Queued_builder{QueuedAt: timestamppb.Now(), Trigger: trigger}.Build())
+	return seatmappb.Resolution_builder{State: state}.Build()
 }
 
 func (repository *memoryDesktopSettings) GetSettings(_ context.Context, output *clientpb.Settings) (int64, error) {
@@ -73,6 +107,53 @@ func (repository *memoryDesktopSettings) PutSettings(_ context.Context, input *c
 
 func directSettings() *clientpb.Settings {
 	return clientpb.Settings_builder{Network: clientpb.NetworkSettings_builder{Direct: clientpb.DirectNetwork_builder{}.Build()}.Build()}.Build()
+}
+
+func TestDesktopSeatMapWatchUsesRuntimeEventsAndStopsOwnedStream(t *testing.T) {
+	repository := &desktopSeatMapRepository{
+		memoryDesktopSettings: &memoryDesktopSettings{},
+		resolution:            queuedSeatMapResolution(),
+		started:               make(chan string, 1),
+		canceled:              make(chan struct{}),
+	}
+	app := newDesktopApp(nil, repository, &recordingEgressConfigurator{})
+	type emittedEvent struct {
+		name string
+		args []any
+	}
+	emitted := make(chan emittedEvent, 1)
+	app.emitEvent = func(name string, args ...any) { emitted <- emittedEvent{name: name, args: args} }
+
+	if err := app.WatchSeatMap(" auditorium "); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-emitted:
+		if event.name != desktopSeatMapEvent || len(event.args) != 1 {
+			t.Fatalf("seat-map event = %#v", event)
+		}
+		payload, ok := event.args[0].(string)
+		if !ok || !strings.Contains(payload, `"queued"`) {
+			t.Fatalf("seat-map event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("seat-map event was not emitted")
+	}
+	select {
+	case auditoriumID := <-repository.started:
+		if auditoriumID != "auditorium" {
+			t.Fatalf("auditorium ID = %q", auditoriumID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("seat-map watch did not start")
+	}
+
+	app.StopSeatMapWatch()
+	select {
+	case <-repository.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("seat-map watch was not canceled")
+	}
 }
 
 func directNetworkSettings() *clientpb.NetworkSettings {

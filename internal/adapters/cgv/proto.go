@@ -6,15 +6,19 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 )
 
 func theaterDomainFromProto(value *catalogpb.Theater) domain.Theater {
 	if value == nil {
 		return domain.Theater{}
 	}
+	sourceKey := ""
+	if identity := value.GetIdentity().GetCgv(); identity != nil {
+		sourceKey = identity.GetSiteNo()
+	}
 	return domain.Theater{
-		ID: value.GetId(), ProviderID: value.GetProviderId(), SourceKey: value.GetSourceKey(),
+		ID: value.GetId(), ProviderID: value.GetProviderId(), SourceKey: sourceKey,
 		Region: value.GetRegion(), Name: value.GetName(),
 	}
 }
@@ -26,10 +30,20 @@ func showtimeDomainFromProto(value *catalogpb.Showtime) domain.Showtime {
 	if value == nil {
 		return domain.Showtime{}
 	}
+	sourceKey := ""
+	var scheduleDate string
+	if identity := value.GetIdentity().GetCgv(); identity != nil {
+		date := identity.GetScheduleDate()
+		if date != nil {
+			scheduleDate = fmt.Sprintf("%04d-%02d-%02d", date.GetYear(), date.GetMonth(), date.GetDay())
+		}
+		sourceKey = showtimeSourceKey(identity.GetSiteNo(), scheduleDate, identity.GetScreenNo(), identity.GetSequence())
+	}
 	result := domain.Showtime{
-		ID: value.GetId(), ProviderID: value.GetProviderId(), SourceKey: value.GetSourceKey(),
+		ID: value.GetId(), ProviderID: value.GetProviderId(), SourceKey: sourceKey,
 		TheaterID: value.GetTheaterId(), AvailableSeats: int(value.GetAvailableSeats()),
 		Capacity: int(value.GetCapacity()), SoldOut: value.GetSoldOut(),
+		Date: scheduleDate,
 	}
 	if startsAt := value.GetStartsAt(); startsAt != nil && startsAt.IsValid() {
 		localStart := startsAt.AsTime().In(domain.KoreaLocation)
@@ -45,9 +59,6 @@ func showtimeDomainFromProto(value *catalogpb.Showtime) domain.Showtime {
 	if auditorium := value.GetAuditorium(); auditorium != nil {
 		result.AuditoriumID, result.AuditoriumName = auditorium.GetId(), auditorium.GetName()
 		result.ScreenTypes = append([]string(nil), auditorium.GetScreenTypes()...)
-	}
-	if scheduleDate := value.GetScheduleDate(); scheduleDate != nil {
-		result.Date = fmt.Sprintf("%04d-%02d-%02d", scheduleDate.GetYear(), scheduleDate.GetMonth(), scheduleDate.GetDay())
 	}
 	return result
 }

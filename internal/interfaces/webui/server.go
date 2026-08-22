@@ -18,9 +18,9 @@ import (
 
 	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -202,6 +202,7 @@ func (server *Server) apiRoutes() *http.ServeMux {
 	mux.HandleFunc("POST /api/auth/open", server.openAuthentication)
 	mux.HandleFunc("POST /api/auth/restore", server.restoreAuthentication)
 	mux.HandleFunc("POST /api/catalog/seat-map", server.resolveAuditoriumSeatMap)
+	mux.HandleFunc("GET /api/catalog/seat-map:watch", server.watchAuditoriumSeatMap)
 	mux.HandleFunc("GET /api/auditoriums", server.auditoriums)
 	mux.HandleFunc("GET /api/seat-map", server.seatMap)
 	mux.HandleFunc("POST /api/presets", server.createPreset)
@@ -684,7 +685,7 @@ func (server *Server) resolveAuditoriumSeatMap(writer http.ResponseWriter, reque
 		return
 	}
 	status := http.StatusOK
-	if resolution.GetCaptureQueued() != nil {
+	if resolution.GetState() == nil || resolution.GetState().GetIdle() == nil {
 		status = http.StatusAccepted
 	}
 	writeProtoJSON(writer, status, resolution)

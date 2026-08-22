@@ -21,6 +21,15 @@ func TestProviderHTTPErrorClassifiesProtectionResponses(t *testing.T) {
 	}
 }
 
+func TestProviderResponsePathRejectsRemovedLegacyEndpoint(t *testing.T) {
+	if path, ok := providerResponsePath("https://www.cgv.co.kr/cnm/atkt/searchMovScnInfo"); ok {
+		t.Fatalf("removed endpoint accepted as %q", path)
+	}
+	if path, ok := providerResponsePath("https://www.cgv.co.kr/api/v1/booking/searchMovScnInfo"); !ok || path != scheduleResponsePath {
+		t.Fatalf("current endpoint rejected as %q, %t", path, ok)
+	}
+}
+
 func TestParseScheduleResponseKeepsProviderTupleWhenDisplayChanges(t *testing.T) {
 	rows, err := parseScheduleResponse([]byte(`{
 		"statusCode":0,

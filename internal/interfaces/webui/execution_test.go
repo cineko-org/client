@@ -10,9 +10,9 @@ import (
 
 	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 )
 
 type executionAutomation struct {

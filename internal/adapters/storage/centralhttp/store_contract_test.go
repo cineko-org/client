@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 )
 
 func TestPutResourceUsesServiceContractAndAppliesAuthoritativeRevision(t *testing.T) {

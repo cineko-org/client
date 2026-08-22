@@ -5,10 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopBridge } from '../src/api/desktop';
 import { encodeDesktopProto } from '../src/api/desktop';
 import {
-	AppEventSchema, AuditoriumResponseSchema, AuditoriumSchema, CatalogIndexSchema, DirectNetworkSchema,
-	LayoutSchema, MonitorSchema, MonitorStateSchema, NetworkSettingsSchema, ResolutionSchema,
-	ResourceSchema, SettingsSchema, SnapshotSchema, TheaterSchema, WebUIAccountStateSchema,
-	WebUIActionStatusSchema, WebUIResourceListSchema, WebUIStateSchema, WebUITaskStatusResponseSchema,
+	AppEventSchema, AuditoriumIdentitySchema, AuditoriumResponseSchema, AuditoriumSchema, CatalogIndexSchema,
+	CgvAuditoriumIdentitySchema, CgvTheaterIdentitySchema, DirectNetworkSchema,
+	MonitorSchema, MonitorStateSchema, NetworkSettingsSchema, ResolutionSchema,
+	ResourceSchema, SettingsSchema, StateSchema as CollectionStateSchema, TheaterIdentitySchema, TheaterSchema, WebUIAccountStateSchema,
+	WatchSeatMapResponseSchema, WebUIActionStatusSchema, WebUIResourceListSchema, WebUIStateSchema, WebUITaskStatusResponseSchema,
 } from '../src/api/proto';
 import type { WebUIState } from '../src/api/proto';
 import { emptyAppState } from '../src/features/application/model';
@@ -24,6 +25,7 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	delete window.go;
+	delete window.runtime;
 });
 
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
@@ -32,6 +34,34 @@ const response = (value: unknown, status = 200) => new Response(JSON.stringify(v
 });
 
 const protoResponse = <T extends Message>(schema: GenMessage<T>, message: T, status = 200) => response(toJson(schema, message), status);
+
+const testTheaterIdentity = (siteNo: string) => create(TheaterIdentitySchema, {
+	provider: { case: 'cgv', value: create(CgvTheaterIdentitySchema, { siteNo }) },
+});
+
+const testAuditoriumIdentity = (siteNo: string, screenNo: string) => create(AuditoriumIdentitySchema, {
+	provider: { case: 'cgv', value: create(CgvAuditoriumIdentitySchema, { siteNo, screenNo }) },
+});
+
+const emitSeatMapResponse = (source: { emit(type: string, data: string): void }, value: unknown) => {
+	source.emit('cineko.seat-map', JSON.stringify(value));
+};
+
+const readySeatMapResponse = (auditoriumId: string, label = 'A1') => ({
+	resolution: {
+		snapshot: {
+			id: `snapshot-${auditoriumId}`,
+			auditoriumId,
+			layoutHash: 'a'.repeat(64),
+			capacity: 1,
+			layout: { seats: [{ id: `seat-${auditoriumId}`, auditoriumId, label }] },
+			observedAt: '2026-08-23T00:00:00Z',
+		},
+		state: { idle: {} },
+	},
+});
+
+function ForbiddenEventSource() { throw new Error('EventSource must not be used'); }
 
 describe('monitor editor controller', () => {
 	it('retries one monitor create command with the same idempotency key', async () => {
@@ -206,6 +236,27 @@ describe('notification controller', () => {
 });
 
 describe('preset catalog controller', () => {
+	class FakeEventSource {
+		static instances: FakeEventSource[] = [];
+		onerror: ((event: Event) => void) | null = null;
+		readonly listeners = new Map<string, EventListener>();
+		closed = false;
+
+		constructor(readonly url: string) {
+			FakeEventSource.instances.push(this);
+		}
+
+		addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+			this.listeners.set(type, typeof listener === 'function' ? listener : (event) => listener.handleEvent(event));
+		}
+
+		close() { this.closed = true; }
+
+		emit(type: string, data: string) {
+			this.listeners.get(type)?.(new MessageEvent(type, { data }));
+		}
+	}
+
 	it('aborts an older theater request before applying the newer selection', async () => {
 		let call = 0;
 		const fetchMock = vi.fn<typeof fetch>((_input, init) => {
@@ -216,7 +267,7 @@ describe('preset catalog controller', () => {
 				});
 			}
 			return Promise.resolve(protoResponse(AuditoriumResponseSchema, create(AuditoriumResponseSchema, {
-				auditoriums: [create(AuditoriumSchema, { id: 'second', theaterId: 'theater-b', sourceKey: '서울/B/IMAX', name: 'IMAX', capacity: 1 })],
+				auditoriums: [create(AuditoriumSchema, { id: 'second', theaterId: 'theater-b', identity: testAuditoriumIdentity('2', '1'), name: 'IMAX', capacity: 1 })],
 			})));
 		});
 		vi.stubGlobal('fetch', fetchMock);
@@ -224,8 +275,8 @@ describe('preset catalog controller', () => {
 			userId: 'user',
 			catalog: create(CatalogIndexSchema, {
 				theaters: [
-					create(TheaterSchema, { id: 'theater-a', providerId: 'cgv', sourceKey: '서울/A', region: '서울', name: 'A' }),
-					create(TheaterSchema, { id: 'theater-b', providerId: 'cgv', sourceKey: '서울/B', region: '서울', name: 'B' }),
+					create(TheaterSchema, { id: 'theater-a', providerId: 'cgv', identity: testTheaterIdentity('1'), region: '서울', name: 'A' }),
+					create(TheaterSchema, { id: 'theater-b', providerId: 'cgv', identity: testTheaterIdentity('2'), region: '서울', name: 'B' }),
 				],
 			}),
 		});
@@ -242,33 +293,107 @@ describe('preset catalog controller', () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
-	it('waits only for the selected auditorium until Central returns its stored seat map', async () => {
-		vi.useFakeTimers();
-		const fetchMock = vi.fn<typeof fetch>()
-			.mockResolvedValueOnce(protoResponse(ResolutionSchema, create(ResolutionSchema, {
-				result: { case: 'captureQueued', value: { taskId: 'task' } },
-			})))
-			.mockResolvedValueOnce(protoResponse(ResolutionSchema, create(ResolutionSchema, {
-				result: { case: 'ready', value: { snapshot: create(SnapshotSchema, {
-					id: 'layout-1', auditoriumId: 'auditorium-1', layoutHash: 'layout-1', layout: create(LayoutSchema),
-				}) } },
-			})));
-		vi.stubGlobal('fetch', fetchMock);
+	it('uses one typed stream for auditorium state without client-side polling', async () => {
+		FakeEventSource.instances = [];
+		vi.stubGlobal('EventSource', FakeEventSource);
 		const notify = vi.fn<(message: string) => void>();
-		const { result } = renderHook(() => usePresetCatalog(emptyAppState, notify));
+		const state = create(WebUIStateSchema, {
+			userId: 'user',
+			catalog: create(CatalogIndexSchema, {
+				auditoriums: [create(AuditoriumSchema, {
+					id: 'auditorium-1', theaterId: 'theater-1',
+					identity: testAuditoriumIdentity('1', '1'), name: 'IMAX', capacity: 1,
+					currentLayoutHash: 'catalog-hash',
+				})],
+			}),
+		});
+		const { result } = renderHook(() => usePresetCatalog(state, notify));
 		let pending: Promise<void>;
 		act(() => { pending = result.current.setAuditorium('auditorium-1'); });
-		await act(async () => { await Promise.resolve(); });
-		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(result.current.catalogMessage).toBe('Central에서 좌석 배치를 준비 중입니다.');
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(2_000);
-			await pending!;
+		const source = FakeEventSource.instances[0];
+		expect(source.url).toBe('/api/catalog/seat-map:watch?auditoriumId=auditorium-1');
+		const resolution = create(ResolutionSchema, {
+			state: create(CollectionStateSchema, { state: { case: 'queued', value: {} } }),
 		});
-		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(result.current.seatMap?.layoutHash).toBe('layout-1');
-		expect(result.current.catalogMessage).toBe('저장된 좌석 배치를 불러왔습니다.');
+		act(() => source.emit('cineko.seat-map', JSON.stringify(toJson(
+			WatchSeatMapResponseSchema,
+			create(WatchSeatMapResponseSchema, { resolution }),
+		))));
+		await act(async () => pending!);
+		expect(FakeEventSource.instances).toHaveLength(1);
+		expect(result.current.catalogMessage).toBe('좌석 배치 수집을 기다리고 있습니다.');
+		expect(result.current.seatMap).toBeNull();
 		expect(notify).not.toHaveBeenCalled();
+	});
+
+	it('renders a ready snapshot and rejects an idle state without one', async () => {
+		FakeEventSource.instances = [];
+		vi.stubGlobal('EventSource', FakeEventSource);
+		const { result } = renderHook(() => usePresetCatalog(create(WebUIStateSchema), vi.fn()));
+		let ready: Promise<void>;
+		act(() => { ready = result.current.setAuditorium('ready'); });
+		act(() => emitSeatMapResponse(FakeEventSource.instances[0], readySeatMapResponse('ready')));
+		await act(async () => ready!);
+		expect(result.current.seatMap?.layout?.seats[0].label).toBe('A1');
+		expect(result.current.catalogMessage).toBe('저장된 좌석 배치를 불러왔습니다.');
+
+		let invalid: Promise<void>;
+		act(() => { invalid = result.current.setAuditorium('invalid'); });
+		const invalidSource = FakeEventSource.instances[1];
+		act(() => emitSeatMapResponse(invalidSource, { resolution: { state: { idle: {} } } }));
+		await act(async () => invalid!);
+		expect(invalidSource.closed).toBe(true);
+		expect(result.current.seatMap).toBeNull();
+		expect(result.current.catalogMessage).toBe('Cineko가 올바르지 않은 좌석 배치 상태를 보냈습니다.');
+		expect(result.current.loadingCatalog).toBe(false);
+	});
+
+	it('does not apply an event queued by a closed older stream', async () => {
+		FakeEventSource.instances = [];
+		vi.stubGlobal('EventSource', FakeEventSource);
+		const { result } = renderHook(() => usePresetCatalog(create(WebUIStateSchema), vi.fn()));
+		let first: Promise<void>;
+		act(() => { first = result.current.setAuditorium('first'); });
+		const firstSource = FakeEventSource.instances[0];
+		act(() => emitSeatMapResponse(firstSource, {
+			resolution: { state: { queued: { queuedAt: '2026-08-23T00:00:00Z', trigger: { operatorRequest: {} } } } },
+		}));
+		await act(async () => first!);
+
+		let second: Promise<void>;
+		act(() => { second = result.current.setAuditorium('second'); });
+		const secondSource = FakeEventSource.instances[1];
+		expect(firstSource.closed).toBe(true);
+		act(() => emitSeatMapResponse(firstSource, readySeatMapResponse('first', 'OLD')));
+		expect(result.current.seatMap).toBeNull();
+		act(() => emitSeatMapResponse(secondSource, readySeatMapResponse('second', 'NEW')));
+		await act(async () => second!);
+		expect(result.current.seatMap?.auditoriumId).toBe('second');
+		expect(result.current.seatMap?.layout?.seats[0].label).toBe('NEW');
+	});
+
+	it('uses the Wails runtime bridge instead of EventSource on desktop', async () => {
+		const listeners = new Map<string, (...args: unknown[]) => void>();
+		const bridge = {
+			WatchSeatMap: vi.fn<DesktopBridge['WatchSeatMap']>().mockResolvedValue(undefined),
+			StopSeatMapWatch: vi.fn<DesktopBridge['StopSeatMapWatch']>().mockResolvedValue(undefined),
+		} as unknown as DesktopBridge;
+		window.go = { main: { DesktopApp: bridge } };
+		window.runtime = { EventsOn: (name, callback) => {
+			listeners.set(name, callback);
+			return () => { listeners.delete(name); };
+		} };
+		vi.stubGlobal('EventSource', ForbiddenEventSource);
+		const { result, unmount } = renderHook(() => usePresetCatalog(create(WebUIStateSchema), vi.fn()));
+		let pending: Promise<void>;
+		act(() => { pending = result.current.setAuditorium('desktop'); });
+		expect(bridge.WatchSeatMap).toHaveBeenCalledWith('desktop');
+		act(() => listeners.get('cineko.seat-map')?.(JSON.stringify(readySeatMapResponse('desktop'))));
+		await act(async () => pending!);
+		expect(result.current.seatMap?.auditoriumId).toBe('desktop');
+		expect(result.current.catalogMessage).toBe('저장된 좌석 배치를 불러왔습니다.');
+		unmount();
+		await waitFor(() => expect(bridge.StopSeatMapWatch).toHaveBeenCalledOnce());
 	});
 
 });

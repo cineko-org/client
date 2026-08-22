@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 )
 
 const paymentSessionTTL = 15 * time.Minute

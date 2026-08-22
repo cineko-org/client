@@ -14,11 +14,13 @@ import (
 
 	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestListenLoopbackRejectsPublicBinding(t *testing.T) {
@@ -241,7 +243,7 @@ func TestSeatMapRequestReturnsWaitingWithoutOpeningBrowser(t *testing.T) {
 	)
 	response := httptest.NewRecorder()
 	server.apiRoutes().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"captureQueued"`) {
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"queued"`) {
 		t.Fatalf("seat-map request = %d, %s", response.Code, response.Body.String())
 	}
 	if browserOpens.Load() != 0 {
@@ -279,6 +281,80 @@ func TestSeatMapRequestReturnsCentralStoredLayoutWithoutOpeningBrowser(t *testin
 	}
 	if browserOpens.Load() != 0 {
 		t.Fatalf("seat-map request opened %d local browsers", browserOpens.Load())
+	}
+}
+
+type webSeatMapStreamRepository struct {
+	*memoryrepo.Repository
+	resolution *seatmappb.Resolution
+	err        error
+}
+
+func (repository *webSeatMapStreamRepository) WatchSeatMap(
+	_ context.Context,
+	auditoriumID string,
+	consume func(*seatmappb.Resolution) error,
+) error {
+	if auditoriumID != "auditorium" {
+		return fmt.Errorf("unexpected auditorium %q", auditoriumID)
+	}
+	if repository.err != nil {
+		return repository.err
+	}
+	return consume(repository.resolution)
+}
+
+func TestSeatMapWatchForwardsGeneratedStream(t *testing.T) {
+	t.Parallel()
+	state := &collectionpb.State{}
+	trigger := &collectionpb.Trigger{}
+	trigger.SetOperatorRequest(&collectionpb.OperatorRequest{})
+	state.SetQueued(collectionpb.Queued_builder{QueuedAt: timestamppb.Now(), Trigger: trigger}.Build())
+	server := &Server{repository: &webSeatMapStreamRepository{
+		Repository: memoryrepo.New(), resolution: seatmappb.Resolution_builder{State: state}.Build(),
+	}}
+	request := httptest.NewRequestWithContext(
+		t.Context(), http.MethodGet, "/api/catalog/seat-map:watch?auditoriumId=auditorium", nil,
+	)
+	response := httptest.NewRecorder()
+	server.apiRoutes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream; charset=utf-8" ||
+		!strings.Contains(response.Body.String(), "event: cineko.seat-map") || !strings.Contains(response.Body.String(), `"queued"`) {
+		t.Fatalf("seat-map stream = %d, %q, %s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+}
+
+func TestSeatMapWatchReturnsErrorBeforeStartingStream(t *testing.T) {
+	t.Parallel()
+	server := &Server{repository: &webSeatMapStreamRepository{
+		Repository: memoryrepo.New(), err: errors.New("central unavailable"),
+	}}
+	request := httptest.NewRequestWithContext(
+		t.Context(), http.MethodGet, "/api/catalog/seat-map:watch?auditoriumId=auditorium", nil,
+	)
+	response := httptest.NewRecorder()
+	server.apiRoutes().ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || response.Header().Get("Content-Type") != "application/json; charset=utf-8" ||
+		strings.Contains(response.Body.String(), "central unavailable") {
+		t.Fatalf("seat-map stream error = %d, %q, %s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+}
+
+func TestSeatMapWatchRejectsInvalidGeneratedResponseBeforeStartingStream(t *testing.T) {
+	t.Parallel()
+	state := &collectionpb.State{}
+	state.SetIdle(&collectionpb.Idle{})
+	server := &Server{repository: &webSeatMapStreamRepository{
+		Repository: memoryrepo.New(), resolution: seatmappb.Resolution_builder{State: state}.Build(),
+	}}
+	request := httptest.NewRequestWithContext(
+		t.Context(), http.MethodGet, "/api/catalog/seat-map:watch?auditoriumId=auditorium", nil,
+	)
+	response := httptest.NewRecorder()
+	server.apiRoutes().ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || response.Header().Get("Content-Type") != "application/json; charset=utf-8" ||
+		strings.Contains(response.Body.String(), "idle_requires_snapshot") {
+		t.Fatalf("invalid seat-map stream = %d, %q, %s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
 	}
 }
 

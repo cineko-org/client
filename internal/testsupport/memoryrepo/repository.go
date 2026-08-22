@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/application"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -116,13 +117,24 @@ func (repository *Repository) GetSeatMap(_ context.Context, auditoriumID string)
 func (repository *Repository) ResolveSeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Resolution, error) {
 	value, err := repository.GetSeatMap(ctx, auditoriumID)
 	if errors.Is(err, application.ErrNotFound) {
-		taskID := auditoriumID
-		return seatmappb.Resolution_builder{CaptureQueued: seatmappb.CaptureQueued_builder{TaskId: &taskID}.Build()}.Build(), nil
+		return seatmappb.Resolution_builder{State: collectionpb.State_builder{
+			Queued: collectionpb.Queued_builder{
+				QueuedAt: timestamppb.Now(),
+				Trigger: collectionpb.Trigger_builder{
+					ClientRequest: collectionpb.ClientRequest_builder{}.Build(),
+				}.Build(),
+			}.Build(),
+		}.Build()}.Build(), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return seatmappb.Resolution_builder{Ready: seatmappb.Ready_builder{Snapshot: value}.Build()}.Build(), nil
+	return seatmappb.Resolution_builder{
+		Snapshot: value,
+		State: collectionpb.State_builder{
+			Idle: collectionpb.Idle_builder{}.Build(),
+		}.Build(),
+	}.Build(), nil
 }
 
 func (repository *Repository) PutPreset(ctx context.Context, value *clientpb.Resource) error {

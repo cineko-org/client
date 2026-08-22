@@ -1,6 +1,6 @@
 import { fromJson, toJson, type JsonValue, type Message } from '@bufbuild/protobuf';
 import type { GenMessage } from '@bufbuild/protobuf/codegenv2';
-import { APIErrorResponseSchema } from './proto';
+import { APIErrorResponseSchema, WatchSeatMapResponseSchema, type WatchSeatMapResponse } from './proto';
 import type { DesktopBridge } from './desktop';
 
 export class APIError extends Error {
@@ -45,6 +45,78 @@ export async function api<Response extends Message, Request extends Message = ne
 		throw new APIError(error.error?.message || `요청 실패 (${response.status})`, response.status);
 	}
 	return fromJson(responseSchema, value, { ignoreUnknownFields: false });
+}
+
+/** Opens one typed server-sent event stream and rejects non-ProtoJSON data. */
+export function watchProtoEvent<Response extends Message>(
+	path: string,
+	eventType: string,
+	responseSchema: GenMessage<Response>,
+	onMessage: (message: Response) => void,
+	onError: (error: Error) => void,
+): () => void {
+	const source = new EventSource(path);
+	source.addEventListener(eventType, (event) => {
+		try {
+			const value = JSON.parse(event.data) as JsonValue;
+			onMessage(fromJson(responseSchema, value, { ignoreUnknownFields: false }));
+		} catch {
+			source.close();
+			onError(new Error('Cineko가 올바르지 않은 좌석 배치 상태를 보냈습니다.'));
+		}
+	});
+	source.addEventListener('error', () => onError(new Error('Cineko 좌석 배치 연결이 끊어졌습니다.')));
+	return () => source.close();
+}
+
+/** Watches the generated seat-map response over Wails events or HTTP SSE. */
+export function watchSeatMap(
+	auditoriumId: string,
+	onMessage: (message: WatchSeatMapResponse) => void,
+	onError: (error: Error) => void,
+): () => void {
+	const bridge = desktopBridge();
+	const eventsOn = window.runtime?.EventsOn;
+	if (bridge && eventsOn && typeof bridge.WatchSeatMap === 'function' && typeof bridge.StopSeatMapWatch === 'function') {
+		let stopped = false;
+		let unsubscribeMessage: (() => void) | undefined;
+		let unsubscribeError: (() => void) | undefined;
+		const stop = () => {
+			if (stopped) return;
+			stopped = true;
+			unsubscribeMessage?.();
+			unsubscribeError?.();
+			void bridge.StopSeatMapWatch().catch(() => undefined);
+		};
+		unsubscribeMessage = eventsOn('cineko.seat-map', (...args) => {
+			if (stopped) return;
+			try {
+				if (typeof args[0] !== 'string') throw new TypeError('seat-map payload must be ProtoJSON');
+				const value = JSON.parse(args[0]) as JsonValue;
+				onMessage(fromJson(WatchSeatMapResponseSchema, value, { ignoreUnknownFields: false }));
+			} catch {
+				stop();
+				onError(new Error('Cineko가 올바르지 않은 좌석 배치 상태를 보냈습니다.'));
+			}
+		});
+		unsubscribeError = eventsOn('cineko.seat-map.error', () => {
+			if (!stopped) onError(new Error('Cineko 좌석 배치 연결이 끊어졌습니다.'));
+		});
+		void bridge.WatchSeatMap(auditoriumId).catch(() => {
+			if (!stopped) {
+				stop();
+				onError(new Error('Cineko 좌석 배치 연결을 시작하지 못했습니다.'));
+			}
+		});
+		return stop;
+	}
+	return watchProtoEvent(
+		`/api/catalog/seat-map:watch?auditoriumId=${encodeURIComponent(auditoriumId)}`,
+		'cineko.seat-map',
+		WatchSeatMapResponseSchema,
+		onMessage,
+		onError,
+	);
 }
 
 export function isRevisionConflict(error: unknown): boolean {

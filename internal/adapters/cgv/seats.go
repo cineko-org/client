@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 )
 
 type rawSeat struct {

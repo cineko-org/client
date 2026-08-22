@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 )
 
 type BookingWorker struct {
@@ -144,9 +144,14 @@ func claimedShowtimeIdentityMatches(
 	showtime *catalogpb.Showtime,
 ) bool {
 	movieID := strings.TrimSpace(job.GetMovieId())
+	identity := showtime.GetIdentity().GetCgv()
 	return showtime.GetId() != "" &&
 		strings.TrimSpace(showtime.GetProviderId()) != "" &&
-		strings.TrimSpace(showtime.GetSourceKey()) != "" &&
+		identity != nil &&
+		strings.TrimSpace(identity.GetSiteNo()) != "" &&
+		identity.GetScheduleDate() != nil &&
+		strings.TrimSpace(identity.GetScreenNo()) != "" &&
+		strings.TrimSpace(identity.GetSequence()) != "" &&
 		movieID != "" &&
 		strings.TrimSpace(showtime.GetMovie().GetId()) == movieID &&
 		showtime.GetAuditorium().GetId() == auditorium.GetId() &&

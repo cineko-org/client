@@ -2,11 +2,12 @@ package application
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 )
 
 // showtimeDomainFromProto creates the small process-internal projection used
@@ -16,10 +17,19 @@ func showtimeDomainFromProto(value *catalogpb.Showtime) domain.Showtime {
 	if value == nil {
 		return domain.Showtime{}
 	}
+	identity := value.GetIdentity().GetCgv()
+	sourceKey, scheduleDate := "", ""
+	if identity != nil {
+		scheduleDate = localDateValue(identity.GetScheduleDate())
+		sourceKey = strings.Join([]string{
+			identity.GetSiteNo(), scheduleDate, identity.GetScreenNo(), identity.GetSequence(),
+		}, "/")
+	}
 	result := domain.Showtime{
-		ID: value.GetId(), ProviderID: value.GetProviderId(), SourceKey: value.GetSourceKey(),
+		ID: value.GetId(), ProviderID: value.GetProviderId(), SourceKey: sourceKey,
 		TheaterID: value.GetTheaterId(), AvailableSeats: int(value.GetAvailableSeats()),
 		Capacity: int(value.GetCapacity()), SoldOut: value.GetSoldOut(),
+		Date: scheduleDate,
 	}
 	if startsAt := value.GetStartsAt(); startsAt != nil && startsAt.IsValid() {
 		localStart := startsAt.AsTime().In(domain.KoreaLocation)
@@ -36,7 +46,6 @@ func showtimeDomainFromProto(value *catalogpb.Showtime) domain.Showtime {
 		result.AuditoriumID, result.AuditoriumName = auditorium.GetId(), auditorium.GetName()
 		result.ScreenTypes = append([]string(nil), auditorium.GetScreenTypes()...)
 	}
-	result.Date = localDateValue(value.GetScheduleDate())
 	return result
 }
 

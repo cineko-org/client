@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 )
 
 func TestMonitorServiceDefaultsRollingWeekdayHorizon(t *testing.T) {
@@ -76,9 +77,12 @@ func (repository *workerRepository) ListPresetsByUser(context.Context, string) (
 }
 func (repository *workerRepository) DeletePreset(context.Context, string) error { return nil }
 func (repository *workerRepository) GetTheater(context.Context, string) (*catalogpb.Theater, error) {
-	id, providerID, sourceKey := repository.theater.ID, repository.theater.ProviderID, repository.theater.SourceKey
+	id, providerID := repository.theater.ID, repository.theater.ProviderID
 	region, name := repository.theater.Region, repository.theater.Name
-	return catalogpb.Theater_builder{Id: &id, ProviderId: &providerID, SourceKey: &sourceKey, Region: &region, Name: &name}.Build(), nil
+	return catalogpb.Theater_builder{
+		Id: &id, ProviderId: &providerID, Identity: catalogTestTheaterIdentity(repository.theater.SourceKey),
+		Region: &region, Name: &name,
+	}.Build(), nil
 }
 func (repository *workerRepository) PutTheater(context.Context, *catalogpb.Theater) error { return nil }
 func (repository *workerRepository) ListTheaters(ctx context.Context) ([]*catalogpb.Theater, error) {
@@ -86,9 +90,15 @@ func (repository *workerRepository) ListTheaters(ctx context.Context) ([]*catalo
 	return []*catalogpb.Theater{value}, err
 }
 func (repository *workerRepository) GetAuditorium(context.Context, string) (*catalogpb.Auditorium, error) {
-	id, theaterID, sourceKey, name := repository.auditorium.ID, repository.auditorium.TheaterID, repository.auditorium.SourceKey, repository.auditorium.Name
+	id, theaterID, name := repository.auditorium.ID, repository.auditorium.TheaterID, repository.auditorium.Name
 	capacity, _ := int32Checked(repository.auditorium.Capacity, "auditorium capacity")
-	return catalogpb.Auditorium_builder{Id: &id, TheaterId: &theaterID, SourceKey: &sourceKey, Name: &name,
+	parts := strings.Split(repository.auditorium.SourceKey, "/")
+	siteNo, screenNo := "56", "7"
+	if len(parts) >= 2 {
+		siteNo, screenNo = parts[0], parts[len(parts)-1]
+	}
+	return catalogpb.Auditorium_builder{Id: &id, TheaterId: &theaterID,
+		Identity: catalogTestAuditoriumIdentity(siteNo, screenNo), Name: &name,
 		ScreenTypes: append([]string(nil), repository.auditorium.ScreenTypes...), Capacity: &capacity}.Build(), nil
 }
 func (repository *workerRepository) PutAuditorium(context.Context, *catalogpb.Auditorium) error {
