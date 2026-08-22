@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.4](https://github.com/cineko-org/client/compare/v2.7.3...v2.7.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* verify browser manifests semantically ([#33](https://github.com/cineko-org/client/issues/33)) ([3c7ed84](https://github.com/cineko-org/client/commit/3c7ed843a89edb60a8286037fe1dce9cd688ed22))
+
 ## [2.7.3](https://github.com/cineko-org/client/compare/v2.7.2...v2.7.3) (2026-08-22)
 
 
