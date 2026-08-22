@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { create } from '@bufbuild/protobuf';
 import { desktopBridge, errorMessage } from '../../api/client';
+import { decodeDesktopProto, encodeDesktopProto } from '../../api/desktop';
+import { SettingsSchema } from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
 import { hookForms, hookSettingsInput, newHookForm, type HookTargetForm } from './hookModel';
 import type { SettingsLoadState } from './model';
@@ -17,7 +20,8 @@ export function useHookSettings(opened: boolean, notify: Notify) {
     }
     setLoadState('loading');
     try {
-      setForms(hookForms(await bridge.GetHookSettings()));
+	  const settings = decodeDesktopProto(SettingsSchema, await bridge.GetHookSettings());
+	  setForms(hookForms(settings.webhooks));
       setLoadState('ready');
     } catch {
       setLoadState('error');
@@ -45,8 +49,12 @@ export function useHookSettings(opened: boolean, notify: Notify) {
     }
     setSaving(true);
     try {
-      const value = await bridge.SaveHookSettings(hookSettingsInput(forms));
-      setForms(hookForms(value));
+	  const input = create(SettingsSchema, { webhooks: hookSettingsInput(forms) });
+	  const saved = decodeDesktopProto(
+	    SettingsSchema,
+	    await bridge.SaveHookSettings(encodeDesktopProto(SettingsSchema, input)),
+	  );
+	  setForms(hookForms(saved.webhooks));
       notify('외부 알림 설정을 저장했습니다.');
     } catch (error) {
       const message = errorMessage(error);

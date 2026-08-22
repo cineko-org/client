@@ -1,4 +1,5 @@
-import type { Monitor, Reservation } from '../../api/types';
+import type { Monitor, Reservation } from '../../api/proto';
+import { monitorMovie, monitorStatus, reservationStatus } from '../../api/resources';
 
 export type NoticeTone = 'info' | 'success' | 'warning' | 'error';
 
@@ -29,15 +30,17 @@ export function markNoticesRead(notices: Notice[]): Notice[] {
 }
 
 export function monitorTransitionMessage(previousStatus: string | undefined, monitor: Monitor): string {
-  if (!previousStatus || previousStatus === monitor.status) return '';
-  const movie = monitor.movie || '영화';
-  if (monitor.status === 'triggered') return `${movie} 예매 화면이 준비되었습니다. 결제를 확인하세요.`;
-  if (monitor.status === 'booked') return `${movie} 예매가 완료되었습니다.`;
-  if (monitor.status === 'stopped') return `${movie} 모니터가 중지되었습니다.`;
+	const status = monitorStatus(monitor);
+	if (!previousStatus || previousStatus === status) return '';
+	const movie = monitorMovie(monitor) || '영화';
+	if (status === 'triggered') return `${movie} 예매 화면이 준비되었습니다. 결제를 확인하세요.`;
+	if (status === 'booked') return `${movie} 예매가 완료되었습니다.`;
+	if (status === 'stopped') return `${movie} 모니터가 중지되었습니다.`;
   return '';
 }
 
 export function reservationTransitionMessage(previousStatus: string | undefined, reservation: Reservation): string {
-  if (!previousStatus || previousStatus === reservation.status || reservation.status !== 'cancelled') return '';
-  return `${reservation.draft?.showtime?.movie || '영화'} 예매가 취소되었습니다.`;
+	const status = reservationStatus(reservation);
+	if (!previousStatus || previousStatus === status || status !== 'cancelled') return '';
+	return '예매가 취소되었습니다.';
 }

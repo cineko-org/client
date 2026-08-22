@@ -1,6 +1,14 @@
-import type { CatalogMovie, Monitor, MonitorMode, MonitorStatus } from '../../api/types';
+import { create } from '@bufbuild/protobuf';
+import {
+	LocalDateSchema, LocalTimeSchema, MonitorSchema, MonitorStateSchema,
+	MutationIdentitySchema, WebUIResourceMutationSchema,
+	type Monitor, type Movie, type WebUIResourceMutation,
+} from '../../api/proto';
+import { localDateText, localTimeText } from '../../api/resources';
 
-export function orderedCatalogMovies(movies: CatalogMovie[]): CatalogMovie[] {
+export type MonitorStatus = 'pending' | 'running' | 'triggered' | 'booked' | 'failed' | 'stopped';
+
+export function orderedCatalogMovies(movies: Movie[]): Movie[] {
   return [...movies];
 }
 
@@ -10,31 +18,11 @@ export interface MonitorForm {
   movieId: string;
   movie: string;
   presetId: string;
-  pollMinMinutes: number;
-  pollMaxMinutes: number;
-  monitorMode: MonitorMode;
   dates: string[];
   weekdays: string[];
   horizonDays: number;
   earliestTime: string;
   latestTime: string;
-}
-
-export interface MonitorSaveRequest {
-	revision: number;
-	id: string;
-  userId: string;
-  presetId: string;
-  movieId: string;
-  movie: string;
-  targetDates: string[];
-  targetWeekdays: number[];
-  mode: MonitorMode;
-  searchHorizonDays: number;
-  earliestTime: string;
-  latestTime: string;
-  pollInterval: number;
-  pollIntervalMax: number;
 }
 
 export const defaultSearchHorizonDays = 14;
@@ -51,26 +39,16 @@ export const weekdayOptions = [
 ];
 
 export const initialMonitorForm: MonitorForm = {
-	id: '', revision: 0, movieId: '', movie: '', presetId: '', pollMinMinutes: 3, pollMaxMinutes: 8,
-  monitorMode: 'opening', dates: [], weekdays: [],
+	id: '', revision: 0, movieId: '', movie: '', presetId: '', dates: [], weekdays: [],
   horizonDays: defaultSearchHorizonDays, earliestTime: '', latestTime: '',
 };
 
-const durationMinutes = (value: number | undefined, fallback: number) => value ? Math.round(value / 60_000_000_000) : fallback;
-
-export function formFromMonitor(monitor: Monitor): MonitorForm {
+export function formFromMonitor(monitor: Monitor, revision = 0): MonitorForm {
 	return {
-		id: monitor.id, revision: monitor.revision ?? 0, movieId: monitor.movieId, movie: monitor.movie, presetId: monitor.presetId,
-    pollMinMinutes: durationMinutes(monitor.pollInterval, 3),
-    pollMaxMinutes: durationMinutes(monitor.pollIntervalMax, 8),
-    monitorMode: monitor.mode,
-    dates: [...monitor.targetDates], weekdays: monitor.targetWeekdays.map(String),
-    horizonDays: normalizeHorizon(monitor.searchHorizonDays), earliestTime: monitor.earliestTime, latestTime: monitor.latestTime,
+		id: monitor.id, revision, movieId: monitor.movieId, movie: monitor.movieTitle, presetId: monitor.presetId,
+	    dates: monitor.targetDates.map(localDateText), weekdays: monitor.targetWeekdays.map(String),
+	    horizonDays: normalizeHorizon(monitor.searchHorizonDays), earliestTime: localTimeText(monitor.earliestTime), latestTime: localTimeText(monitor.latestTime),
   };
-}
-
-export function monitorIntervalLabel(monitor: Pick<Monitor, 'pollInterval' | 'pollIntervalMax'>): string {
-  return `${durationMinutes(monitor.pollInterval, 3)}–${durationMinutes(monitor.pollIntervalMax, 8)}분`;
 }
 
 export function localDateString(date: Date): string {
@@ -103,32 +81,32 @@ export function scheduleDescription(form: Pick<MonitorForm, 'dates' | 'weekdays'
 export function monitorFormError(form: MonitorForm): string {
 	if (!form.movieId || !form.presetId) return '영화와 좌석 프리셋을 선택하세요.';
   if (form.dates.length + form.weekdays.length === 0) return '관람 날짜나 반복 요일을 하나 이상 추가하세요.';
-  if (form.pollMinMinutes >= form.pollMaxMinutes) return '최대 확인 간격은 최소 간격보다 커야 합니다.';
   return '';
 }
 
-export function monitorSaveRequest(form: MonitorForm, userId: string): MonitorSaveRequest {
-	return {
-		id: form.id,
-		revision: form.revision,
-    userId,
-    presetId: form.presetId,
-    movieId: form.movieId,
-    movie: form.movie,
-    targetDates: [...form.dates],
-    targetWeekdays: form.weekdays.map(Number),
-    mode: form.monitorMode,
-    searchHorizonDays: form.horizonDays,
-    earliestTime: form.earliestTime,
-    latestTime: form.latestTime,
-    pollInterval: form.pollMinMinutes * 60 * 1_000_000_000,
-    pollIntervalMax: form.pollMaxMinutes * 60 * 1_000_000_000,
-  };
+export function monitorSaveRequest(form: MonitorForm, userId: string, commandId = ''): WebUIResourceMutation {
+	const targetDates = form.dates.map((value) => {
+		const [year, month, day] = value.split('-').map(Number);
+		return create(LocalDateSchema, { year, month, day });
+	});
+	const earliest = form.earliestTime ? form.earliestTime.split(':').map(Number) : [];
+	const latest = form.latestTime ? form.latestTime.split(':').map(Number) : [];
+	const mutation = create(MutationIdentitySchema, { commandId, expectedRevision: BigInt(form.revision) });
+	const monitor = create(MonitorSchema, {
+		id: form.id, userId, presetId: form.presetId, movieId: form.movieId, movieTitle: form.movie,
+		targetDates, targetWeekdays: form.weekdays.map(Number), searchHorizonDays: form.horizonDays,
+		earliestTime: earliest.length === 2 ? create(LocalTimeSchema, { hour: earliest[0], minute: earliest[1] }) : undefined,
+		latestTime: latest.length === 2 ? create(LocalTimeSchema, { hour: latest[0], minute: latest[1] }) : undefined,
+		state: create(MonitorStateSchema, { state: { case: 'pending', value: {} } }),
+	});
+	return create(WebUIResourceMutationSchema, {
+		mutation, resource: { case: 'monitor', value: monitor },
+	});
 }
 
 export function monitorScheduleLabel(monitor: Partial<Monitor>): string {
   const parts: string[] = [];
-  if (monitor.targetDates?.length) parts.push(monitor.targetDates.join(' · '));
+  if (monitor.targetDates?.length) parts.push(monitor.targetDates.map(localDateText).join(' · '));
   if (monitor.targetWeekdays?.length) {
     const names = monitor.targetWeekdays.map((day) => weekdayOptions[day]?.label).filter(Boolean).join(' · ');
     parts.push(`매주 ${names}요일 · 앞으로 ${monitor.searchHorizonDays || defaultSearchHorizonDays}일`);
@@ -137,13 +115,15 @@ export function monitorScheduleLabel(monitor: Partial<Monitor>): string {
 }
 
 export function monitorTimeLabel(monitor: Partial<Monitor>): string {
-  if (monitor.earliestTime && monitor.latestTime) return `${monitor.earliestTime}–${monitor.latestTime}`;
-  if (monitor.earliestTime) return `${monitor.earliestTime} 이후`;
-  if (monitor.latestTime) return `${monitor.latestTime} 이전`;
+	const earliestTime = localTimeText(monitor.earliestTime);
+	const latestTime = localTimeText(monitor.latestTime);
+	if (earliestTime && latestTime) return `${earliestTime}–${latestTime}`;
+	if (earliestTime) return `${earliestTime} 이후`;
+	if (latestTime) return `${latestTime} 이전`;
   return '모든 시간대';
 }
 
-export function monitorStatusLabel(status: MonitorStatus): string {
+export function monitorStatusLabel(status: string): string {
   return ({
     pending: '대기',
     running: '실행 중',
@@ -152,5 +132,5 @@ export function monitorStatusLabel(status: MonitorStatus): string {
     booked: '예매 완료',
     failed: '실패',
     stopped: '중지',
-  })[status];
+  })[status] ?? status;
 }

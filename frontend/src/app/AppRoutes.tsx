@@ -1,3 +1,6 @@
+import { create } from '@bufbuild/protobuf';
+import { CatalogIndexSchema } from '../api/proto';
+import { monitorStatus, reservationStatus } from '../api/resources';
 import { HomePage } from './HomePage';
 import { MonitorDetailPageView } from '../features/monitors/ui/MonitorDetailPageView';
 import { useApplicationState } from '../features/application/useApplicationState';
@@ -31,6 +34,7 @@ export function AppRoutes({
   route, application, monitors, presets, reservations, network, hooks,
   onNavigate, onMonitors, onPresets,
 }: AppRoutesProps) {
+  const catalog = application.state.catalog ?? create(CatalogIndexSchema);
   const newMonitor = () => {
 		onNavigate({ name: 'monitor-new' });
   };
@@ -73,8 +77,8 @@ export function AppRoutes({
 		return (
 			<MonitorEditorRoute
 				monitorId={null}
-				movies={application.state.catalog.movies}
-          presets={application.state.presets}
+				movies={catalog.movies}
+          presets={presets.presets}
           controller={monitors}
           onBack={onMonitors}
 			/>
@@ -83,8 +87,8 @@ export function AppRoutes({
 		return (
 			<MonitorEditorRoute
 				monitorId={route.monitorId}
-				movies={application.state.catalog.movies}
-				presets={application.state.presets}
+				movies={catalog.movies}
+				presets={presets.presets}
 				controller={monitors}
 				onBack={onMonitors}
 			/>
@@ -117,7 +121,7 @@ export function AppRoutes({
 		return (
 			<PresetEditorRoute
 				presetId={null}
-				catalog={application.state.catalog}
+				catalog={catalog}
           controller={presets}
           onBack={onPresets}
           onRefreshCatalog={() => void application.reload()}
@@ -127,7 +131,7 @@ export function AppRoutes({
 		return (
 			<PresetEditorRoute
 				presetId={route.presetId}
-				catalog={application.state.catalog}
+				catalog={catalog}
 				controller={presets}
 				onBack={onPresets}
 				onRefreshCatalog={() => void application.reload()}
@@ -164,9 +168,9 @@ export function AppRoutes({
       return (
         <HomePage
           monitors={monitors.monitors.length}
-          runningMonitors={monitors.monitors.filter((item) => item.status === 'running').length}
+          runningMonitors={monitors.monitors.filter((item) => monitorStatus(item) === 'running').length}
           presets={presets.presets.length}
-          reservations={reservations.reservations.filter((item) => item.status === 'booked').length}
+          reservations={reservations.reservations.filter((item) => reservationStatus(item) === 'booked').length}
           onMonitors={onMonitors}
           onNewMonitor={newMonitor}
         />

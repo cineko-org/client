@@ -134,6 +134,7 @@ jobs:
     needs:
       - release
       - build
+      - browser
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -141,10 +142,17 @@ jobs:
       CINEKO_CENTRAL_URL: ${{ secrets.CINEKO_CENTRAL_URL }}
       CINEKO_RELEASE_PUBLISH_TOKEN: ${{ secrets.CINEKO_RELEASE_PUBLISH_TOKEN }}
       CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON: ${{ secrets.CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON }}
+      CINEKO_MINIMUM_LAUNCHER_VERSION: 1.1.9
+      CINEKO_BROWSER_REVISION: ${{ needs.browser.outputs.revision }}
+      CINEKO_PLAYWRIGHT_VERSION: ${{ needs.browser.outputs.playwright_version }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release.outputs.tag }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - uses: actions/download-artifact@v8
         with:
           pattern: client-*
@@ -187,8 +195,7 @@ jobs:
           scripts/register-client-release.sh \
             "${{ needs.release.outputs.version }}" \
             "$published_at" \
-            release-assets \
-            release-compatibility.json
+            release-assets
 
   playwright:
     if: needs.release.outputs.created == 'true'

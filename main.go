@@ -15,10 +15,9 @@ import (
 	"github.com/cineko-org/client/internal/adapters/eventhook"
 	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
 	"github.com/cineko-org/client/internal/booking"
-	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/interfaces/webui"
 	"github.com/cineko-org/client/internal/platform"
-	central "github.com/cineko-org/contracts/v3"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -52,12 +51,12 @@ func runDesktop() (runErr error) {
 	if err != nil {
 		return err
 	}
-	store, identity, err := openDesktopStore(context.Background(), dataDir, os.Stdin)
+	store, launchContext, startupReadyNonce, err := openDesktopStore(context.Background(), dataDir, os.Stdin)
 	if err != nil {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, store.Close()) }()
-	if err := prepareDesktopState(context.Background(), store, identity, dataDir); err != nil {
+	if err := prepareDesktopState(context.Background(), store, launchContext, dataDir); err != nil {
 		return err
 	}
 	browsers, err := browserfactory.NewFromEnvironment(dataDir)
@@ -71,7 +70,7 @@ func runDesktop() (runErr error) {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, warmPool.Close()) }()
-	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, identity)
+	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, launchContext)
 	if err != nil {
 		return err
 	}
@@ -98,15 +97,17 @@ func runDesktop() (runErr error) {
 	}
 	warmPool.SetReadyNotifier(server.NotifyBookingCapacityChanged)
 	hooks.SetFailureHandler(func(failure eventhook.Failure) {
-		server.RecordLocalSystemEvent(store.UserID(), "hook.delivery_failed", domain.EventError,
-			fmt.Sprintf("%s 알림을 보내지 못했습니다. 외부 알림 설정을 확인하세요.", failure.Target.Name))
+		server.RecordLocalSystemEvent(desktopErrorEvent(
+			store.UserID(), "hook.delivery_failed",
+			fmt.Sprintf("%s 알림을 보내지 못했습니다. 외부 알림 설정을 확인하세요.", failure.Target.GetName()),
+		))
 	})
 	app := newDesktopApp(server, store, browsers, hooks)
 	app.setUserID(store.UserID())
 	app.execution = &desktopExecutionWorker{
-		store: store, server: server, installationID: identity.InstallationID, userID: store.UserID(),
+		store: store, server: server, installationID: launchContext.GetInstallationId(), userID: store.UserID(),
 	}
-	err = runDesktopWindow(app, server, store, embeddedProbe, dataDir, identity)
+	err = runDesktopWindow(app, server, store, embeddedProbe, dataDir, startupReadyNonce)
 	if app.updateNeeded.Load() {
 		return errors.Join(err, errUpdateRequired)
 	}
@@ -128,25 +129,31 @@ func superviseCentralEvents(ctx context.Context, watcher centralEventWatcher, on
 func prepareDesktopState(
 	ctx context.Context,
 	store *centralstore.Store,
-	identity desktopRuntimeIdentity,
+	launchContext *clientpb.LaunchContext,
 	dataDir string,
 ) error {
-	if _, err := store.RegisterDevice(ctx, central.ClientDevice{
-		InstallationID: identity.InstallationID,
-		DeviceID:       identity.DeviceID,
-		Platform:       goruntime.GOOS,
-		Arch:           goruntime.GOARCH,
-		AppVersion:     identity.ClientVersion,
-	}); err != nil {
+	if launchContext == nil {
+		return errors.New("desktop launch context is required")
+	}
+	platformName := goruntime.GOOS
+	architecture := goruntime.GOARCH
+	installationID := launchContext.GetInstallationId()
+	deviceID := launchContext.GetDeviceId()
+	clientVersion := launchContext.GetClientVersion()
+	device := clientpb.Device_builder{
+		InstallationId: &installationID,
+		DeviceId:       &deviceID,
+		Platform:       &platformName,
+		Architecture:   &architecture,
+		AppVersion:     &clientVersion,
+	}.Build()
+	if _, err := store.RegisterDevice(ctx, device); err != nil {
 		return fmt.Errorf("register desktop with Central: %w", err)
 	}
 	select {
 	case <-store.UpdateRequired():
 		return errUpdateRequired
 	default:
-	}
-	if err := migrateLegacyDesktopSettings(ctx, store, dataDir); err != nil {
-		return fmt.Errorf("migrate local settings to Central: %w", err)
 	}
 	return discardLegacyLocalDomainState(dataDir)
 }
@@ -172,14 +179,12 @@ func newWarmBookingPool(
 		ctx,
 		browserfactory.Task{Purpose: egress.PurposeSession, SessionKey: userID},
 		func(ctx context.Context, adapter *cgv.Adapter) error {
-			authenticated, err := adapter.IsAuthenticated(ctx)
-			if err != nil {
-				return err
-			}
-			if !authenticated {
-				return fmt.Errorf("%w: manual CGV login is required", booking.ErrPermanent)
-			}
-			return nil
+			// A member session is useful when present, but CGV's supported
+			// non-member booking path is also valid warm capacity. Keep the
+			// browser ready in either case; execution reports a distinct
+			// authentication-required result only if the provider demands it.
+			_, err := adapter.IsAuthenticated(ctx)
+			return err
 		},
 	)
 }
@@ -214,7 +219,7 @@ func newAutomationFactory(
 }
 
 func discardLegacyLocalDomainState(dataDir string) error {
-	for _, name := range []string{"cineko.sqlite", "cineko.sqlite-wal", "cineko.sqlite-shm"} {
+	for _, name := range []string{"cineko.sqlite", "cineko.sqlite-wal", "cineko.sqlite-shm", "settings.json", "settings.json.migrating"} {
 		if err := os.Remove(filepath.Join(dataDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove obsolete local domain state %s: %w", name, err)
 		}

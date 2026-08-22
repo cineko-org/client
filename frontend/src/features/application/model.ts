@@ -1,16 +1,8 @@
-import type { AppState, ApplicationConnection } from '../../api/types';
+import { create } from '@bufbuild/protobuf';
+import { CatalogIndexSchema, WebUIStateSchema, type WebUIState } from '../../api/proto';
+export { initialApplicationConnection, type ApplicationConnection } from '../../shared/application';
 
-export const initialApplicationConnection: ApplicationConnection = {
-  status: 'loading',
-  message: '',
-  lastSuccessfulAt: '',
-  retrying: false,
-};
-
-export const emptyAppState: AppState = {
-  userId: 'local-user',
-  catalog: { generation: 0, providers: [], theaters: [], movies: [], auditoriums: [] },
-  presets: [],
-  monitors: [],
-  reservations: [],
-};
+export const emptyAppState: WebUIState = create(WebUIStateSchema, {
+	userId: 'local-user',
+	catalog: create(CatalogIndexSchema),
+});

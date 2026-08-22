@@ -2,15 +2,16 @@ package cgv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	"google.golang.org/protobuf/proto"
 )
 
 type scheduleEntry struct {
@@ -21,129 +22,77 @@ type scheduleEntry struct {
 
 func (adapter *Adapter) ResolveTheater(
 	ctx context.Context,
-	ref application.TheaterRef,
-) (domain.Theater, error) {
+	ref *catalogpb.Theater,
+) (*catalogpb.Theater, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return domain.Theater{}, err
+		return nil, err
 	}
-	if err := adapter.selectCinemaTheater(ref.Region, ref.Name); err != nil {
-		return domain.Theater{}, err
+	if ref == nil {
+		return nil, errors.New("theater is required")
 	}
-	return domain.Theater{
-		Region: ref.Region, Name: ref.Name,
-		SourceKey: ref.Region + "/" + ref.Name, ObservedAt: time.Now(),
-	}, nil
+	if err := adapter.selectCinemaTheater(ref.GetRegion(), ref.GetName()); err != nil {
+		return nil, err
+	}
+	return proto.CloneOf(ref), nil
 }
 
 func (adapter *Adapter) DiscoverAuditoriums(
 	ctx context.Context,
-	theater domain.Theater,
+	theater *catalogpb.Theater,
 	targetDates []string,
-) ([]application.AuditoriumObservation, error) {
+) ([]*catalogpb.Auditorium, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := adapter.selectCinemaTheater(theater.Region, theater.Name); err != nil {
+	if theater == nil {
+		return nil, errors.New("theater is required")
+	}
+	if err := adapter.selectCinemaTheater(theater.GetRegion(), theater.GetName()); err != nil {
 		return nil, err
 	}
 
-	byName := make(map[string]*application.AuditoriumObservation)
+	byName := make(map[string]*catalogpb.Auditorium)
 	for _, targetDate := range targetDates {
 		if err := adapter.selectDate(targetDate); err != nil {
 			continue
 		}
-		entries, err := adapter.extractSchedules(targetDate, theater)
+		entries, err := adapter.extractSchedules(targetDate, theaterDomainFromProto(theater))
 		if err != nil {
 			return nil, err
 		}
 		for _, entry := range entries {
 			observation := byName[entry.AuditoriumName]
 			if observation == nil {
-				observation = &application.AuditoriumObservation{
-					Auditorium: domain.Auditorium{
-						TheaterID: theater.ID, SourceKey: theater.SourceKey + "/" + entry.AuditoriumName,
-						Name:        entry.AuditoriumName,
-						ScreenTypes: append([]string(nil), entry.ScreenTypes...),
-						Capacity:    entry.Showtime.Capacity, ObservedAt: time.Now(),
-					},
-				}
+				id := entry.Showtime.AuditoriumID
+				theaterID := theater.GetId()
+				sourceKey := entry.Showtime.SourceKey
+				name := entry.AuditoriumName
+				capacity := boundedInt32(entry.Showtime.Capacity)
+				observation = catalogpb.Auditorium_builder{
+					Id: &id, TheaterId: &theaterID, SourceKey: &sourceKey, Name: &name,
+					ScreenTypes: append([]string(nil), entry.ScreenTypes...), Capacity: &capacity,
+				}.Build()
 				byName[entry.AuditoriumName] = observation
 			}
-			observation.Auditorium.Capacity = max(observation.Auditorium.Capacity, entry.Showtime.Capacity)
-			observation.Auditorium.ScreenTypes = mergeStrings(
-				observation.Auditorium.ScreenTypes, entry.ScreenTypes,
-			)
-			if observation.RepresentativeShowing == nil && !entry.Showtime.SoldOut {
-				showtime := entry.Showtime
-				observation.RepresentativeShowing = &showtime
+			if capacity := boundedInt32(entry.Showtime.Capacity); capacity > observation.GetCapacity() {
+				observation.SetCapacity(capacity)
 			}
+			observation.SetScreenTypes(mergeStrings(observation.GetScreenTypes(), entry.ScreenTypes))
 		}
 	}
 
-	observations := make([]application.AuditoriumObservation, 0, len(byName))
+	observations := make([]*catalogpb.Auditorium, 0, len(byName))
 	for _, observation := range byName {
-		observations = append(observations, *observation)
+		observations = append(observations, observation)
 	}
 	sort.Slice(observations, func(i, j int) bool {
-		return observations[i].Auditorium.Name < observations[j].Auditorium.Name
+		return observations[i].GetName() < observations[j].GetName()
 	})
 	return observations, nil
-}
-
-func (adapter *Adapter) FindShowtimes(
-	ctx context.Context,
-	query application.ShowtimeQuery,
-) ([]domain.Showtime, error) {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := adapter.selectCinemaTheater(query.Theater.Region, query.Theater.Name); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(query.MovieID) == "" {
-		return nil, nil
-	}
-	var matches []domain.Showtime
-	for _, targetDate := range query.TargetDates {
-		if err := adapter.selectDate(targetDate); err != nil {
-			continue
-		}
-		entries, err := adapter.extractSchedules(targetDate, query.Theater)
-		if err != nil {
-			return nil, err
-		}
-		dateHasAvailableMatch := false
-		for _, entry := range entries {
-			if entry.Showtime.MovieID == "" || entry.Showtime.MovieID != query.MovieID ||
-				!auditoriumMatches(query.Auditorium.Name, entry.AuditoriumName) {
-				continue
-			}
-			if !(domain.ScheduleWindow{
-				Weekdays: query.TargetWeekdays,
-				Earliest: query.EarliestTime,
-				Latest:   query.LatestTime,
-			}.MatchesShowtime(entry.Showtime)) {
-				continue
-			}
-			showtime := entry.Showtime
-			showtime.AuditoriumID = query.Auditorium.ID
-			showtime.AuditoriumName = query.Auditorium.Name
-			matches = append(matches, showtime)
-			dateHasAvailableMatch = dateHasAvailableMatch || !showtime.SoldOut
-		}
-		if dateHasAvailableMatch {
-			// Target dates are sorted. Once the earliest matching date opens, return
-			// immediately so the booking worker can enter visitor and seat selection.
-			return matches, nil
-		}
-	}
-	return matches, nil
 }
 
 // CaptureSchedules returns a complete, unfiltered snapshot for every requested
@@ -342,11 +291,11 @@ func scheduleEntryFromProviderRow(row providerScheduleRow, theater domain.Theate
 		return scheduleEntry{}, fmt.Errorf("CGV schedule row %q has invalid clock range", row.Sequence)
 	}
 	showtime := domain.Showtime{
-		ID:         contracts.CatalogID(contracts.ProviderCGV, "showtime", showtimeSource),
-		ProviderID: contracts.ProviderCGV, SourceKey: showtimeSource,
-		MovieID: contracts.CatalogID(contracts.ProviderCGV, "movie", movieSource), Movie: row.MovieTitle,
+		ID:         catalogID(providerCGV, "showtime", showtimeSource),
+		ProviderID: providerCGV, SourceKey: showtimeSource,
+		MovieID: catalogID(providerCGV, "movie", movieSource), Movie: row.MovieTitle,
 		TheaterID: theater.ID, TheaterName: theater.Name,
-		AuditoriumID:   contracts.CatalogID(contracts.ProviderCGV, "auditorium", auditoriumSource),
+		AuditoriumID:   catalogID(providerCGV, "auditorium", auditoriumSource),
 		AuditoriumName: auditoriumName, ScreenTypes: screenTypes,
 		Date: row.Date, CivilDate: civilDate, StartsAt: startClock, EndsAt: endClock,
 		AvailableSeats: row.Available, Capacity: row.Capacity,
@@ -388,12 +337,6 @@ func detectScreenTypes(value string) []string {
 		}
 	}
 	return types
-}
-
-func auditoriumMatches(requested, observed string) bool {
-	requested = strings.ToLower(strings.ReplaceAll(normalize(requested), " ", ""))
-	observed = strings.ToLower(strings.ReplaceAll(normalize(observed), " ", ""))
-	return requested == observed || strings.HasPrefix(observed, requested) || strings.HasPrefix(requested, observed)
 }
 
 func normalize(value string) string { return strings.Join(strings.Fields(value), " ") }

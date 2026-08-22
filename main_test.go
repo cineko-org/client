@@ -14,7 +14,7 @@ func (watcher centralEventWatcherFake) WatchEvents(context.Context) error { retu
 
 func TestCentralEventSupervisorSurfacesUnexpectedTermination(t *testing.T) {
 	failure := make(chan error, 1)
-	expected := errors.New("protocol mismatch")
+	expected := errors.New("event stream mismatch")
 	superviseCentralEvents(t.Context(), centralEventWatcherFake{err: expected}, func(err error) { failure <- err })
 	select {
 	case err := <-failure:
@@ -54,13 +54,10 @@ func TestDiscardLegacyLocalDomainState(t *testing.T) {
 	if err := discardLegacyLocalDomainState(directory); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"cineko.sqlite", "cineko.sqlite-wal", "cineko.sqlite-shm"} {
+	for _, name := range []string{"cineko.sqlite", "cineko.sqlite-wal", "cineko.sqlite-shm", "settings.json"} {
 		if _, err := os.Stat(filepath.Join(directory, name)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("obsolete state %s remains: %v", name, err)
 		}
-	}
-	if _, err := os.Stat(filepath.Join(directory, "settings.json")); err != nil {
-		t.Fatalf("legacy settings must remain until Central migration succeeds: %v", err)
 	}
 	if err := discardLegacyLocalDomainState(directory); err != nil {
 		t.Fatalf("idempotent cleanup failed: %v", err)

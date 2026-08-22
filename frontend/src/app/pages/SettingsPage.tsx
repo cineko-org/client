@@ -4,10 +4,10 @@ import { AccountSettingsView } from '../../features/settings/ui/AccountSettingsV
 import { ProxySettingsView, type ProxySettingsViewProps } from '../../features/settings/ui/ProxySettingsView';
 import { HookSettingsView } from '../../features/settings/ui/HookSettingsView';
 import type { HookTargetForm } from '../../features/settings/hookModel';
-import type { AccountState } from '../../api/types';
+import type { WebUIAccountState } from '../../api/proto';
 
 interface SettingsPageProps extends ProxySettingsViewProps {
-  account: AccountState;
+  account: WebUIAccountState;
   onAuthenticate: () => void;
   onSaveAccountCredentials: (id: string, password: string) => void;
   onRestoreAuthentication: () => void;

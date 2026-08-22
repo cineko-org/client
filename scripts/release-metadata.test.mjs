@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 process.env.CINEKO_RELEASES_PUBLIC_BASE_URL = 'https://releases.example.com/cineko';
+const goModuleCache = execFileSync('go', ['env', 'GOMODCACHE'], { encoding: 'utf8' }).trim();
 
 test('writes independently publishable component metadata', async () => {
   await mkdir('build/release', { recursive: true });
@@ -31,9 +32,9 @@ test('writes independently publishable component metadata', async () => {
     }
     execFileSync('node', ['scripts/verify-release-metadata.mjs', ...outputs]);
     const client = JSON.parse(await readFile(outputs[0], 'utf8'));
-    assert.equal(client.release.artifact.url, 'https://releases.example.com/cineko/client/v2.3.4/linux-amd64/cineko-client-v2.3.4-linux-amd64.tar.gz');
-    assert.equal(client.release.playwrightVersion, '1.61.1');
-    assert.equal(client.release.protocol, 3);
+    assert.equal(client.artifact.url, 'https://releases.example.com/cineko/client/v2.3.4/linux-amd64/cineko-client-v2.3.4-linux-amd64.tar.gz');
+    assert.equal(client.playwrightVersion, '1.61.1');
+    assert.equal(client.architecture, 'amd64');
   } finally {
     await Promise.all([...fixtures.map(([, , filename]) => rm(`build/release/${filename}`, { force: true })), ...outputs.map((path) => rm(path, { force: true }))]);
   }
@@ -74,6 +75,7 @@ test('Unix packagers emit executable independent artifacts', async () => {
   const env = {
     ...process.env,
     HOME: root,
+    GOMODCACHE: goModuleCache,
     CINEKO_VERSION: '2.3.4',
     CINEKO_MINIMUM_LAUNCHER_VERSION: '1.0.0',
     CINEKO_BROWSER_REVISION: '1228',
@@ -124,10 +126,17 @@ set -euo pipefail
 url="\${@: -1}"
 if [[ "$url" == "$CINEKO_CENTRAL_URL"/* ]]; then
   printf '%s\n' "$*" > "$FAKE_REGISTRATION_ARGUMENTS"
+  output=''
   for argument in "$@"; do
     if [[ "$argument" == @* ]]; then cp "\${argument#@}" "$FAKE_REGISTRATION"; fi
   done
-  printf '{"generation":1}\n'
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output) output="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  printf '{}\n' > "$output"
   exit 0
 fi
 output=''
@@ -153,16 +162,14 @@ cp "$FAKE_BROWSER_FIXTURES/chrome-$platform.zip" "$output"
       CINEKO_RELEASE_PUBLISH_TOKEN: 'publisher-token',
     };
     execFileSync('bash', ['scripts/publish-official-browser-release.sh', '1228', '149.0.7827.55', '1.61.1'], { env });
-    const envelope = JSON.parse(await readFile(registration, 'utf8'));
-    assert.equal(envelope.schemaVersion, 2);
-    assert.deepEqual(envelope.payload.releases.map(({ platform, arch }) => `${platform}/${arch}`), [
+    const releaseSet = JSON.parse(await readFile(registration, 'utf8'));
+    assert.deepEqual(releaseSet.releases.map(({ platform, architecture }) => `${platform}/${architecture}`), [
       'darwin/arm64', 'linux/amd64', 'windows/amd64',
     ]);
-    assert.equal(envelope.payload.releases.every(({ artifact }) => artifact.url.startsWith(
+    assert.equal(releaseSet.releases.every(({ artifact }) => artifact.url.startsWith(
       'https://storage.googleapis.com/chrome-for-testing-public/149.0.7827.55/',
     )), true);
-    assert.equal(envelope.payload.releases.every(({ artifact }) => /^[0-9a-f]{64}$/.test(artifact.sha256)), true);
-    assert.match(await readFile(argumentsFile, 'utf8'), /X-Cineko-Protocol: 3/);
+    assert.equal(releaseSet.releases.every(({ artifact }) => /^[0-9a-f]{64}$/.test(artifact.sha256)), true);
 
     execFileSync('bash', ['scripts/publish-official-browser-release.sh', '1228', '149.0.7827.55', '1.61.1'], {
       env: {
@@ -174,8 +181,8 @@ cp "$FAKE_BROWSER_FIXTURES/chrome-$platform.zip" "$output"
     });
     assert.deepEqual(
       JSON.parse(await readFile(manifest, 'utf8')),
-      envelope,
-      'manifest-only mode must preserve the exact verified release envelope',
+      releaseSet,
+      'manifest-only mode must preserve the exact verified release set',
     );
 
     for (const args of [
@@ -246,13 +253,20 @@ set -euo pipefail
 url="\${@: -1}"
 if [[ "$url" == "$CINEKO_CENTRAL_URL"/* ]]; then
   printf '%s\n' "$*" > "$FAKE_REGISTRATION_ARGUMENTS"
+  output=''
   for argument in "$@"; do
     if [[ "$argument" == @* ]]; then cp "\${argument#@}" "$FAKE_REGISTRATION"; fi
   done
   count=0
   if [[ -f "$FAKE_REGISTRATION_COUNT" ]]; then count="$(cat "$FAKE_REGISTRATION_COUNT")"; fi
   printf '%s\\n' "$((count + 1))" > "$FAKE_REGISTRATION_COUNT"
-  printf '{}\\n'
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output) output="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  printf '{}\\n' > "$output"
   exit 0
 fi
 printf 'unexpected public CDN request: %s\\n' "$url" >&2
@@ -270,11 +284,9 @@ exit 1
     };
     execFileSync('bash', ['scripts/publish-release.sh', ...metadata], { env });
     const releaseSet = JSON.parse(await readFile(registration, 'utf8'));
-    assert.equal(releaseSet.schemaVersion, 2);
-    assert.equal(releaseSet.payload.releases.length, 3);
-    assert.equal(releaseSet.payload.releases.every(({ protocol }) => protocol === 3), true);
-    assert.match(await readFile(registrationArguments, 'utf8'), /X-Cineko-Protocol: 3/);
-    assert.deepEqual(releaseSet.payload.releases.map(({ platform, arch }) => `${platform}/${arch}`).sort(), ['darwin/arm64', 'linux/amd64', 'windows/amd64']);
+    assert.equal(releaseSet.releases.length, 3);
+    assert.equal(releaseSet.releases.every(({ architecture }) => ['arm64', 'amd64'].includes(architecture)), true);
+    assert.deepEqual(releaseSet.releases.map(({ platform, architecture }) => `${platform}/${architecture}`).sort(), ['darwin/arm64', 'linux/amd64', 'windows/amd64']);
     assert.equal(await readFile(registrationCount, 'utf8'), '1\n');
 
     const firstMetadata = await Promise.all(metadata.map((path) => readFile(path, 'utf8')));
@@ -295,7 +307,7 @@ exit 1
     assert.deepEqual(JSON.parse(await readFile(registration, 'utf8')), releaseSet);
 
     const mismatchedTimestamp = JSON.parse(firstMetadata[2]);
-    mismatchedTimestamp.release.publishedAt = '2026-08-12T09:00:01.000Z';
+    mismatchedTimestamp.publishedAt = '2026-08-12T09:00:01.000Z';
     await writeFile(metadata[2], `${JSON.stringify(mismatchedTimestamp, null, 2)}\n`);
     assert.throws(() => execFileSync('bash', ['scripts/publish-release.sh', ...metadata], { env, stdio: 'pipe' }));
     assert.equal(await readFile(registrationCount, 'utf8'), '2\n');

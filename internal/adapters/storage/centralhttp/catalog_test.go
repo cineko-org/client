@@ -2,32 +2,59 @@ package centralhttp
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	central "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
 )
 
-func TestGetSeatMapUsesAuditoriumLatestVersionEndpoint(t *testing.T) {
+func TestGetCatalogUsesServiceContract(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set(releaseGenerationHeader, "17")
+		switch request.URL.Path {
+		case "/v1/auth/exchange":
+			writeSession(t, writer, "access", "refresh", now)
+		case "/v1/catalog":
+			input := &servicepb.GetCatalogRequest{}
+			decodeRequest(t, request, input)
+			writeProto(t, writer, servicepb.GetCatalogResponse_builder{Catalog: &catalogpb.CatalogIndex{}}.Build())
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	store := openCatalogStore(t, server, now)
+	if _, err := store.GetCatalog(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetSeatMapUsesContractedResolutionEndpoint(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 14, 8, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set(central.ReleaseGenerationHeader, "17")
+		writer.Header().Set(releaseGenerationHeader, "17")
 		switch request.URL.Path {
 		case "/v1/auth/exchange":
 			writeSession(t, writer, "access", "refresh", time.Now().UTC())
-		case "/v1/catalog/auditoriums/auditorium-1/seat-map":
-			if request.Method != http.MethodGet {
+		case "/v1/catalog/auditoriums/auditorium-1/seat-map:resolve":
+			if request.Method != http.MethodPost {
 				t.Errorf("method = %s", request.Method)
 			}
-			_ = json.NewEncoder(writer).Encode(central.SeatMapVersion{
-				ID:           central.SeatMapVersionID("auditorium-1", "layout-hash"),
-				AuditoriumID: "auditorium-1", LayoutHash: "layout-hash", ObservedAt: now,
-				Layout: json.RawMessage(`{"seats":[],"zones":[],"blocks":[]}`),
-			})
+			input := &servicepb.ResolveSeatMapRequest{}
+			decodeRequest(t, request, input)
+			if input.GetAuditoriumId() != "auditorium-1" {
+				t.Errorf("auditorium ID = %q", input.GetAuditoriumId())
+			}
+			writeProto(t, writer, servicepb.ResolveSeatMapResponse_builder{Resolution: seatmappb.Resolution_builder{
+				Ready: seatmappb.Ready_builder{Snapshot: seatMapSnapshot(now)}.Build(),
+			}.Build()}.Build())
 		default:
 			http.NotFound(writer, request)
 		}
@@ -38,8 +65,8 @@ func TestGetSeatMapUsesAuditoriumLatestVersionEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seatMap.AuditoriumID != "auditorium-1" || seatMap.Version != "layout-hash" {
-		t.Fatalf("seat map = %+v", seatMap)
+	if seatMap.GetAuditoriumId() != "auditorium-1" || seatMap.GetLayoutHash() != "layout-hash" {
+		t.Fatalf("seat map = %s", seatMap)
 	}
 }
 
@@ -48,7 +75,7 @@ func TestResolveSeatMapUsesCentralResolution(t *testing.T) {
 	now := time.Date(2026, time.August, 14, 8, 0, 0, 0, time.UTC)
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set(central.ReleaseGenerationHeader, "17")
+		writer.Header().Set(releaseGenerationHeader, "17")
 		switch request.URL.Path {
 		case "/v1/auth/exchange":
 			writeSession(t, writer, "access", "refresh", time.Now().UTC())
@@ -57,23 +84,21 @@ func TestResolveSeatMapUsesCentralResolution(t *testing.T) {
 			if request.Method != http.MethodPost {
 				t.Errorf("method = %s", request.Method)
 			}
-			_ = json.NewEncoder(writer).Encode(central.SeatMapResolution{
-				Status: central.SeatMapResolutionReady,
-				SeatMap: &central.SeatMapVersion{
-					ID:           central.SeatMapVersionID("auditorium-1", "layout-hash"),
-					AuditoriumID: "auditorium-1", LayoutHash: "layout-hash", ObservedAt: now,
-					Layout: json.RawMessage(`{"seats":[],"zones":[],"blocks":[]}`),
-				},
-			})
+			input := &servicepb.ResolveSeatMapRequest{}
+			decodeRequest(t, request, input)
+			if input.GetAuditoriumId() != "auditorium-1" {
+				t.Errorf("auditorium ID = %q", input.GetAuditoriumId())
+			}
+			writeProto(t, writer, servicepb.ResolveSeatMapResponse_builder{Resolution: seatmappb.Resolution_builder{Ready: seatmappb.Ready_builder{Snapshot: seatMapSnapshot(now)}.Build()}.Build()}.Build())
 		default:
 			http.NotFound(writer, request)
 		}
 	}))
 	t.Cleanup(server.Close)
 	store := openCatalogStore(t, server, now)
-	seatMap, ready, err := store.ResolveSeatMap(t.Context(), "auditorium-1")
-	if err != nil || !ready || seatMap.Version != "layout-hash" || requestCount != 1 {
-		t.Fatalf("ResolveSeatMap() = %+v, ready %v, requests %d, error %v", seatMap, ready, requestCount, err)
+	resolution, err := store.ResolveSeatMap(t.Context(), "auditorium-1")
+	if err != nil || resolution.GetReady() == nil || resolution.GetReady().GetSnapshot().GetLayoutHash() != "layout-hash" || requestCount != 1 {
+		t.Fatalf("ResolveSeatMap() = %s, requests %d, error %v", resolution, requestCount, err)
 	}
 }
 
@@ -81,21 +106,21 @@ func TestResolveSeatMapReturnsWaitingWithoutProviderDetails(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 14, 8, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set(central.ReleaseGenerationHeader, "17")
+		writer.Header().Set(releaseGenerationHeader, "17")
 		switch request.URL.Path {
 		case "/v1/auth/exchange":
 			writeSession(t, writer, "access", "refresh", time.Now().UTC())
 		case "/v1/catalog/auditoriums/auditorium-1/seat-map:resolve":
-			_ = json.NewEncoder(writer).Encode(central.SeatMapResolution{Status: central.SeatMapResolutionWaiting})
+			writeProto(t, writer, servicepb.ResolveSeatMapResponse_builder{Resolution: seatmappb.Resolution_builder{CaptureQueued: seatmappb.CaptureQueued_builder{}.Build()}.Build()}.Build())
 		default:
 			http.NotFound(writer, request)
 		}
 	}))
 	t.Cleanup(server.Close)
 	store := openCatalogStore(t, server, now)
-	seatMap, ready, err := store.ResolveSeatMap(t.Context(), "auditorium-1")
-	if err != nil || ready || seatMap.AuditoriumID != "" {
-		t.Fatalf("ResolveSeatMap() = %+v, ready %v, error %v", seatMap, ready, err)
+	resolution, err := store.ResolveSeatMap(t.Context(), "auditorium-1")
+	if err != nil || resolution.GetCaptureQueued() == nil {
+		t.Fatalf("ResolveSeatMap() = %s, error %v", resolution, err)
 	}
 }
 
@@ -103,19 +128,19 @@ func TestResolveSeatMapRejectsInvalidCentralResolution(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 14, 8, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set(central.ReleaseGenerationHeader, "17")
+		writer.Header().Set(releaseGenerationHeader, "17")
 		switch request.URL.Path {
 		case "/v1/auth/exchange":
 			writeSession(t, writer, "access", "refresh", time.Now().UTC())
 		case "/v1/catalog/auditoriums/auditorium-1/seat-map:resolve":
-			_ = json.NewEncoder(writer).Encode(central.SeatMapResolution{Status: central.SeatMapResolutionReady})
+			writeProto(t, writer, servicepb.ResolveSeatMapResponse_builder{Resolution: &seatmappb.Resolution{}}.Build())
 		default:
 			http.NotFound(writer, request)
 		}
 	}))
 	t.Cleanup(server.Close)
 	store := openCatalogStore(t, server, now)
-	if _, _, err := store.ResolveSeatMap(t.Context(), "auditorium-1"); err == nil {
+	if _, err := store.ResolveSeatMap(t.Context(), "auditorium-1"); err == nil {
 		t.Fatal("ResolveSeatMap() succeeded with an invalid Central response")
 	}
 }
@@ -131,4 +156,15 @@ func openCatalogStore(t *testing.T, server *httptest.Server, now time.Time) *Sto
 	}
 	store.clock = func() time.Time { return now }
 	return store
+}
+
+func seatMapSnapshot(observedAt time.Time) *seatmappb.Snapshot {
+	auditoriumID, snapshotID, layoutHash := "auditorium-1", "auditorium-1/layout-hash", "layout-hash"
+	return seatmappb.Snapshot_builder{
+		Id:           &snapshotID,
+		AuditoriumId: &auditoriumID,
+		LayoutHash:   &layoutHash,
+		Layout:       seatmappb.Layout_builder{}.Build(),
+		ObservedAt:   timestamp(observedAt),
+	}.Build()
 }

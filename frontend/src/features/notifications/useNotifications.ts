@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { create } from '@bufbuild/protobuf';
 import { api } from '../../api/client';
-import type { AppEvent } from '../../api/types';
+import {
+	AppEventSchema, ResourceSchema, WebUIActionStatusSchema, WebUIAppEventUserRequestSchema, WebUIResourceListSchema,
+	type AppEvent,
+} from '../../api/proto';
+import { eventTone } from '../../api/resources';
 import type { NotifyOptions } from '../../components/core/feedback';
 import { markNoticesRead, prependNotice, type Feedback, type Notice } from './model';
 
@@ -20,27 +25,36 @@ export function useNotifications() {
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setFeedback(null), 3600);
     if (options.important) {
-		void api<AppEvent>('/api/events', { method: 'POST', body: {
-			userId: userId.current, kind: 'ui.feedback', tone, message,
-		} }).then((event) => setNotices((current) => prependNotice(current, eventNotice(event)))).catch(() => undefined);
+		const event = create(AppEventSchema, {
+			userId: userId.current, kind: 'ui.feedback', message,
+			tone: { case: tone, value: {} },
+		});
+		void api('/api/events', ResourceSchema, { method: 'POST' }, AppEventSchema, event)
+			.then((resource) => {
+				const created = resource.resource;
+				if (created?.case === 'appEvent') setNotices((current) => prependNotice(current, eventNotice(created.value)));
+			})
+			.catch(() => undefined);
     }
   }, []);
 
 	const load = useCallback(async (activeUserId: string) => {
 		const request = ++loadRequest.current;
 		userId.current = activeUserId;
-		const events = await api<AppEvent[]>(`/api/events?user=${encodeURIComponent(activeUserId)}`);
+		const response = await api(`/api/events?user=${encodeURIComponent(activeUserId)}`, WebUIResourceListSchema);
 		if (request !== loadRequest.current) return;
-		setNotices(events.map(eventNotice));
+		setNotices(response.resources.flatMap((resource) => resource.resource.case === 'appEvent' ? [eventNotice(resource.resource.value)] : []));
 	}, []);
 	const markRead = useCallback(() => {
 		setNotices(markNoticesRead);
-		void api('/api/events/read', { method: 'POST', body: { userId: userId.current } }).catch(() => undefined);
+		void api('/api/events/read', WebUIActionStatusSchema, { method: 'POST' }, WebUIAppEventUserRequestSchema,
+			create(WebUIAppEventUserRequestSchema, { userId: userId.current })).catch(() => undefined);
 	}, []);
 	const clear = useCallback(() => {
 		loadRequest.current++;
 		setNotices([]);
-		void api('/api/events', { method: 'DELETE', body: { userId: userId.current } }).catch(() => undefined);
+		void api('/api/events', WebUIActionStatusSchema, { method: 'DELETE' }, WebUIAppEventUserRequestSchema,
+			create(WebUIAppEventUserRequestSchema, { userId: userId.current })).catch(() => undefined);
 	}, []);
   const dismissFeedback = useCallback(() => setFeedback(null), []);
 
@@ -49,7 +63,7 @@ export function useNotifications() {
 
 function eventNotice(event: AppEvent): Notice {
 	return {
-		id: event.id, message: event.message, tone: event.tone,
-		createdAt: event.createdAt, read: Boolean(event.readAt),
+		id: event.id, message: event.message, tone: eventTone(event),
+		createdAt: event.createdAt ? new Date(Number(event.createdAt.seconds) * 1000).toISOString() : '', read: Boolean(event.readAt),
 	};
 }

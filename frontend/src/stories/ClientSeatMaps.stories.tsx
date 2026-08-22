@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Box, Group, SimpleGrid, Stack, Text } from '@mantine/core';
 import { useState } from 'react';
 import { SeatMapView } from '../features/presets/ui/SeatMapView';
-import { seatTypePresentation } from '../features/presets/model';
+import { seatPresentation } from '../features/presets/model';
 import type { LiveSeatMapFixture } from './liveSeatMaps';
 import {
   fourDxSeatMapFixture,
@@ -12,6 +12,10 @@ import {
   screenXReclinerSeatMapFixture,
   standard6SeatMapFixture,
 } from './liveSeatMaps';
+
+function fixtureSeats(fixture: LiveSeatMapFixture) {
+  return fixture.seatMap.layout?.seats ?? [];
+}
 
 const meta = { title: 'Client/Seat maps' } satisfies Meta;
 export default meta;
@@ -66,7 +70,7 @@ function CapturedCoordinatePlot({ fixture }: { fixture: LiveSeatMapFixture }) {
         <Stack gap={2}>
           <Text fw={600}>CGV DOM 추출 좌표</Text>
           <Text size="xs" c="dimmed">
-            {fixture.layoutWidth}×{fixture.layoutHeight}px · {fixture.seatMap.seats.length}석
+            {fixture.layoutWidth}×{fixture.layoutHeight}px · {fixtureSeats(fixture).length}석
           </Text>
         </Stack>
         <Text size="xs" c="green.5">좌표 반올림 오차 ≤ {roundingError.toFixed(3)}px</Text>
@@ -78,7 +82,7 @@ function CapturedCoordinatePlot({ fixture }: { fixture: LiveSeatMapFixture }) {
             <Box w="72%" h={16} style={{ borderTop: '2px solid var(--mantine-color-orange-8)', borderRadius: '50% 50% 0 0' }} />
           </Stack>
           <Box pos="relative" w="100%" style={{ aspectRatio: fixture.layoutWidth / fixture.layoutHeight }}>
-            {fixture.seatMap.seats.map((seat) => (
+            {fixtureSeats(fixture).map((seat) => (
               <Box
                 key={seat.id}
                 pos="absolute"
@@ -89,7 +93,7 @@ function CapturedCoordinatePlot({ fixture }: { fixture: LiveSeatMapFixture }) {
                   width: `${(38 / fixture.layoutWidth) * 100}%`,
                   aspectRatio: '1',
                   transform: 'translate(-50%, -50%)',
-                  background: seatTypePresentation[seat.type].color,
+                  background: seatPresentation(seat.type).color,
                   boxShadow: 'inset 0 0 0 1px var(--mantine-color-dark-9)',
                 }}
               />
@@ -108,7 +112,7 @@ function LayoutComparison({ fixture }: { fixture: LiveSeatMapFixture }) {
         <Stack gap={2}>
           <Text size="xl" fw={700}>{fixture.theater} · {fixture.auditorium}</Text>
           <Text size="sm" c="dimmed">
-            원본 좌석 {fixture.seatMap.seats.length}석 = Cineko 렌더 {fixture.seatMap.seats.length}석 · 라벨·좌표·타입 유지
+            원본 좌석 {fixtureSeats(fixture).length}석 = Cineko 렌더 {fixtureSeats(fixture).length}석 · 라벨·좌표·타입 유지
           </Text>
         </Stack>
         <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="xl">

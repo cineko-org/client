@@ -14,7 +14,10 @@ import (
 
 	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
 	"github.com/cineko-org/client/internal/interfaces/webui"
-	central "github.com/cineko-org/contracts/v3"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 	"github.com/cineko-org/probe/v2/probe"
 )
 
@@ -76,56 +79,65 @@ func (automation *probeDrainingAutomation) Close() {
 
 type clientProbeCredentialSource struct {
 	store        *centralstore.Store
-	registration central.RegisterProbeRequest
+	registration *probepb.RegisterRequest
 	deviceID     string
 }
 
 func (source *clientProbeCredentialSource) Credential(ctx context.Context) (string, error) {
-	response, err := source.store.IssueProbeBootstrapTicket(ctx, central.ProbeBootstrapTicketRequest{
-		InstallationID: source.registration.InstallationID,
-		DeviceID:       source.deviceID,
-		Capabilities:   source.registration.Capabilities,
-		MaxConcurrency: source.registration.MaxConcurrency,
-		Runtime:        source.registration.Runtime,
-	})
+	installationID := source.registration.GetInstallationId()
+	maxConcurrency := source.registration.GetMaxConcurrency()
+	request := clientpb.ProbeBootstrapTicketRequest_builder{
+		InstallationId: &installationID,
+		DeviceId:       &source.deviceID,
+		Capabilities:   source.registration.GetCapabilities(),
+		MaxConcurrency: &maxConcurrency,
+		Runtime:        source.registration.GetRuntime(),
+	}.Build()
+	response, err := source.store.IssueProbeBootstrapTicket(ctx, request)
 	if err != nil {
 		return "", fmt.Errorf("issue embedded Probe bootstrap ticket: %w", err)
 	}
-	if response.Ticket == "" || !response.ExpiresAt.After(time.Now()) {
+	if response.GetTicket() == "" || response.GetExpiresAt() == nil || !response.GetExpiresAt().AsTime().After(time.Now()) {
 		return "", errors.New("central returned an invalid embedded Probe bootstrap ticket")
 	}
-	return response.Ticket, nil
+	return response.GetTicket(), nil
 }
 
 func startEmbeddedProbe(
 	parent context.Context,
 	store *centralstore.Store,
 	dataDir string,
-	identity desktopRuntimeIdentity,
+	launchContext *clientpb.LaunchContext,
 ) (*embeddedProbe, error) {
-	if identity.InstallationID == "" || identity.DeviceID == "" || identity.ClientVersion == "" ||
-		identity.BrowserRevision == "" {
+	if launchContext == nil || launchContext.GetInstallationId() == "" || launchContext.GetDeviceId() == "" ||
+		launchContext.GetClientVersion() == "" || launchContext.GetBrowserRevision() == "" {
 		return nil, errors.New("embedded Probe runtime identity is incomplete")
 	}
-	registration := central.RegisterProbeRequest{
-		InstallationID: identity.InstallationID,
-		Kind:           "client",
-		Capabilities: []string{
-			central.CapabilityCGVCatalogCapture,
-			central.CapabilityCGVScheduleCapture,
+	installationID := launchContext.GetInstallationId()
+	deviceID := launchContext.GetDeviceId()
+	clientVersion := launchContext.GetClientVersion()
+	browserRevision := launchContext.GetBrowserRevision()
+	maxConcurrency := int32(1)
+	registration := probepb.RegisterRequest_builder{
+		InstallationId: &installationID,
+		Kind:           probepb.ProbeKind_builder{Client: probepb.ClientProbe_builder{}.Build()}.Build(),
+		Capabilities: []*observationpb.Capability{
+			observationpb.Capability_builder{CatalogCapture: observationpb.CatalogCapture_builder{}.Build()}.Build(),
+			observationpb.Capability_builder{ScheduleCapture: observationpb.ScheduleCapture_builder{}.Build()}.Build(),
 		},
-		MaxConcurrency: 1,
-		Runtime: central.Runtime{
-			Version: identity.ClientVersion, Protocol: central.ProtocolVersion,
-			BrowserRevision: identity.BrowserRevision, Platform: runtime.GOOS, Arch: runtime.GOARCH,
-		},
-	}
+		MaxConcurrency: &maxConcurrency,
+		Runtime: commonpb.Runtime_builder{
+			ComponentVersion: &clientVersion, BrowserRevision: &browserRevision,
+			Platform:     func() *string { value := runtime.GOOS; return &value }(),
+			Architecture: func() *string { value := runtime.GOARCH; return &value }(),
+		}.Build(),
+	}.Build()
 	credentials, err := probe.NewClientCredentialSource(&clientProbeCredentialSource{
-		store: store, registration: registration, deviceID: identity.DeviceID,
+		store: store, registration: registration, deviceID: deviceID,
 	}, probe.ClientCredentialConfig{
 		PublicKeyFiles: strings.TrimSpace(os.Getenv("CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS")),
-		Issuer:         environmentValue("CINEKO_PROBE_BOOTSTRAP_ISSUER", central.ProbeBootstrapIssuer),
-		Audience:       environmentValue("CINEKO_PROBE_BOOTSTRAP_AUDIENCE", central.ProbeBootstrapAudience),
+		Issuer:         environmentValue("CINEKO_PROBE_BOOTSTRAP_ISSUER", "cineko-central"),
+		Audience:       environmentValue("CINEKO_PROBE_BOOTSTRAP_AUDIENCE", "cineko-probe"),
 		ClockSkew:      15 * time.Second,
 		Registration:   registration,
 	})

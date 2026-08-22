@@ -20,6 +20,19 @@ func TestScheduleWindowRejectsInvalidScheduleStarts(t *testing.T) {
 	}
 }
 
+func TestScheduleWindowValidateRejectsMalformedBounds(t *testing.T) {
+	t.Parallel()
+
+	for _, window := range []ScheduleWindow{
+		{Earliest: "invalid"},
+		{Latest: "invalid"},
+	} {
+		if err := window.Validate(); err == nil {
+			t.Fatalf("invalid window accepted: %+v", window)
+		}
+	}
+}
+
 func TestScheduleWindowMatchesOpenBoundsAndNormalRange(t *testing.T) {
 	t.Parallel()
 

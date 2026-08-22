@@ -1,7 +1,8 @@
 import { Group, Modal, Stack, Text } from '@mantine/core';
 import { CheckField } from '../../../components/core/Fields';
 import { PrimaryButton, SecondaryButton } from '../../../components/core/Actions';
-import type { Monitor } from '../../../api/types';
+import type { Monitor } from '../../../api/proto';
+import { monitorStatus } from '../../../api/resources';
 
 export interface MonitorRetryDialogProps {
   monitor?: Monitor;
@@ -15,7 +16,7 @@ export interface MonitorRetryDialogProps {
 export function MonitorRetryDialog({
   monitor, acknowledged, submitting, onAcknowledgedChange, onClose, onConfirm,
 }: MonitorRetryDialogProps) {
-  const paymentUnknown = monitor?.status === 'payment_unknown';
+	const paymentUnknown = monitor ? monitorStatus(monitor) === 'payment_unknown' : false;
   return (
     <Modal
       opened={Boolean(monitor)}

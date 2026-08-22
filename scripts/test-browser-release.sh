@@ -16,8 +16,8 @@ JSON
 [[ "$(scripts/playwright-browser-version.sh "$browsers_json" version)" == 151.0.7922.34 ]]
 
 jq -n '
-  def release($platform; $arch; $executable): {
-    channel:"stable", platform:$platform, arch:$arch, revision:"1234",
+  def release($platform; $architecture; $executable): {
+    channel:"stable", platform:$platform, architecture:$architecture, revision:"1234",
     compatiblePlaywrightVersions:["1.62.1"],
     artifact:{
       url:("https://storage.googleapis.com/chrome-for-testing-public/151.0.7922.34/" + $platform + ".zip"),
@@ -25,22 +25,24 @@ jq -n '
     },
     publishedAt:"2026-08-21T00:00:00Z"
   };
-  {schemaVersion:2,payload:{releases:[
+  {releases:[
     release("darwin";"arm64";"chrome"),
     release("linux";"amd64";"chrome"),
     release("windows";"amd64";"chrome.exe")
-  ]}}
+  ]}
 ' >"$payload"
 cat >"$test_root/bin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 source=''
+output=''
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == '--data-binary' ]]; then shift; source="${1#@}"; fi
+  if [[ "$1" == '--output' ]]; then shift; output="$1"; fi
   shift
 done
 cp "$source" "$FAKE_POSTED"
-printf '{"generation":11}\n'
+printf '{}\n' >"$output"
 SH
 chmod +x "$test_root/bin/curl"
 
@@ -51,7 +53,7 @@ CINEKO_RELEASE_PUBLISH_TOKEN=publisher \
   scripts/register-browser-release.sh "$payload" >/dev/null
 cmp -s "$payload" "$posted"
 
-jq '.payload.releases[2].artifact.sha256 = "bad"' "$payload" >"$payload.invalid"
+jq '.releases[2].artifact.sha256 = "bad"' "$payload" >"$payload.invalid"
 if PATH="$test_root/bin:$PATH" \
   FAKE_POSTED="$posted" \
   CINEKO_CENTRAL_URL=https://central.example \

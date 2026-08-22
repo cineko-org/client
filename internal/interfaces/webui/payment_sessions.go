@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/cineko-org/client/internal/domain"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 )
 
 const paymentSessionTTL = 15 * time.Minute
@@ -27,9 +27,14 @@ type paymentFailureNotifier interface {
 
 func (server *Server) retainPaymentSession(
 	monitorID string,
-	reservation domain.Reservation,
+	resource *clientpb.Resource,
 	automation Automation,
 ) bool {
+	reservation := resource.GetReservation()
+	if reservation == nil {
+		automation.Close()
+		return false
+	}
 	if retention, ok := automation.(paymentRetention); ok {
 		if err := retention.RetainPayment(); err != nil {
 			automation.Close()
@@ -38,7 +43,7 @@ func (server *Server) retainPaymentSession(
 		}
 	}
 	session := &paymentSession{
-		automation: automation, reservationID: reservation.ID, userID: reservation.UserID,
+		automation: automation, reservationID: reservation.GetId(), userID: reservation.GetUserId(),
 	}
 	server.paymentMu.Lock()
 	if server.paymentSessions == nil {
@@ -73,14 +78,14 @@ func (server *Server) watchPaymentFailure(monitorID string, expected *paymentSes
 			}
 			closePaymentSession(session)
 			ctx := server.lifetimeContext()
-			if err := server.finishPaymentAttempt(ctx, monitorID, session, "unknown", domain.MonitorPaymentUnknown); err != nil {
+			if err := server.finishPaymentAttempt(ctx, monitorID, session, paymentUnknownState()); err != nil {
 				server.recordMaintenanceFailure("payment-crash:"+monitorID, err)
 				server.refreshBookingDemand(ctx)
 				return
 			}
 			server.refreshBookingDemand(ctx)
-			server.addEvent(session.userID, "payment.browser_failed", domain.EventError,
-				"결제 화면이 종료되었습니다. CGV 예매 내역을 확인한 뒤 다시 시도하세요.")
+			server.addEvent(appErrorEvent(session.userID, "payment.browser_failed",
+				"결제 화면이 종료되었습니다. CGV 예매 내역을 확인한 뒤 다시 시도하세요."))
 		case <-server.lifetimeContext().Done():
 		}
 	}()
@@ -96,14 +101,15 @@ func (server *Server) abandonPaymentSession(ctx context.Context, monitorID strin
 	session := server.removePaymentSession(monitorID, nil)
 	if session == nil {
 		job, err := server.repository.GetMonitor(ctx, monitorID)
-		if err != nil || job.Status != domain.MonitorTriggered && job.Status != domain.MonitorPaymentUnknown || job.ReservationID == "" {
+		monitor := job.GetMonitor()
+		if err != nil || monitor == nil || monitor.GetState().GetTriggered() == nil && monitor.GetState().GetPaymentUnknown() == nil || monitor.GetReservationId() == "" {
 			return false, err
 		}
-		session = &paymentSession{reservationID: job.ReservationID, userID: job.UserID}
+		session = &paymentSession{reservationID: monitor.GetReservationId(), userID: monitor.GetUserId()}
 	}
 	closePaymentSession(session)
 	server.signalExecutionAvailable()
-	err := server.finishPaymentAttempt(ctx, monitorID, session, "abandoned", domain.MonitorPending)
+	err := server.finishPaymentAttempt(ctx, monitorID, session, pendingMonitorState())
 	server.refreshBookingDemand(ctx)
 	return true, err
 }
@@ -119,47 +125,42 @@ func (server *Server) expirePaymentSession(monitorID string, expected *paymentSe
 	if ctx == nil || ctx.Err() != nil {
 		ctx = context.Background()
 	}
-	if err := server.finishPaymentAttempt(ctx, monitorID, session, "unknown", domain.MonitorPaymentUnknown); err != nil {
+	if err := server.finishPaymentAttempt(ctx, monitorID, session, paymentUnknownState()); err != nil {
 		server.recordMaintenanceFailure("payment-session:"+monitorID, err)
 		server.refreshBookingDemand(ctx)
 		return
 	}
 	server.refreshBookingDemand(ctx)
-	server.addEvent(
-		session.userID, "payment.expired", domain.EventWarning,
-		"결제 대기 시간이 끝났습니다. CGV 예매 내역을 확인한 뒤 다시 실행하세요.",
-	)
+	server.addEvent(appWarningEvent(
+		session.userID, "payment.expired", "결제 대기 시간이 끝났습니다. CGV 예매 내역을 확인한 뒤 다시 실행하세요.",
+	))
 }
 
 func (server *Server) finishPaymentAttempt(
 	ctx context.Context,
 	monitorID string,
 	session *paymentSession,
-	reservationStatus string,
-	monitorStatus domain.MonitorStatus,
+	monitorState *clientpb.MonitorState,
 ) error {
 	var result error
-	reservation, err := server.repository.GetReservation(ctx, session.reservationID)
-	if err == nil && reservation.Status == "prepared" {
-		reservation.Status = reservationStatus
-		result = errors.Join(result, server.repository.PutReservation(ctx, reservation))
-	} else if err != nil {
+	if _, err := server.repository.GetReservation(ctx, session.reservationID); err != nil {
 		result = errors.Join(result, err)
 	}
-	if monitorStatus == "" {
+	if monitorState == nil {
 		return result
 	}
 	job, err := server.repository.GetMonitor(ctx, monitorID)
 	if err != nil {
 		return errors.Join(result, err)
 	}
-	if (job.Status == domain.MonitorTriggered || job.Status == domain.MonitorPaymentUnknown) &&
-		job.ReservationID == session.reservationID {
-		if monitorStatus == domain.MonitorPending {
-			job.ReservationID = ""
+	monitor := job.GetMonitor()
+	if monitor != nil && (monitor.GetState().GetTriggered() != nil || monitor.GetState().GetPaymentUnknown() != nil) &&
+		monitor.GetReservationId() == session.reservationID {
+		if monitorState.GetPending() != nil {
+			monitor.SetReservationId("")
 		}
-		job.LastError = ""
-		job.Transition(monitorStatus, server.clock.Now())
+		monitor.SetState(monitorState)
+		monitor.SetUpdatedAt(timestamp(server.clock.Now()))
 		result = errors.Join(result, server.repository.PutMonitor(ctx, job))
 	}
 	return result
@@ -194,12 +195,20 @@ func (server *Server) closePaymentSessions() {
 	for _, retained := range sessions {
 		closePaymentSession(retained.session)
 		if err := server.finishPaymentAttempt(
-			ctx, retained.monitorID, retained.session, "unknown", domain.MonitorPaymentUnknown,
+			ctx, retained.monitorID, retained.session, paymentUnknownState(),
 		); err != nil {
 			server.recordMaintenanceFailure("payment-shutdown:"+retained.monitorID, err)
 		}
 	}
 	server.signalExecutionAvailable()
+}
+
+func pendingMonitorState() *clientpb.MonitorState {
+	return clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build()
+}
+
+func paymentUnknownState() *clientpb.MonitorState {
+	return clientpb.MonitorState_builder{PaymentUnknown: clientpb.MonitorPaymentUnknown_builder{}.Build()}.Build()
 }
 
 func closePaymentSession(session *paymentSession) {

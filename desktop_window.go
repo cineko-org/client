@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
-	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/interfaces/webui"
 
 	"github.com/wailsapp/wails/v2"
@@ -23,12 +22,12 @@ func runDesktopWindow(
 	store *centralstore.Store,
 	embeddedProbe *embeddedProbe,
 	dataDir string,
-	identity desktopRuntimeIdentity,
+	startupReadyNonce string,
 ) error {
 	eventFailure := make(chan error, 1)
 	startupFailure := make(chan error, 1)
 	err := wails.Run(desktopWindowOptions(
-		app, server, store, embeddedProbe, dataDir, identity, eventFailure, startupFailure,
+		app, server, store, embeddedProbe, dataDir, startupReadyNonce, eventFailure, startupFailure,
 	))
 	select {
 	case startupErr := <-startupFailure:
@@ -49,7 +48,7 @@ func desktopWindowOptions(
 	store *centralstore.Store,
 	embeddedProbe *embeddedProbe,
 	dataDir string,
-	identity desktopRuntimeIdentity,
+	startupReadyNonce string,
 	eventFailure chan<- error,
 	startupFailure chan<- error,
 ) *options.App {
@@ -61,7 +60,7 @@ func desktopWindowOptions(
 			Middleware: webui.SecurityHeaders,
 		},
 		OnStartup: func(ctx context.Context) {
-			startDesktopWindow(ctx, app, server, store, embeddedProbe, dataDir, identity, eventFailure, startupFailure)
+			startDesktopWindow(ctx, app, server, store, embeddedProbe, dataDir, startupReadyNonce, eventFailure, startupFailure)
 		},
 		Bind: []interface{}{app},
 		SingleInstanceLock: &options.SingleInstanceLock{
@@ -81,14 +80,14 @@ func startDesktopWindow(
 	store *centralstore.Store,
 	embeddedProbe *embeddedProbe,
 	dataDir string,
-	identity desktopRuntimeIdentity,
+	startupReadyNonce string,
 	eventFailure chan<- error,
 	startupFailure chan<- error,
 ) {
 	app.startup(ctx)
 	go superviseCentralEvents(ctx, store, func(eventErr error) {
-		server.RecordLocalSystemEvent(store.UserID(), "central.event_stream_failed", domain.EventError,
-			"Cineko 변경 알림 연결이 중지되었습니다. 앱을 다시 시작하세요.")
+		server.RecordLocalSystemEvent(desktopErrorEvent(store.UserID(), "central.event_stream_failed",
+			"Cineko 변경 알림 연결이 중지되었습니다. 앱을 다시 시작하세요."))
 		select {
 		case eventFailure <- eventErr:
 		default:
@@ -96,11 +95,11 @@ func startDesktopWindow(
 		wailsruntime.Quit(ctx)
 	})
 	go superviseEmbeddedProbe(ctx, embeddedProbe, func(_ error) {
-		server.RecordLocalSystemEvent(store.UserID(), "probe.runtime_failed", domain.EventError,
-			"분산 좌석 탐색이 중지되었습니다. 앱을 다시 시작하세요.")
+		server.RecordLocalSystemEvent(desktopErrorEvent(store.UserID(), "probe.runtime_failed",
+			"분산 좌석 탐색이 중지되었습니다. 앱을 다시 시작하세요."))
 		wailsruntime.Quit(ctx)
 	})
-	if readyErr := signalDesktopStartupReady(dataDir, identity.StartupReadyNonce); readyErr != nil {
+	if readyErr := signalDesktopStartupReady(dataDir, startupReadyNonce); readyErr != nil {
 		select {
 		case startupFailure <- readyErr:
 		default:

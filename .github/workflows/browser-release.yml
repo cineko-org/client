@@ -7,6 +7,13 @@ on:
         description: Git ref containing the Client runtime targets
         required: true
         type: string
+    outputs:
+      revision:
+        description: Chromium revision from the locked Playwright runtime
+        value: ${{ jobs.prepare.outputs.revision }}
+      playwright_version:
+        description: Locked Playwright driver version
+        value: ${{ jobs.prepare.outputs.playwright_version }}
   workflow_dispatch:
     inputs:
       source_ref:
@@ -56,12 +63,6 @@ jobs:
           browsers_json=playwright-runtime/package/browsers.json
           revision="$(scripts/playwright-browser-version.sh "$browsers_json" revision)"
           chrome_version="$(scripts/playwright-browser-version.sh "$browsers_json" version)"
-          jq -e --arg revision "$revision" --arg playwright "$playwright_version" \
-            '.minimumBrowserRevision == $revision and .playwrightVersion == $playwright' \
-            release-compatibility.json >/dev/null || {
-              printf 'release compatibility does not match the locked Playwright browser\n' >&2
-              exit 1
-            }
           tag="browser-r${revision}"
           {
             printf 'revision=%s\n' "$revision"
@@ -89,6 +90,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Build the official browser release manifest
         run: |
           mkdir -p build/release
@@ -122,6 +127,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - uses: actions/download-artifact@v8
         if: needs.prepare.outputs.exists != 'true'
         with:

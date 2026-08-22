@@ -34,12 +34,12 @@ func (seatType SeatType) Valid() bool {
 }
 
 type Theater struct {
-	ID         string    `json:"id"`
-	ProviderID string    `json:"providerId"`
-	Region     string    `json:"region"`
-	Name       string    `json:"name"`
-	SourceKey  string    `json:"sourceKey"`
-	ObservedAt time.Time `json:"observedAt"`
+	ID         string
+	ProviderID string
+	Region     string
+	Name       string
+	SourceKey  string
+	ObservedAt time.Time
 }
 
 func (theater Theater) Validate() error {
@@ -59,14 +59,14 @@ func (theater Theater) Validate() error {
 }
 
 type Auditorium struct {
-	ID             string    `json:"id"`
-	TheaterID      string    `json:"theaterId"`
-	SourceKey      string    `json:"sourceKey"`
-	Name           string    `json:"name"`
-	ScreenTypes    []string  `json:"screenTypes"`
-	Capacity       int       `json:"capacity"`
-	SeatMapVersion string    `json:"seatMapVersion"`
-	ObservedAt     time.Time `json:"observedAt"`
+	ID             string
+	TheaterID      string
+	SourceKey      string
+	Name           string
+	ScreenTypes    []string
+	Capacity       int
+	SeatMapVersion string
+	ObservedAt     time.Time
 }
 
 func (auditorium Auditorium) Validate() error {
@@ -80,25 +80,25 @@ func (auditorium Auditorium) Validate() error {
 }
 
 type Seat struct {
-	ID                 string   `json:"id"`
-	AuditoriumID       string   `json:"auditoriumId"`
-	Label              string   `json:"label"`
-	Row                string   `json:"row"`
-	Number             int      `json:"number"`
-	X                  float64  `json:"x"`
-	Y                  float64  `json:"y"`
-	Type               SeatType `json:"type"`
-	ZoneName           string   `json:"zoneName"`
-	ZoneKind           string   `json:"zoneKind"`
-	SaleFormCode       string   `json:"saleFormCode"`
-	SaleFormName       string   `json:"saleFormName"`
-	LeftAisle          bool     `json:"leftAisle"`
-	RightAisle         bool     `json:"rightAisle"`
-	Features           []string `json:"features"`
-	SourceLabel        string   `json:"sourceLabel"`
-	SourceSeatKindCode string   `json:"sourceSeatKindCode"`
-	SourceSeatKindName string   `json:"sourceSeatKindName"`
-	SourceClasses      []string `json:"sourceClasses,omitempty"`
+	ID                 string
+	AuditoriumID       string
+	Label              string
+	Row                string
+	Number             int
+	X                  float64
+	Y                  float64
+	Type               SeatType
+	ZoneName           string
+	ZoneKind           string
+	SaleFormCode       string
+	SaleFormName       string
+	LeftAisle          bool
+	RightAisle         bool
+	Features           []string
+	SourceLabel        string
+	SourceSeatKindCode string
+	SourceSeatKindName string
+	SourceClasses      []string
 }
 
 func (seat Seat) Validate() error {
@@ -115,36 +115,36 @@ func (seat Seat) Validate() error {
 }
 
 type SeatMap struct {
-	AuditoriumID string         `json:"auditoriumId"`
-	Version      string         `json:"version"`
-	Seats        []Seat         `json:"seats"`
-	Zones        []LayoutZone   `json:"zones"`
-	Blocks       []LayoutBlock  `json:"blocks"`
-	Evidence     LayoutEvidence `json:"evidence"`
-	ObservedAt   time.Time      `json:"observedAt"`
+	AuditoriumID string
+	Version      string
+	Seats        []Seat
+	Zones        []LayoutZone
+	Blocks       []LayoutBlock
+	Evidence     LayoutEvidence
+	ObservedAt   time.Time
 }
 
 type LayoutZone struct {
-	Code     string  `json:"code"`
-	Name     string  `json:"name"`
-	KindCode string  `json:"kindCode"`
-	KindName string  `json:"kindName"`
-	MinX     float64 `json:"minX"`
-	MaxX     float64 `json:"maxX"`
-	MinY     float64 `json:"minY"`
-	MaxY     float64 `json:"maxY"`
-	Capacity int     `json:"capacity"`
+	Code     string
+	Name     string
+	KindCode string
+	KindName string
+	MinX     float64
+	MaxX     float64
+	MinY     float64
+	MaxY     float64
+	Capacity int
 }
 
 type LayoutBlock struct {
-	Code     string  `json:"code"`
-	Name     string  `json:"name"`
-	KindCode string  `json:"kindCode"`
-	KindName string  `json:"kindName"`
-	MinX     float64 `json:"minX"`
-	MaxX     float64 `json:"maxX"`
-	MinY     float64 `json:"minY"`
-	MaxY     float64 `json:"maxY"`
+	Code     string
+	Name     string
+	KindCode string
+	KindName string
+	MinX     float64
+	MaxX     float64
+	MinY     float64
+	MaxY     float64
 }
 
 func (zone LayoutZone) Validate() error {
@@ -172,14 +172,14 @@ func normalizedBounds(minX, maxX, minY, maxY float64) bool {
 }
 
 type LayoutEvidence struct {
-	ScreenshotPath    string    `json:"screenshotPath"`
-	ScreenshotSHA256  string    `json:"screenshotSha256"`
-	SnapshotSHA256    string    `json:"snapshotSha256"`
-	SourceShowtimeID  string    `json:"sourceShowtimeId"`
-	DOMSeatCount      int       `json:"domSeatCount"`
-	SnapshotSeatCount int       `json:"snapshotSeatCount"`
-	CaptureTrigger    string    `json:"captureTrigger"`
-	CapturedAt        time.Time `json:"capturedAt"`
+	ScreenshotPath    string
+	ScreenshotSHA256  string
+	SnapshotSHA256    string
+	SourceShowtimeID  string
+	DOMSeatCount      int
+	SnapshotSeatCount int
+	CaptureTrigger    string
+	CapturedAt        time.Time
 }
 
 func (seatMap SeatMap) Validate() error {
@@ -263,16 +263,16 @@ func (seatMap SeatMap) SortedSeats() []Seat {
 }
 
 type AuditoriumAnalysis struct {
-	AuditoriumID string           `json:"auditoriumId"`
-	Capacity     int              `json:"capacity"`
-	Rows         int              `json:"rows"`
-	SeatTypes    map[SeatType]int `json:"seatTypes"`
-	Zones        map[string]int   `json:"zones"`
-	SaleForms    map[string]int   `json:"saleForms"`
-	MinX         float64          `json:"minX"`
-	MaxX         float64          `json:"maxX"`
-	MinY         float64          `json:"minY"`
-	MaxY         float64          `json:"maxY"`
+	AuditoriumID string
+	Capacity     int
+	Rows         int
+	SeatTypes    map[SeatType]int
+	Zones        map[string]int
+	SaleForms    map[string]int
+	MinX         float64
+	MaxX         float64
+	MinY         float64
+	MaxY         float64
 }
 
 func AnalyzeSeatMap(seatMap SeatMap) AuditoriumAnalysis {

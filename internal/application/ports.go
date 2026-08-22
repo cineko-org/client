@@ -5,8 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/cineko-org/client/internal/domain"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
 
 var (
@@ -33,84 +34,55 @@ type Waiter interface {
 // has been written. Implementations must not make the originating workflow
 // depend on an external notification service.
 type EventPublisher interface {
-	Publish(context.Context, domain.AppEvent) error
+	Publish(context.Context, *clientpb.AppEvent) error
 }
 
 type TheaterRepository interface {
-	GetTheater(context.Context, string) (domain.Theater, error)
-	ListTheaters(context.Context) ([]domain.Theater, error)
+	GetTheater(context.Context, string) (*catalogpb.Theater, error)
+	ListTheaters(context.Context) ([]*catalogpb.Theater, error)
 }
 
 type AuditoriumRepository interface {
-	GetAuditorium(context.Context, string) (domain.Auditorium, error)
-	ListAuditoriumsByTheater(context.Context, string) ([]domain.Auditorium, error)
+	GetAuditorium(context.Context, string) (*catalogpb.Auditorium, error)
+	ListAuditoriumsByTheater(context.Context, string) ([]*catalogpb.Auditorium, error)
 }
 
 type SeatMapRepository interface {
-	GetSeatMap(context.Context, string) (domain.SeatMap, error)
+	GetSeatMap(context.Context, string) (*seatmappb.Snapshot, error)
 }
 
 type CatalogRepository interface {
-	GetCatalog(context.Context) (contracts.CatalogIndex, error)
+	GetCatalog(context.Context) (*catalogpb.CatalogIndex, error)
 }
 
 type PresetRepository interface {
-	PutPreset(context.Context, domain.Preset) error
-	GetPreset(context.Context, string) (domain.Preset, error)
-	ListPresetsByUser(context.Context, string) ([]domain.Preset, error)
+	PutPreset(context.Context, *clientpb.Resource) error
+	GetPreset(context.Context, string) (*clientpb.Resource, error)
+	ListPresetsByUser(context.Context, string) ([]*clientpb.Resource, error)
 	DeletePreset(context.Context, string) error
 }
 
 type MonitorRepository interface {
-	PutMonitor(context.Context, domain.MonitorJob) error
-	GetMonitor(context.Context, string) (domain.MonitorJob, error)
-	ListMonitorsByUser(context.Context, string) ([]domain.MonitorJob, error)
+	PutMonitor(context.Context, *clientpb.Resource) error
+	GetMonitor(context.Context, string) (*clientpb.Resource, error)
+	ListMonitorsByUser(context.Context, string) ([]*clientpb.Resource, error)
 	DeleteMonitor(context.Context, string) error
-	AcquireMonitor(context.Context, string, string, time.Time, time.Duration) (domain.MonitorJob, error)
-	RenewMonitor(context.Context, string, string, time.Time, time.Duration) error
-	ReleaseMonitor(context.Context, string, string) error
 }
 
 type ReservationRepository interface {
-	PutReservation(context.Context, domain.Reservation) error
-	GetReservation(context.Context, string) (domain.Reservation, error)
-	ListReservationsByUser(context.Context, string) ([]domain.Reservation, error)
+	PutReservation(context.Context, *clientpb.Resource) error
+	GetReservation(context.Context, string) (*clientpb.Resource, error)
+	ListReservationsByUser(context.Context, string) ([]*clientpb.Resource, error)
 }
 
 type ExternalOperationRepository interface {
-	PutExternalOperation(context.Context, domain.ExternalOperation) error
-}
-
-type TheaterRef struct {
-	Region string
-	Name   string
-}
-
-type AuditoriumObservation struct {
-	Auditorium            domain.Auditorium
-	RepresentativeShowing *domain.Showtime
-}
-
-type ShowtimeQuery struct {
-	MovieID string
-	// Movie is a display snapshot for adapters; matching must use MovieID.
-	Movie          string
-	Theater        domain.Theater
-	Auditorium     domain.Auditorium
-	TargetDates    []string
-	TargetWeekdays []int
-	EarliestTime   string
-	LatestTime     string
-}
-
-type ShowtimeGateway interface {
-	FindShowtimes(context.Context, ShowtimeQuery) ([]domain.Showtime, error)
+	PutExternalOperation(context.Context, *clientpb.Resource) error
 }
 
 type BookingGateway interface {
-	OpenSeatSelection(context.Context, domain.Showtime, int) (domain.SeatSelection, error)
-	PreparePayment(context.Context, domain.Showtime, []string) (domain.BookingDraft, error)
-	PrepareCancellation(context.Context, domain.Reservation) (domain.CancellationDraft, error)
+	OpenSeatSelection(context.Context, *catalogpb.Showtime, int) (*seatmappb.Snapshot, []*seatmappb.Seat, error)
+	PreparePayment(context.Context, *catalogpb.Showtime, []string) (*clientpb.Reservation, error)
+	PrepareCancellation(context.Context, *clientpb.Reservation) (*clientpb.WebUICancellationResult, error)
 	CommitCancellation(context.Context) error
 }
 
@@ -118,5 +90,5 @@ type BookingGateway interface {
 // repeating cinema, date, or showtime navigation. Booking gateways that do not
 // support this capability continue to use the single-attempt contract above.
 type LiveSeatSelectionRefresher interface {
-	RefreshSeatSelection(context.Context, domain.Showtime) (domain.SeatSelection, error)
+	RefreshSeatSelection(context.Context, *catalogpb.Showtime) (*seatmappb.Snapshot, []*seatmappb.Seat, error)
 }

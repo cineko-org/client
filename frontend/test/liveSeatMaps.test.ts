@@ -15,16 +15,17 @@ describe('live CGV seat map fixtures', () => {
     expect(fixture).toBeDefined();
     if (!fixture) return;
 
-    const labels = fixture.seatMap.seats.map((seat) => seat.label);
+    const seats = fixture.seatMap.layout?.seats ?? [];
+    const labels = seats.map((seat) => seat.label);
     expect(labels).toHaveLength(expected.seats);
     expect(new Set(labels).size).toBe(expected.seats);
-    expect(fixture.seatMap.seats.every((seat) => (
+    expect(seats.every((seat) => (
       seat.x >= 0 && seat.x <= 1 && seat.y >= 0 && seat.y <= 1
     ))).toBe(true);
 
     const types = Object.fromEntries(
-      [...new Set(fixture.seatMap.seats.map((seat) => seat.type))]
-        .map((type) => [type, fixture.seatMap.seats.filter((seat) => seat.type === type).length]),
+      [...new Set(seats.map((seat) => seat.type))]
+        .map((type) => [type, seats.filter((seat) => seat.type === type).length]),
     );
     expect(types).toEqual(expected.types);
   });

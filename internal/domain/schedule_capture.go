@@ -6,10 +6,10 @@ import "strings"
 // Central owns observation policy and persistence; the Client only uses this
 // value while executing an assigned capture.
 type ScheduleCapture struct {
-	TargetDate string     `json:"targetDate"`
-	Showtimes  []Showtime `json:"showtimes"`
-	Complete   bool       `json:"complete"`
-	Error      string     `json:"error,omitempty"`
+	TargetDate string
+	Showtimes  []Showtime
+	Complete   bool
+	Error      string
 }
 
 func ShowtimeOccurrenceKey(showtime Showtime) string {

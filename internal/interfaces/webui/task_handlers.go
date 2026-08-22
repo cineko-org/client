@@ -1,27 +1,21 @@
 package webui
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/cineko-org/client/internal/application"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 )
-
-type ownedTaskRequest struct {
-	ID            string
-	UserID        string
-	StartedStatus string
-	LoadOwner     func(context.Context, string) (string, error)
-}
 
 func (server *Server) runOwnedTask(
 	writer http.ResponseWriter,
 	request *http.Request,
-	input ownedTaskRequest,
+	input *clientpb.WebUIMonitorRetryRequest,
 	start func() error,
 ) {
-	owner, err := input.LoadOwner(request.Context(), input.ID)
-	if err != nil || owner != input.UserID {
+	monitor := input.GetMonitor()
+	job, err := server.repository.GetMonitor(request.Context(), monitor.GetId())
+	if err != nil || job.GetMonitor().GetUserId() != monitor.GetUserId() {
 		server.writeError(writer, application.ErrNotFound)
 		return
 	}
@@ -29,5 +23,5 @@ func (server *Server) runOwnedTask(
 		server.writeError(writer, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusAccepted, map[string]string{"status": input.StartedStatus})
+	writeProtoJSON(writer, http.StatusAccepted, actionStatus(true))
 }

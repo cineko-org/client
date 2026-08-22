@@ -2,100 +2,112 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
-	"github.com/cineko-org/client/internal/adapters/eventhook"
+	"buf.build/go/protovalidate"
 	"github.com/cineko-org/client/internal/application"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/proto"
 )
 
-type desktopHookSettings struct {
-	ID         string         `json:"id"`
-	Name       string         `json:"name"`
-	Kind       eventhook.Kind `json:"kind"`
-	URL        string         `json:"url"`
-	Secret     string         `json:"secret,omitempty"`
-	EventKinds []string       `json:"eventKinds,omitempty"`
-	Enabled    bool           `json:"enabled"`
-}
-
-type HookTargetSettings struct {
-	ID         string         `json:"id"`
-	Name       string         `json:"name"`
-	Kind       eventhook.Kind `json:"kind"`
-	URL        string         `json:"url"`
-	EventKinds []string       `json:"eventKinds,omitempty"`
-	Enabled    bool           `json:"enabled"`
-	HasSecret  bool           `json:"hasSecret"`
-}
-
-type HookSettings struct {
-	Targets []HookTargetSettings `json:"targets"`
-}
-
-type HookTargetInput struct {
-	ID         string         `json:"id"`
-	Name       string         `json:"name"`
-	Kind       eventhook.Kind `json:"kind"`
-	URL        string         `json:"url"`
-	Secret     string         `json:"secret"`
-	EventKinds []string       `json:"eventKinds"`
-	Enabled    bool           `json:"enabled"`
-}
-
-type HookSettingsInput struct {
-	Targets []HookTargetInput `json:"targets"`
-}
-
 type hookConfigurator interface {
-	Configure([]eventhook.Target) error
+	Configure([]*clientpb.WebhookTarget) error
 }
 
-func (app *DesktopApp) GetHookSettings() (HookSettings, error) {
+func (app *DesktopApp) GetHookSettings() (string, error) {
+	targets, err := app.getHookSettings()
+	if err != nil {
+		return "", err
+	}
+	return marshalDesktopProtoJSON(clientpb.Settings_builder{Webhooks: redactDesktopWebhookTargets(targets)}.Build())
+}
+
+func (app *DesktopApp) getHookSettings() ([]*clientpb.WebhookTarget, error) {
 	settings, err := app.readSettings()
 	if errors.Is(err, application.ErrNotFound) {
-		return HookSettings{Targets: []HookTargetSettings{}}, nil
+		return []*clientpb.WebhookTarget{}, nil
 	}
 	if err != nil {
-		return HookSettings{}, err
+		return nil, err
 	}
-	return hookSettingsState(settings.Hooks), nil
+	if settings == nil {
+		return []*clientpb.WebhookTarget{}, nil
+	}
+	return cloneWebhookTargets(settings.GetWebhooks()), nil
 }
 
-func (app *DesktopApp) SaveHookSettings(input HookSettingsInput) (HookSettings, error) {
+func (app *DesktopApp) SaveHookSettings(input string) (string, error) {
+	settings := &clientpb.Settings{}
+	if err := unmarshalDesktopProtoJSON(input, settings); err != nil {
+		return "", err
+	}
+	targets, err := app.saveHookSettings(settings.GetWebhooks())
+	if err != nil {
+		return "", err
+	}
+	return marshalDesktopProtoJSON(clientpb.Settings_builder{Webhooks: redactDesktopWebhookTargets(targets)}.Build())
+}
+
+// redactDesktopWebhookTargets preserves secret presence without exposing
+// stored webhook signing material to the untrusted renderer process.
+func redactDesktopWebhookTargets(targets []*clientpb.WebhookTarget) []*clientpb.WebhookTarget {
+	redacted := cloneWebhookTargets(targets)
+	for _, target := range redacted {
+		hasSecret := target.GetSecret() != ""
+		target.SetSecret("")
+		target.SetHasSecret(hasSecret)
+	}
+	return redacted
+}
+
+func (app *DesktopApp) saveHookSettings(input []*clientpb.WebhookTarget) ([]*clientpb.WebhookTarget, error) {
 	settings, err := app.readSettings()
 	if err != nil && !errors.Is(err, application.ErrNotFound) {
-		return HookSettings{}, err
+		return nil, err
 	}
-	stored := make([]desktopHookSettings, 0, len(input.Targets))
-	previousSecrets := make(map[string]string, len(settings.Hooks))
-	for _, target := range settings.Hooks {
-		previousSecrets[target.ID] = target.Secret
+	if settings == nil {
+		settings = &clientpb.Settings{}
 	}
-	for _, inputTarget := range input.Targets {
-		target := desktopHookSettings{
-			ID: strings.TrimSpace(inputTarget.ID), Name: strings.TrimSpace(inputTarget.Name),
-			Kind: inputTarget.Kind, URL: strings.TrimSpace(inputTarget.URL), Secret: inputTarget.Secret,
-			EventKinds: cleanStrings(inputTarget.EventKinds), Enabled: inputTarget.Enabled,
+	previous := settings.GetWebhooks()
+	previousSecrets := make(map[string]string, len(previous))
+	for _, target := range previous {
+		if target != nil {
+			previousSecrets[target.GetId()] = target.GetSecret()
 		}
-		if target.Secret == "" {
-			target.Secret = previousSecrets[target.ID]
+	}
+	stored := make([]*clientpb.WebhookTarget, 0, len(input))
+	for _, inputTarget := range input {
+		if inputTarget == nil {
+			continue
+		}
+		if err := protovalidate.Validate(inputTarget); err != nil {
+			return nil, fmt.Errorf("webhook target violates the contract: %w", err)
+		}
+		target := proto.CloneOf(inputTarget)
+		target.SetId(strings.TrimSpace(target.GetId()))
+		target.SetName(strings.TrimSpace(target.GetName()))
+		target.SetUrl(strings.TrimSpace(target.GetUrl()))
+		target.SetEventKinds(cleanStrings(target.GetEventKinds()))
+		if target.GetSecret() == "" {
+			target.SetSecret(previousSecrets[target.GetId()])
 		}
 		stored = append(stored, target)
 	}
 	if app.hooks == nil {
-		return HookSettings{}, errors.New("hook configuration is unavailable")
+		return nil, errors.New("hook configuration is unavailable")
 	}
-	if err := app.hooks.Configure(hookTargets(stored)); err != nil {
-		return HookSettings{}, err
+	if err := app.hooks.Configure(stored); err != nil {
+		return nil, err
 	}
-	if err := app.updateSettings(func(settings *desktopSettings) error {
-		settings.Hooks = stored
+	if err := app.updateSettings(func(settings *clientpb.Settings) error {
+		settings.SetWebhooks(stored)
 		return nil
 	}); err != nil {
-		_ = app.hooks.Configure(hookTargets(settings.Hooks))
-		return HookSettings{}, err
+		_ = app.hooks.Configure(previous)
+		return nil, err
 	}
-	return hookSettingsState(stored), nil
+	return cloneWebhookTargets(stored), nil
 }
 
 func (app *DesktopApp) applySavedHookSettings() error {
@@ -107,33 +119,23 @@ func (app *DesktopApp) applySavedHookSettings() error {
 		return err
 	}
 	if app.hooks == nil {
-		if len(settings.Hooks) == 0 {
+		if settings == nil || len(settings.GetWebhooks()) == 0 {
 			return nil
 		}
 		return errors.New("hook configuration is unavailable")
 	}
-	return app.hooks.Configure(hookTargets(settings.Hooks))
+	if settings == nil {
+		return nil
+	}
+	return app.hooks.Configure(settings.GetWebhooks())
 }
 
-func hookTargets(settings []desktopHookSettings) []eventhook.Target {
-	targets := make([]eventhook.Target, 0, len(settings))
+func cloneWebhookTargets(settings []*clientpb.WebhookTarget) []*clientpb.WebhookTarget {
+	result := make([]*clientpb.WebhookTarget, 0, len(settings))
 	for _, target := range settings {
-		targets = append(targets, eventhook.Target{
-			ID: target.ID, Name: target.Name, Kind: target.Kind, URL: target.URL,
-			Secret: target.Secret, EventKinds: append([]string(nil), target.EventKinds...), Enabled: target.Enabled,
-		})
+		if target != nil {
+			result = append(result, proto.CloneOf(target))
+		}
 	}
-	return targets
-}
-
-func hookSettingsState(settings []desktopHookSettings) HookSettings {
-	state := HookSettings{Targets: make([]HookTargetSettings, 0, len(settings))}
-	for _, target := range settings {
-		state.Targets = append(state.Targets, HookTargetSettings{
-			ID: target.ID, Name: target.Name, Kind: target.Kind, URL: target.URL,
-			EventKinds: append([]string(nil), target.EventKinds...), Enabled: target.Enabled,
-			HasSecret: target.Secret != "",
-		})
-	}
-	return state
+	return result
 }

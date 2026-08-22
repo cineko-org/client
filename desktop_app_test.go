@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 
 	"github.com/cineko-org/client/internal/adapters/egress"
-	"github.com/cineko-org/client/internal/adapters/eventhook"
 	"github.com/cineko-org/client/internal/application"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/proto"
 )
 
 type recordingEgressConfigurator struct {
@@ -18,13 +18,13 @@ type recordingEgressConfigurator struct {
 }
 
 type recordingHookConfigurator struct {
-	targets []eventhook.Target
+	targets []*clientpb.WebhookTarget
 	err     error
 }
 
 type memoryDesktopSettings struct {
 	mu        sync.Mutex
-	settings  *desktopSettings
+	settings  *clientpb.Settings
 	revision  int64
 	getErr    error
 	putErr    error
@@ -32,7 +32,7 @@ type memoryDesktopSettings struct {
 	putCalls  int
 }
 
-func (repository *memoryDesktopSettings) GetSettings(_ context.Context, output any) (int64, error) {
+func (repository *memoryDesktopSettings) GetSettings(_ context.Context, output *clientpb.Settings) (int64, error) {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	if repository.getErr != nil {
@@ -41,11 +41,12 @@ func (repository *memoryDesktopSettings) GetSettings(_ context.Context, output a
 	if repository.settings == nil {
 		return 0, application.ErrNotFound
 	}
-	data, _ := json.Marshal(repository.settings)
-	return repository.revision, json.Unmarshal(data, output)
+	proto.Reset(output)
+	proto.Merge(output, repository.settings)
+	return repository.revision, nil
 }
 
-func (repository *memoryDesktopSettings) PutSettings(_ context.Context, input any, expectedRevision int64) error {
+func (repository *memoryDesktopSettings) PutSettings(_ context.Context, input *clientpb.Settings, expectedRevision int64) error {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	repository.putCalls++
@@ -56,22 +57,38 @@ func (repository *memoryDesktopSettings) PutSettings(_ context.Context, input an
 		repository.conflicts--
 		repository.revision++
 		if repository.settings == nil {
-			repository.settings = &desktopSettings{}
+			repository.settings = &clientpb.Settings{}
 		}
-		repository.settings.Hooks = []desktopHookSettings{{ID: "concurrent", Name: "Concurrent"}}
+		id, name, enabled := "concurrent", "Concurrent", true
+		repository.settings.SetWebhooks([]*clientpb.WebhookTarget{clientpb.WebhookTarget_builder{Id: &id, Name: &name, Enabled: &enabled}.Build()})
 		return application.ErrConflict
 	}
 	if expectedRevision != repository.revision {
 		return application.ErrConflict
 	}
-	data, _ := json.Marshal(input)
-	var settings desktopSettings
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return err
-	}
-	repository.settings = &settings
+	repository.settings = proto.CloneOf(input)
 	repository.revision++
 	return nil
+}
+
+func directSettings() *clientpb.Settings {
+	return clientpb.Settings_builder{Network: clientpb.NetworkSettings_builder{Direct: clientpb.DirectNetwork_builder{}.Build()}.Build()}.Build()
+}
+
+func directNetworkSettings() *clientpb.NetworkSettings {
+	return clientpb.NetworkSettings_builder{Direct: clientpb.DirectNetwork_builder{}.Build()}.Build()
+}
+
+func proxyNetworkSettings(urls []string, username, password string) *clientpb.NetworkSettings {
+	return clientpb.NetworkSettings_builder{Proxy: clientpb.ProxyNetwork_builder{
+		Urls: urls, Username: &username, Password: &password,
+	}.Build()}.Build()
+}
+
+func webhookTarget(id, name, rawURL, secret string, enabled bool) *clientpb.WebhookTarget {
+	return clientpb.WebhookTarget_builder{
+		Id: &id, Name: &name, Url: &rawURL, Secret: &secret, Enabled: &enabled,
+	}.Build()
 }
 
 func TestDesktopSettingsRetryConflictWithoutLosingConcurrentFields(t *testing.T) {
@@ -79,20 +96,23 @@ func TestDesktopSettingsRetryConflictWithoutLosingConcurrentFields(t *testing.T)
 	repository := &memoryDesktopSettings{conflicts: 1}
 	app := newDesktopApp(nil, repository, &recordingEgressConfigurator{})
 	skipEgressHealth(app)
-	if _, err := app.SaveNetworkSettings(NetworkSettingsInput{Mode: "direct"}); err != nil {
+	if _, err := app.saveNetworkSettings(directNetworkSettings()); err != nil {
 		t.Fatal(err)
 	}
-	if repository.putCalls != 2 || repository.settings == nil || repository.settings.Network == nil ||
-		len(repository.settings.Hooks) != 1 || repository.settings.Hooks[0].ID != "concurrent" {
-		t.Fatalf("conflict retry lost Central settings: %+v after %d writes", repository.settings, repository.putCalls)
+	if repository.putCalls != 2 || repository.settings == nil || repository.settings.GetNetwork() == nil ||
+		len(repository.settings.GetWebhooks()) != 1 || repository.settings.GetWebhooks()[0].GetId() != "concurrent" {
+		t.Fatalf("conflict retry lost Central settings: %s after %d writes", repository.settings, repository.putCalls)
 	}
 }
 
-func (configurator *recordingHookConfigurator) Configure(targets []eventhook.Target) error {
+func (configurator *recordingHookConfigurator) Configure(targets []*clientpb.WebhookTarget) error {
 	if configurator.err != nil {
 		return configurator.err
 	}
-	configurator.targets = append([]eventhook.Target(nil), targets...)
+	configurator.targets = make([]*clientpb.WebhookTarget, 0, len(targets))
+	for _, target := range targets {
+		configurator.targets = append(configurator.targets, proto.CloneOf(target))
+	}
 	return nil
 }
 
@@ -108,27 +128,75 @@ func (configurator *recordingEgressConfigurator) ConfigureEgress(config egress.C
 	return nil
 }
 
-func TestDesktopNetworkSettingsRejectsClientManagedSoxy(t *testing.T) {
+func TestDesktopNetworkSettingsRequireGeneratedNetwork(t *testing.T) {
 	clearNetworkEnvironment(t)
-	settings := &memoryDesktopSettings{}
-	configurator := &recordingEgressConfigurator{}
-	app := newDesktopApp(nil, settings, configurator)
-	skipEgressHealth(app)
+	app := newDesktopApp(nil, &memoryDesktopSettings{}, &recordingEgressConfigurator{})
+	if _, err := app.saveNetworkSettings(&clientpb.NetworkSettings{}); err == nil {
+		t.Fatal("SaveNetworkSettings(empty) error = nil")
+	}
+}
 
-	if _, err := app.SaveNetworkSettings(NetworkSettingsInput{
-		Mode: "soxy", SoxyURL: "https://soxy.example.test", SoxyAPIToken: "local-value",
-	}); err == nil {
-		t.Fatal("SaveNetworkSettings(Soxy) error = nil")
-	}
-	state, err := app.SaveNetworkSettings(NetworkSettingsInput{Mode: "direct"})
+func TestDesktopNetworkSettingsBridgeUsesStrictProtoJSON(t *testing.T) {
+	clearNetworkEnvironment(t)
+	app := newDesktopApp(nil, &memoryDesktopSettings{}, &recordingEgressConfigurator{})
+	skipEgressHealth(app)
+	input, err := marshalDesktopProtoJSON(proxyNetworkSettings([]string{"http://127.0.0.1:8080"}, "user", "password"))
 	if err != nil {
-		t.Fatalf("SaveNetworkSettings(Direct) error = %v", err)
+		t.Fatal(err)
 	}
-	if state.Mode != "direct" || len(configurator.configs) != 1 || len(configurator.configs[0].Proxies) != 0 {
-		t.Fatalf("Direct state = %+v, configurations = %+v", state, configurator.configs)
+	payload, err := app.SaveNetworkSettings(input)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if settings.settings == nil || settings.settings.Network == nil || settings.settings.Network.SoxyAPIToken != "" {
-		t.Fatalf("client settings retained a Soxy credential: %+v", settings.settings)
+	saved := &clientpb.NetworkSettings{}
+	if err := unmarshalDesktopProtoJSON(payload, saved); err != nil || saved.GetProxy() == nil ||
+		saved.GetProxy().GetPassword() != "" || !saved.GetProxy().GetHasPassword() {
+		t.Fatalf("saved network settings = %s, error = %v", saved, err)
+	}
+	payload, err = app.GetNetworkSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded := &clientpb.NetworkSettings{}
+	if err := unmarshalDesktopProtoJSON(payload, reloaded); err != nil || reloaded.GetProxy() == nil ||
+		reloaded.GetProxy().GetPassword() != "" || !reloaded.GetProxy().GetHasPassword() {
+		t.Fatalf("reloaded network settings = %s, error = %v", reloaded, err)
+	}
+	if _, err := app.SaveNetworkSettings(`{"unknownField":true}`); err == nil {
+		t.Fatal("SaveNetworkSettings(unknown field) error = nil")
+	}
+}
+
+func TestDesktopHookSettingsBridgeUsesStrictProtoJSON(t *testing.T) {
+	settings := &memoryDesktopSettings{}
+	app := newDesktopApp(nil, settings, &recordingEgressConfigurator{}, &recordingHookConfigurator{})
+	inputMessage := clientpb.Settings_builder{Webhooks: []*clientpb.WebhookTarget{
+		webhookTarget("discord", "Discord", "https://discord.com/api/webhooks/1/token", "secret", true),
+	}}.Build()
+	input, err := marshalDesktopProtoJSON(inputMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := app.SaveHookSettings(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := &clientpb.Settings{}
+	if err := unmarshalDesktopProtoJSON(payload, saved); err != nil || len(saved.GetWebhooks()) != 1 ||
+		saved.GetWebhooks()[0].GetSecret() != "" || !saved.GetWebhooks()[0].GetHasSecret() {
+		t.Fatalf("saved hook settings = %s, error = %v", saved, err)
+	}
+	payload, err = app.GetHookSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded := &clientpb.Settings{}
+	if err := unmarshalDesktopProtoJSON(payload, reloaded); err != nil || len(reloaded.GetWebhooks()) != 1 ||
+		reloaded.GetWebhooks()[0].GetSecret() != "" || !reloaded.GetWebhooks()[0].GetHasSecret() {
+		t.Fatalf("reloaded hook settings = %s, error = %v", reloaded, err)
+	}
+	if _, err := app.SaveHookSettings(`{"unknownField":true}`); err == nil {
+		t.Fatal("SaveHookSettings(unknown field) error = nil")
 	}
 }
 
@@ -144,26 +212,21 @@ func TestDesktopStandardProxyValidationPrecedesPersistence(t *testing.T) {
 		}
 		return validationErr
 	}
-	input := NetworkSettingsInput{
-		Mode: "proxy", ProxyURLs: []string{" socks5://127.0.0.1:1080 ", "https://127.0.0.1:8443"},
-		ProxyUsername: " user ", ProxyPassword: "password",
-	}
-	if _, err := app.SaveNetworkSettings(input); !errors.Is(err, validationErr) {
+	input := proxyNetworkSettings([]string{" socks5://127.0.0.1:1080 ", "https://127.0.0.1:8443"}, " user ", "password")
+	if _, err := app.saveNetworkSettings(input); !errors.Is(err, validationErr) {
 		t.Fatalf("SaveNetworkSettings(invalid) error = %v", err)
 	}
 	if settings.settings != nil {
-		t.Fatalf("invalid settings reached Central: %+v", settings.settings)
+		t.Fatalf("invalid settings reached Central: %s", settings.settings)
 	}
 	app.validateEgress = func(context.Context, egress.Config) error { return nil }
-	state, err := app.SaveNetworkSettings(input)
-	if err != nil || state.Mode != "proxy" || len(state.ProxyURLs) != 2 || !state.HasProxyPassword {
-		t.Fatalf("state = %+v, error = %v", state, err)
+	state, err := app.saveNetworkSettings(input)
+	if err != nil || state.GetProxy() == nil || len(state.GetProxy().GetUrls()) != 2 {
+		t.Fatalf("state = %s, error = %v", state, err)
 	}
-	state, err = app.SaveNetworkSettings(NetworkSettingsInput{
-		Mode: "proxy", ProxyURLs: input.ProxyURLs, ProxyUsername: "user",
-	})
-	if err != nil || !state.HasProxyPassword {
-		t.Fatalf("preserved password state = %+v, error = %v", state, err)
+	state, err = app.saveNetworkSettings(proxyNetworkSettings(input.GetProxy().GetUrls(), "user", ""))
+	if err != nil || state.GetProxy().GetPassword() != "password" {
+		t.Fatalf("preserved password state = %s, error = %v", state, err)
 	}
 }
 
@@ -171,28 +234,25 @@ func TestDesktopHookSettingsPreserveSecretsAndRejectInvalidConfiguration(t *test
 	settings := &memoryDesktopSettings{}
 	hooks := &recordingHookConfigurator{}
 	app := newDesktopApp(nil, settings, &recordingEgressConfigurator{}, hooks)
-	input := HookSettingsInput{Targets: []HookTargetInput{{
-		ID: "discord", Name: "Discord", Kind: eventhook.KindDiscord,
-		URL: "https://discord.com/api/webhooks/1/token", Secret: "secret", Enabled: true,
-	}}}
-	state, err := app.SaveHookSettings(input)
-	if err != nil || len(state.Targets) != 1 || !state.Targets[0].HasSecret || len(hooks.targets) != 1 {
-		t.Fatalf("state = %+v, targets = %+v, error = %v", state, hooks.targets, err)
+	input := []*clientpb.WebhookTarget{webhookTarget("discord", "Discord", "https://discord.com/api/webhooks/1/token", "secret", true)}
+	state, err := app.saveHookSettings(input)
+	if err != nil || len(state) != 1 || state[0].GetSecret() != "secret" || len(hooks.targets) != 1 {
+		t.Fatalf("state = %v, targets = %+v, error = %v", state, hooks.targets, err)
 	}
-	input.Targets[0].Secret = ""
-	state, err = app.SaveHookSettings(input)
-	if err != nil || !state.Targets[0].HasSecret || hooks.targets[0].Secret != "secret" {
-		t.Fatalf("preserved state = %+v, targets = %+v, error = %v", state, hooks.targets, err)
+	input[0].SetSecret("")
+	state, err = app.saveHookSettings(input)
+	if err != nil || state[0].GetSecret() != "secret" || hooks.targets[0].GetSecret() != "secret" {
+		t.Fatalf("preserved state = %v, targets = %+v, error = %v", state, hooks.targets, err)
 	}
 	hooks.err = errors.New("invalid hook")
-	input.Targets[0].Name = "Changed"
-	if _, err := app.SaveHookSettings(input); !errors.Is(err, hooks.err) {
+	input[0].SetName("Changed")
+	if _, err := app.saveHookSettings(input); !errors.Is(err, hooks.err) {
 		t.Fatalf("SaveHookSettings(invalid) error = %v", err)
 	}
 	hooks.err = nil
-	reloaded, err := app.GetHookSettings()
-	if err != nil || reloaded.Targets[0].Name != "Discord" {
-		t.Fatalf("reloaded = %+v, error = %v", reloaded, err)
+	reloaded, err := app.getHookSettings()
+	if err != nil || reloaded[0].GetName() != "Discord" {
+		t.Fatalf("reloaded = %v, error = %v", reloaded, err)
 	}
 }
 
@@ -204,18 +264,14 @@ func TestDesktopNetworkSettingsIgnoreSoxyEnvironment(t *testing.T) {
 	configurator := &recordingEgressConfigurator{}
 	app := newDesktopApp(nil, settings, configurator)
 	skipEgressHealth(app)
-
-	state, err := app.SaveNetworkSettings(NetworkSettingsInput{Mode: "direct"})
-	if err != nil {
-		t.Fatalf("SaveNetworkSettings() error = %v", err)
-	}
-	if state.Mode != "direct" || len(configurator.configs[0].Proxies) != 0 {
-		t.Fatalf("state = %+v, configuration = %+v", state, configurator.configs[0])
+	state, err := app.saveNetworkSettings(directNetworkSettings())
+	if err != nil || state.GetDirect() == nil || len(configurator.configs[0].Proxies) != 0 {
+		t.Fatalf("state = %s, configuration = %+v", state, configurator.configs)
 	}
 	reloaded := newDesktopApp(nil, settings, &recordingEgressConfigurator{})
-	reloadedState, err := reloaded.GetNetworkSettings()
-	if err != nil || reloadedState.Mode != "direct" || reloadedState.Source != "settings" {
-		t.Fatalf("reloaded state = %+v, error = %v", reloadedState, err)
+	reloadedState, err := reloaded.getNetworkSettings()
+	if err != nil || reloadedState.GetDirect() == nil {
+		t.Fatalf("reloaded state = %s, error = %v", reloadedState, err)
 	}
 }
 
@@ -225,17 +281,15 @@ func TestDesktopSettingsBelongToAuthenticatedCentralUser(t *testing.T) {
 	app := newDesktopApp(nil, settings, &recordingEgressConfigurator{})
 	app.setUserID("user-1")
 	skipEgressHealth(app)
-	if _, err := app.SaveNetworkSettings(NetworkSettingsInput{
-		Mode: "proxy", ProxyURLs: []string{"http://127.0.0.1:8080"},
-	}); err != nil {
+	if _, err := app.saveNetworkSettings(proxyNetworkSettings([]string{"http://127.0.0.1:8080"}, "", "")); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := app.readSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Network == nil || stored.Network.Mode != "proxy" || len(stored.Network.ProxyURLs) != 1 {
-		t.Fatalf("settings = %+v", stored)
+	if stored.GetNetwork() == nil || stored.GetNetwork().GetProxy() == nil || len(stored.GetNetwork().GetProxy().GetUrls()) != 1 {
+		t.Fatalf("settings = %s", stored)
 	}
 	userID, err := app.GetUserID()
 	if err != nil || userID != "user-1" {
@@ -245,27 +299,15 @@ func TestDesktopSettingsBelongToAuthenticatedCentralUser(t *testing.T) {
 
 func TestApplySavedNetworkSettingsAndValidationFailures(t *testing.T) {
 	clearNetworkEnvironment(t)
-	settings := desktopSettings{Network: &desktopNetworkSettings{
-		SoxyURL: "https://soxy.example.test", SoxyAPIToken: "local-value", SoxySessionTTL: "30m",
-	}}
-	repository := &memoryDesktopSettings{settings: &settings}
+	settings := clientpb.Settings_builder{Network: &clientpb.NetworkSettings{}}.Build()
+	repository := &memoryDesktopSettings{settings: settings}
 	configurator := &recordingEgressConfigurator{}
 	app := newDesktopApp(nil, repository, configurator)
-	if err := app.applySavedNetworkSettings(); err != nil {
-		t.Fatalf("applySavedNetworkSettings() error = %v", err)
-	}
-	if len(configurator.configs) != 1 || len(configurator.configs[0].Proxies) != 0 {
-		t.Fatalf("configurations = %+v", configurator.configs)
-	}
-
-	settings.Network.Mode = "unsupported"
-	repository.settings = &settings
 	if err := app.applySavedNetworkSettings(); err == nil {
 		t.Fatal("applySavedNetworkSettings(invalid mode) error = nil")
 	}
+	settings.SetNetwork(directSettings().GetNetwork())
 	configurator.err = errors.New("closed")
-	settings.Network.Mode = "direct"
-	repository.settings = &settings
 	if err := app.applySavedNetworkSettings(); !errors.Is(err, configurator.err) {
 		t.Fatalf("applySavedNetworkSettings(configurator failure) error = %v", err)
 	}
@@ -274,15 +316,15 @@ func TestApplySavedNetworkSettingsAndValidationFailures(t *testing.T) {
 func TestGetNetworkSettingsDefaultsToEnvironmentOrDirect(t *testing.T) {
 	clearNetworkEnvironment(t)
 	app := newDesktopApp(nil, &memoryDesktopSettings{}, &recordingEgressConfigurator{})
-	state, err := app.GetNetworkSettings()
-	if err != nil || state.Mode != "direct" || state.Source != "environment" {
-		t.Fatalf("direct state = %+v, error = %v", state, err)
+	state, err := app.getNetworkSettings()
+	if err != nil || state.GetDirect() == nil {
+		t.Fatalf("direct state = %s, error = %v", state, err)
 	}
 	t.Setenv("CINEKO_SOXY_URL", "https://soxy.example.test")
 	t.Setenv("CINEKO_SOXY_API_TOKEN", "environment-value")
-	state, err = app.GetNetworkSettings()
-	if err != nil || state.Mode != "direct" {
-		t.Fatalf("environment state = %+v, error = %v", state, err)
+	state, err = app.getNetworkSettings()
+	if err != nil || state.GetDirect() == nil {
+		t.Fatalf("environment state = %s, error = %v", state, err)
 	}
 }
 

@@ -10,8 +10,6 @@ import (
 	"github.com/cineko-org/client/internal/domain"
 )
 
-type Credentials = domain.AccountCredentials
-
 type CaptchaPrompt func() error
 
 func (adapter *Adapter) AuthenticateManuallyUntil(ctx context.Context, timeout time.Duration) error {
@@ -119,7 +117,7 @@ func (adapter *Adapter) AuthenticateManually(ctx context.Context, prompt Captcha
 
 func (adapter *Adapter) Authenticate(
 	ctx context.Context,
-	credentials Credentials,
+	credentials domain.AccountCredentials,
 	prompt CaptchaPrompt,
 ) error {
 	adapter.mu.Lock()
@@ -176,7 +174,7 @@ func (adapter *Adapter) AuthenticateSavedUntil(
 	return adapter.saveSessionState()
 }
 
-func (adapter *Adapter) fillLoginForm(credentials Credentials) error {
+func (adapter *Adapter) fillLoginForm(credentials domain.AccountCredentials) error {
 	if credentials.ID != "" {
 		if err := adapter.page.Locator(`input[placeholder^="CJ ONE 통합 아이디"]`).Fill(credentials.ID); err != nil {
 			return fmt.Errorf("fill CGV id: %w", err)

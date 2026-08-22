@@ -11,20 +11,15 @@ import (
 
 	"github.com/cineko-org/client/internal/adapters/egress"
 	"github.com/cineko-org/client/internal/application"
-	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/interfaces/webui"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-type desktopSettings struct {
-	Network *desktopNetworkSettings `json:"network,omitempty"`
-	Hooks   []desktopHookSettings   `json:"hooks,omitempty"`
-}
-
 type desktopSettingsRepository interface {
-	GetSettings(context.Context, any) (int64, error)
-	PutSettings(context.Context, any, int64) error
+	GetSettings(context.Context, *clientpb.Settings) (int64, error)
+	PutSettings(context.Context, *clientpb.Settings, int64) error
 }
 
 type DesktopApp struct {
@@ -37,7 +32,7 @@ type DesktopApp struct {
 
 	contextMu      sync.RWMutex
 	ctx            context.Context
-	emitEvent      func(string, ...any)
+	emitEvent      func(string)
 	settingsMu     sync.Mutex
 	updateNeeded   atomic.Bool
 	validateEgress func(context.Context, egress.Config) error
@@ -64,7 +59,7 @@ func newDesktopApp(
 func (app *DesktopApp) startup(ctx context.Context) {
 	app.contextMu.Lock()
 	app.ctx = ctx
-	app.emitEvent = func(name string, data ...any) { runtime.EventsEmit(ctx, name, data...) }
+	app.emitEvent = func(name string) { runtime.EventsEmit(ctx, name) }
 	app.contextMu.Unlock()
 	if updates, ok := app.settings.(interface{ UpdateRequired() <-chan struct{} }); ok {
 		go func() {
@@ -92,23 +87,22 @@ func (app *DesktopApp) startup(ctx context.Context) {
 		}()
 	}
 	if err := app.applySavedHookSettings(); err != nil {
-		app.server.RecordLocalSystemEvent(app.activeUserID(), "hook.invalid", domain.EventError, "저장된 외부 알림 설정을 적용하지 못했습니다. 설정을 확인하세요.")
+		app.server.RecordLocalSystemEvent(desktopErrorEvent(app.activeUserID(), "hook.invalid", "저장된 외부 알림 설정을 적용하지 못했습니다. 설정을 확인하세요."))
 	}
 	app.server.Start(ctx)
 	if app.execution != nil {
 		go func() {
 			if err := app.execution.Run(ctx); err != nil {
-				app.server.RecordLocalSystemEvent(
-					app.activeUserID(), "execution.supervisor_failed", domain.EventError,
-					"예매 실행 연결을 복구하지 못했습니다. 앱을 다시 시작하세요.",
-				)
+				app.server.RecordLocalSystemEvent(desktopErrorEvent(
+					app.activeUserID(), "execution.supervisor_failed", "예매 실행 연결을 복구하지 못했습니다. 앱을 다시 시작하세요.",
+				))
 				runtime.Quit(ctx)
 			}
 		}()
 	}
 	if err := app.applySavedNetworkSettings(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "cineko: apply network settings: %v\n", err)
-		app.server.RecordSystemEvent(app.activeUserID(), "network.invalid", domain.EventError, "저장된 프록시 설정을 적용하지 못했습니다. 설정을 확인하세요.")
+		app.server.RecordSystemEvent(desktopErrorEvent(app.activeUserID(), "network.invalid", "저장된 프록시 설정을 적용하지 못했습니다. 설정을 확인하세요."))
 		return
 	}
 	go app.checkSavedNetworkHealth(ctx)
@@ -135,25 +129,25 @@ func (app *DesktopApp) Exit() {
 	}
 }
 
-func (app *DesktopApp) readSettings() (desktopSettings, error) {
+func (app *DesktopApp) readSettings() (*clientpb.Settings, error) {
 	app.settingsMu.Lock()
 	defer app.settingsMu.Unlock()
 	return app.readSettingsRemote()
 }
 
-func (app *DesktopApp) readSettingsRemote() (desktopSettings, error) {
+func (app *DesktopApp) readSettingsRemote() (*clientpb.Settings, error) {
 	if app.settings == nil {
-		return desktopSettings{}, errors.New("central settings are unavailable")
+		return nil, errors.New("central settings are unavailable")
 	}
-	var settings desktopSettings
-	if _, err := app.settings.GetSettings(app.contextOrBackground(), &settings); err != nil {
-		return desktopSettings{}, err
+	settings := &clientpb.Settings{}
+	if _, err := app.settings.GetSettings(app.contextOrBackground(), settings); err != nil {
+		return nil, err
 	}
 	return settings, nil
 }
 
 func (app *DesktopApp) updateSettings(
-	update func(*desktopSettings) error,
+	update func(*clientpb.Settings) error,
 ) error {
 	app.settingsMu.Lock()
 	defer app.settingsMu.Unlock()
@@ -161,15 +155,15 @@ func (app *DesktopApp) updateSettings(
 		return errors.New("central settings are unavailable")
 	}
 	for range 3 {
-		var settings desktopSettings
-		revision, err := app.settings.GetSettings(app.contextOrBackground(), &settings)
+		settings := &clientpb.Settings{}
+		revision, err := app.settings.GetSettings(app.contextOrBackground(), settings)
 		if errors.Is(err, application.ErrNotFound) {
-			settings = desktopSettings{}
+			settings = &clientpb.Settings{}
 			revision = 0
 		} else if err != nil {
 			return err
 		}
-		if err := update(&settings); err != nil {
+		if err := update(settings); err != nil {
 			return err
 		}
 		if err := app.settings.PutSettings(app.contextOrBackground(), settings, revision); err == nil {
@@ -187,11 +181,11 @@ func (app *DesktopApp) context() context.Context {
 	return app.ctx
 }
 
-func (app *DesktopApp) emit(name string, data ...any) {
+func (app *DesktopApp) emit(name string) {
 	app.contextMu.RLock()
 	emitter := app.emitEvent
 	app.contextMu.RUnlock()
 	if emitter != nil {
-		emitter(name, data...)
+		emitter(name)
 	}
 }

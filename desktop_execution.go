@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/application"
-	"github.com/cineko-org/client/internal/domain"
-	central "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
 )
 
 type desktopExecutionWorker struct {
@@ -22,12 +24,19 @@ type desktopExecutionWorker struct {
 const (
 	executionReasonPreferredSeatsUnavailable = "preferred_seats_unavailable"
 	executionReasonShowtimeUnavailable       = "showtime_unavailable"
+	executionReasonAuthenticationRequired    = "authentication_required"
+	executionReasonCaptchaRequired           = "captcha_required"
+	executionReasonProviderContractChanged   = "provider_contract_changed"
+	executionReasonProviderAccessBlocked     = "provider_access_blocked"
+	executionReasonProviderThrottled         = "provider_throttled"
+	executionReasonClientInterrupted         = "client_interrupted"
+	executionReasonBookingPreparationFailed  = "booking_preparation_failed"
 )
 
 type executionStore interface {
-	ClaimExecution(context.Context, string) (*central.ExecutionCommand, error)
-	HeartbeatExecution(context.Context, string, string) (central.ExecutionHeartbeatResponse, error)
-	CompleteExecution(context.Context, string, central.ExecutionResultRequest) error
+	ClaimExecution(context.Context, string) (*executionpb.Command, error)
+	HeartbeatExecution(context.Context, string, string) (*executionpb.HeartbeatResponse, error)
+	CompleteExecution(context.Context, string, *executionpb.ResultRequest) error
 	ExecutionReady() <-chan struct{}
 	ExecutionClaimRetryable(error) bool
 }
@@ -35,8 +44,8 @@ type executionStore interface {
 type executionServer interface {
 	CanAcceptExecution() bool
 	ExecutionAvailable() <-chan struct{}
-	ExecuteAvailability(context.Context, string, domain.Showtime) error
-	RecordLocalSystemEvent(string, string, domain.EventTone, string)
+	ExecuteAvailability(context.Context, string, *catalogpb.Showtime) error
+	RecordLocalSystemEvent(*clientpb.AppEvent)
 }
 
 func (worker *desktopExecutionWorker) Run(ctx context.Context) error {
@@ -55,10 +64,9 @@ func (worker *desktopExecutionWorker) Run(ctx context.Context) error {
 				return contextErr
 			}
 			if !claimFailureReported {
-				worker.server.RecordLocalSystemEvent(
-					worker.userID, "execution.claim_failed", domain.EventError,
-					"예매 실행 신호를 확인하지 못했습니다. 잠시 후 다시 시도합니다.",
-				)
+				worker.server.RecordLocalSystemEvent(desktopErrorEvent(
+					worker.userID, "execution.claim_failed", "예매 실행 신호를 확인하지 못했습니다. 잠시 후 다시 시도합니다.",
+				))
 				claimFailureReported = true
 			}
 			if !worker.store.ExecutionClaimRetryable(err) {
@@ -78,7 +86,7 @@ func (worker *desktopExecutionWorker) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		worker.execute(ctx, *command)
+		worker.execute(ctx, command)
 	}
 	return nil
 }
@@ -97,8 +105,8 @@ func (worker *desktopExecutionWorker) claimRetryDelay(failures int) time.Duratio
 	return delay
 }
 
-func (worker *desktopExecutionWorker) execute(ctx context.Context, command central.ExecutionCommand) {
-	showtime, err := executionShowtime(command.Payload)
+func (worker *desktopExecutionWorker) execute(ctx context.Context, command *executionpb.Command) {
+	showtime, err := executionShowtime(command.GetPayload())
 	if err != nil {
 		worker.completeFailedExecution(ctx, command, "invalid_execution_payload", err)
 		return
@@ -114,7 +122,7 @@ func (worker *desktopExecutionWorker) execute(ctx context.Context, command centr
 		heartbeatDone <- heartbeatErr
 	}()
 	go func() {
-		executionDone <- worker.server.ExecuteAvailability(executionContext, command.MonitorID, showtime)
+		executionDone <- worker.server.ExecuteAvailability(executionContext, command.GetMonitorId(), showtime)
 	}()
 	var heartbeatErr error
 	select {
@@ -136,35 +144,44 @@ func (worker *desktopExecutionWorker) execute(ctx context.Context, command centr
 	if heartbeatErr != nil {
 		err = errors.Join(err, fmt.Errorf("execution lease heartbeat failed: %w", heartbeatErr))
 	}
-	result := central.ExecutionResultRequest{LeaseToken: command.LeaseToken, Status: "completed"}
+	commandID, leaseToken := command.GetId(), command.GetLeaseToken()
+	result := executionpb.ResultRequest_builder{CommandId: &commandID, LeaseToken: &leaseToken}.Build()
 	if err != nil {
-		result.Status = "failed"
+		reasonCode := ""
 		if heartbeatErr != nil {
-			result.ReasonCode = "execution_lease_lost"
+			reasonCode = "execution_lease_lost"
 		} else {
-			result.ReasonCode = executionFailureCode(err)
+			reasonCode = executionFailureCode(err)
 		}
-		worker.server.RecordLocalSystemEvent(
-			worker.userID, "execution.failed", domain.EventError,
-			"예매 준비에 실패했습니다. 모니터 상태를 확인하고 다시 시도하세요.",
-		)
+		if reasonCode == executionReasonBookingPreparationFailed {
+			result.SetRetryRequested(executionpb.RetryRequested_builder{ReasonCode: &reasonCode}.Build())
+		} else {
+			result.SetFailed(executionpb.Failed_builder{ReasonCode: &reasonCode}.Build())
+		}
+		message := "예매 준비에 실패했습니다. 모니터 상태를 확인하고 다시 시도하세요."
+		if reasonCode == executionReasonAuthenticationRequired {
+			message = "CGV 로그인이 필요합니다. 로그인 후 모니터를 다시 실행하세요."
+		}
+		worker.server.RecordLocalSystemEvent(desktopErrorEvent(worker.userID, "execution.failed", message))
 	} else {
-		worker.server.RecordLocalSystemEvent(
-			worker.userID, "execution.prepared", domain.EventSuccess,
-			"조건에 맞는 회차의 결제 확인 화면을 준비했습니다.",
-		)
+		result.SetCompleted(executionpb.Completed_builder{}.Build())
+		worker.server.RecordLocalSystemEvent(desktopSuccessEvent(
+			worker.userID, "execution.prepared", "조건에 맞는 회차의 결제 확인 화면을 준비했습니다.",
+		))
 	}
-	if completeErr := worker.store.CompleteExecution(context.WithoutCancel(ctx), command.ID, result); completeErr != nil {
-		worker.server.RecordLocalSystemEvent(
-			worker.userID, "execution.result_failed", domain.EventError,
-			"예매 실행 결과를 저장하지 못했습니다. 연결을 확인하세요.",
-		)
+	if completeErr := worker.store.CompleteExecution(context.WithoutCancel(ctx), commandID, result); completeErr != nil {
+		worker.server.RecordLocalSystemEvent(desktopErrorEvent(
+			worker.userID, "execution.result_failed", "예매 실행 결과를 저장하지 못했습니다. 연결을 확인하세요.",
+		))
 	}
 }
 
-func (worker *desktopExecutionWorker) heartbeat(ctx context.Context, command central.ExecutionCommand) error {
+func (worker *desktopExecutionWorker) heartbeat(ctx context.Context, command *executionpb.Command) error {
+	if command.GetLeaseExpiresAt() == nil {
+		return errors.New("central returned an execution command without a lease expiry")
+	}
 	expiresAt, err := worker.renewExecutionLease(
-		ctx, command.ID, command.LeaseToken, command.LeaseExpiresAt,
+		ctx, command.GetId(), command.GetLeaseToken(), command.GetLeaseExpiresAt().AsTime(),
 	)
 	if err != nil {
 		return err
@@ -178,7 +195,7 @@ func (worker *desktopExecutionWorker) heartbeat(ctx context.Context, command cen
 			}
 			return nil
 		case <-timer.C:
-			expiresAt, err = worker.renewExecutionLease(ctx, command.ID, command.LeaseToken, expiresAt)
+			expiresAt, err = worker.renewExecutionLease(ctx, command.GetId(), command.GetLeaseToken(), expiresAt)
 			if err != nil {
 				return err
 			}
@@ -199,76 +216,75 @@ func (worker *desktopExecutionWorker) renewExecutionLease(
 	if err != nil {
 		return time.Time{}, err
 	}
-	if !response.LeaseExpiresAt.After(time.Now()) {
+	if response == nil || response.GetLeaseExpiresAt() == nil || !response.GetLeaseExpiresAt().AsTime().After(time.Now()) {
 		return time.Time{}, errors.New("central returned an expired execution lease")
 	}
-	return response.LeaseExpiresAt, nil
+	return response.GetLeaseExpiresAt().AsTime(), nil
 }
 
 func (worker *desktopExecutionWorker) completeFailedExecution(
 	ctx context.Context,
-	command central.ExecutionCommand,
+	command *executionpb.Command,
 	reasonCode string,
 	_ error,
 ) {
-	worker.server.RecordLocalSystemEvent(
-		worker.userID, "execution.failed", domain.EventError,
-		"예매 실행 신호가 올바르지 않습니다. 모니터를 새로고침하고 다시 시도하세요.",
-	)
-	if err := worker.store.CompleteExecution(context.WithoutCancel(ctx), command.ID, central.ExecutionResultRequest{
-		LeaseToken: command.LeaseToken, Status: "failed", ReasonCode: reasonCode,
-	}); err != nil {
-		worker.server.RecordLocalSystemEvent(
-			worker.userID, "execution.result_failed", domain.EventError,
-			"예매 실행 결과를 저장하지 못했습니다. 연결을 확인하세요.",
-		)
+	worker.server.RecordLocalSystemEvent(desktopErrorEvent(
+		worker.userID, "execution.failed", "예매 실행 신호가 올바르지 않습니다. 모니터를 새로고침하고 다시 시도하세요.",
+	))
+	commandID, leaseToken := command.GetId(), command.GetLeaseToken()
+	result := executionpb.ResultRequest_builder{CommandId: &commandID, LeaseToken: &leaseToken}.Build()
+	result.SetFailed(executionpb.Failed_builder{ReasonCode: &reasonCode}.Build())
+	if err := worker.store.CompleteExecution(context.WithoutCancel(ctx), commandID, result); err != nil {
+		worker.server.RecordLocalSystemEvent(desktopErrorEvent(
+			worker.userID, "execution.result_failed", "예매 실행 결과를 저장하지 못했습니다. 연결을 확인하세요.",
+		))
 	}
 }
 
-func executionShowtime(payload central.ExecutionPayload) (domain.Showtime, error) {
-	const koreaOffset = 9 * 60 * 60
-	location := time.FixedZone("Asia/Seoul", koreaOffset)
-	value := payload.Showtime
-	if err := validateExecutionShowtime(value, payload.ObservedAt); err != nil {
-		return domain.Showtime{}, err
+func executionShowtime(payload *executionpb.Payload) (*catalogpb.Showtime, error) {
+	if payload == nil || payload.GetShowtime() == nil || payload.GetObservedAt() == nil {
+		return nil, errors.New("central execution showtime is incomplete or unavailable")
 	}
-	startsAt, endsAt := value.StartsAt.In(location), value.EndsAt.In(location)
-	scheduleDate, err := domain.ScheduleDateFromShowtimeSourceKey(value.SourceKey)
-	if err != nil {
-		return domain.Showtime{}, fmt.Errorf("central execution showtime has invalid source key: %w", err)
+	value := payload.GetShowtime()
+	observedAt := payload.GetObservedAt().AsTime()
+	if err := validateExecutionShowtime(value, observedAt); err != nil {
+		return nil, err
 	}
-	return domain.Showtime{
-		ID: value.ID, ProviderID: value.ProviderID, SourceKey: value.SourceKey,
-		MovieID: value.Movie.ID, Movie: value.Movie.Title, PosterURL: value.Movie.PosterURL,
-		TheaterID:    value.TheaterID,
-		AuditoriumID: value.Auditorium.ID, AuditoriumName: value.Auditorium.Name,
-		ScreenTypes: append([]string(nil), value.Auditorium.ScreenTypes...),
-		Date:        scheduleDate, CivilDate: startsAt.Format(time.DateOnly), StartsAt: startsAt.Format("15:04"),
-		EndsAt: endsAt.Format("15:04"), AvailableSeats: value.AvailableSeats,
-		Capacity: value.Capacity, SoldOut: value.SoldOut, ObservedAt: payload.ObservedAt,
-	}, nil
+	return value, nil
 }
 
-func validateExecutionShowtime(value central.Showtime, observedAt time.Time) error {
-	if executionIdentityMissing(value) || executionTimeInvalid(value, observedAt) || executionAvailabilityInvalid(value) {
+func validateExecutionShowtime(value *catalogpb.Showtime, observedAt time.Time) error {
+	if executionIdentityMissing(value) || executionScheduleDateInvalid(value) || executionTimeInvalid(value, observedAt) || executionAvailabilityInvalid(value) {
 		return errors.New("central execution showtime is incomplete or unavailable")
 	}
 	return nil
 }
 
-func executionIdentityMissing(value central.Showtime) bool {
-	return value.ID == "" || value.ProviderID == "" || value.SourceKey == "" ||
-		value.TheaterID == "" || value.Movie.ID == "" || value.Movie.Title == "" ||
-		value.Auditorium.ID == "" || value.Auditorium.Name == ""
+func executionScheduleDateInvalid(value *catalogpb.Showtime) bool {
+	date := value.GetScheduleDate()
+	if date == nil {
+		return true
+	}
+	parsed := time.Date(int(date.GetYear()), time.Month(date.GetMonth()), int(date.GetDay()), 0, 0, 0, 0, time.UTC)
+	return parsed.Year() != int(date.GetYear()) || parsed.Month() != time.Month(date.GetMonth()) || parsed.Day() != int(date.GetDay())
 }
 
-func executionTimeInvalid(value central.Showtime, observedAt time.Time) bool {
-	return value.StartsAt.IsZero() || value.EndsAt.IsZero() ||
-		!value.EndsAt.After(value.StartsAt) || observedAt.IsZero()
+func executionIdentityMissing(value *catalogpb.Showtime) bool {
+	return value == nil || value.GetId() == "" || value.GetProviderId() == "" || value.GetSourceKey() == "" ||
+		value.GetTheaterId() == "" || value.GetMovie() == nil || value.GetMovie().GetId() == "" || value.GetMovie().GetTitle() == "" ||
+		value.GetAuditorium() == nil || value.GetAuditorium().GetId() == "" || value.GetAuditorium().GetName() == ""
 }
 
-func executionAvailabilityInvalid(value central.Showtime) bool {
-	return value.AvailableSeats < 1 || value.Capacity < value.AvailableSeats || value.SoldOut
+func executionTimeInvalid(value *catalogpb.Showtime, observedAt time.Time) bool {
+	if value == nil || value.GetStartsAt() == nil || value.GetEndsAt() == nil || observedAt.IsZero() {
+		return true
+	}
+	startsAt, endsAt := value.GetStartsAt().AsTime(), value.GetEndsAt().AsTime()
+	return startsAt.IsZero() || endsAt.IsZero() || !endsAt.After(startsAt)
+}
+
+func executionAvailabilityInvalid(value *catalogpb.Showtime) bool {
+	return value == nil || value.GetAvailableSeats() < 1 || value.GetCapacity() < value.GetAvailableSeats() || value.GetSoldOut()
 }
 
 func executionHeartbeatInterval(expiresAt, now time.Time) time.Duration {
@@ -280,16 +296,28 @@ func executionHeartbeatInterval(expiresAt, now time.Time) time.Duration {
 }
 
 func executionFailureCode(err error) string {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return executionReasonClientInterrupted
+	}
 	if errors.Is(err, application.ErrSeatUnavailable) {
 		return executionReasonPreferredSeatsUnavailable
 	}
 	if errors.Is(err, application.ErrBookingNotOpen) {
 		return executionReasonShowtimeUnavailable
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return "client_interrupted"
+	switch {
+	case errors.Is(err, cgv.ErrAuthenticationRequired):
+		return executionReasonAuthenticationRequired
+	case errors.Is(err, cgv.ErrCaptchaRequired):
+		return executionReasonCaptchaRequired
+	case errors.Is(err, cgv.ErrUIContractChanged):
+		return executionReasonProviderContractChanged
+	case errors.Is(err, cgv.ErrProviderAccessBlocked):
+		return executionReasonProviderAccessBlocked
+	case errors.Is(err, cgv.ErrProviderThrottled):
+		return executionReasonProviderThrottled
 	}
-	return "booking_preparation_failed"
+	return executionReasonBookingPreparationFailed
 }
 
 func waitExecutionSignal(ctx context.Context, signal <-chan struct{}) bool {

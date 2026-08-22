@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { create } from '@bufbuild/protobuf';
 import { api, errorMessage } from '../../api/client';
-import type { AppState, Auditorium, Preset, SeatMap } from '../../api/types';
+import {
+	AuditoriumResponseSchema, ResolutionSchema, SeatMapRequestSchema, type Auditorium, type Preset,
+	type Snapshot, type WebUIState,
+} from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
 
-interface ActiveCatalogRequest {
+interface ActiveCatalogLoad {
   current: AbortController | null;
 }
 
@@ -22,7 +26,7 @@ function waitForSeatMapRetry(signal: AbortSignal, delayMs: number): Promise<void
 
 /** Completes only the catalog request that still owns the loading state. */
 function finishCatalogRequest(
-  activeRequest: ActiveCatalogRequest,
+  activeRequest: ActiveCatalogLoad,
   request: AbortController,
   setLoading: (loading: boolean) => void,
 ) {
@@ -31,14 +35,14 @@ function finishCatalogRequest(
   setLoading(false);
 }
 
-export function usePresetCatalog(state: AppState, notify: Notify) {
+export function usePresetCatalog(state: WebUIState, notify: Notify) {
   const [region, setRegionValue] = useState('');
   const [theater, setTheaterValue] = useState('');
   const [activeTheaterId, setActiveTheaterId] = useState('');
   const [auditoriumId, setAuditoriumIdValue] = useState('');
   const [auditoriums, setAuditoriums] = useState<Auditorium[]>([]);
-  const [seatMap, setSeatMap] = useState<SeatMap | null>(null);
-  const seatMapVersion = seatMap?.version;
+	const [seatMap, setSeatMap] = useState<Snapshot | null>(null);
+	const seatMapVersion = seatMap?.layoutHash;
   const [pickedSeats, setPickedSeats] = useState<string[]>([]);
   const [catalogMessage, setCatalogMessage] = useState('');
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -91,7 +95,7 @@ export function usePresetCatalog(state: AppState, notify: Notify) {
     setAuditoriumIdValue('');
     setSeatMap(null);
     setPickedSeats([]);
-    const selectedTheater = state.catalog.theaters.find((item) => item.region === region && item.name === value);
+	const selectedTheater = state.catalog?.theaters.find((item) => item.region === region && item.name === value);
     setActiveTheaterId(selectedTheater?.id || '');
     if (!selectedTheater) {
       setAuditoriums([]);
@@ -101,10 +105,11 @@ export function usePresetCatalog(state: AppState, notify: Notify) {
     }
     setLoadingCatalog(true);
     try {
-      const values = await api<Auditorium[]>(`/api/auditoriums?theaterId=${encodeURIComponent(selectedTheater.id)}`, {
-        signal: request.signal,
-      });
-      if (request.signal.aborted) return;
+		const response = await api(`/api/auditoriums?theaterId=${encodeURIComponent(selectedTheater.id)}`, AuditoriumResponseSchema, {
+			signal: request.signal,
+		});
+		if (request.signal.aborted) return;
+		const values = response.auditoriums;
       setAuditoriums(values);
       setCatalogMessage(values.length > 0
         ? `저장된 상영관 ${values.length}개를 불러왔습니다.`
@@ -114,7 +119,7 @@ export function usePresetCatalog(state: AppState, notify: Notify) {
     } finally {
       finishCatalogRequest(activeRequest, request, setLoadingCatalog);
     }
-  }, [beginRequest, notify, region, state.catalog.theaters]);
+  }, [beginRequest, notify, region, state.catalog?.theaters]);
 
   const loadSeatMap = useCallback(async (
     id: string,
@@ -131,15 +136,15 @@ export function usePresetCatalog(state: AppState, notify: Notify) {
     setCatalogMessage('Central에 저장된 좌석 배치를 확인합니다.');
     try {
       const resolve = async (attempt: number): Promise<void> => {
-        const response = await api<SeatMap | { status: 'waiting'; auditoriumId: string }>('/api/catalog/seat-map', {
-          method: 'POST',
-          signal: request.signal,
-          body: { auditoriumId: id },
-        });
+		const response = await api('/api/catalog/seat-map', ResolutionSchema, {
+			method: 'POST',
+			signal: request.signal,
+		}, SeatMapRequestSchema, create(SeatMapRequestSchema, { auditoriumId: id }));
         if (request.signal.aborted) return;
-        if ('seats' in response) {
-          setSeatMap(response);
-          setPickedSeats((current) => current.filter((label) => response.seats.some((seat) => seat.label === label)));
+		if (response.result.case === 'ready' && response.result.value.snapshot) {
+			const snapshot = response.result.value.snapshot;
+			setSeatMap(snapshot);
+			setPickedSeats((current) => current.filter((label) => snapshot.layout?.seats.some((seat) => seat.label === label)));
           setCatalogMessage('저장된 좌석 배치를 불러왔습니다.');
           return;
         }
@@ -161,7 +166,7 @@ export function usePresetCatalog(state: AppState, notify: Notify) {
     }
   }, [beginRequest, notify]);
 
-  const catalogSeatMapVersion = state.catalog.auditoriums.find((item) => item.id === auditoriumId)?.seatMapVersion;
+	const catalogSeatMapVersion = state.catalog?.auditoriums.find((item) => item.id === auditoriumId)?.currentLayoutHash;
   useEffect(() => {
     if (!auditoriumId || !catalogSeatMapVersion || seatMapVersion === catalogSeatMapVersion) return;
     queueMicrotask(() => void loadSeatMap(auditoriumId));
@@ -170,18 +175,19 @@ export function usePresetCatalog(state: AppState, notify: Notify) {
   const loadPreset = useCallback((preset: Preset) => {
     const request = beginRequest();
     setLoadingCatalog(true);
-    setPickedSeats([...preset.seatPreference.candidateSeats]);
+	setPickedSeats([...(preset.seatPreference?.explicitSeats ?? [])]);
     setActiveTheaterId(preset.theaterId);
     setAuditoriumIdValue(preset.auditoriumId);
-    const selectedTheater = state.catalog.theaters.find((item) => item.id === preset.theaterId);
+	const selectedTheater = state.catalog?.theaters.find((item) => item.id === preset.theaterId);
     setRegionValue(selectedTheater?.region || '');
     setTheaterValue(selectedTheater?.name || '');
     void (async () => {
       try {
-        const values = await api<Auditorium[]>(`/api/auditoriums?theaterId=${encodeURIComponent(preset.theaterId)}`, {
-          signal: request.signal,
-        });
-        if (request.signal.aborted) return;
+		const response = await api(`/api/auditoriums?theaterId=${encodeURIComponent(preset.theaterId)}`, AuditoriumResponseSchema, {
+			signal: request.signal,
+		});
+		if (request.signal.aborted) return;
+		const values = response.auditoriums;
         setAuditoriums(values);
         await loadSeatMap(preset.auditoriumId, request);
       } catch (error) {
@@ -190,7 +196,7 @@ export function usePresetCatalog(state: AppState, notify: Notify) {
         finishCatalogRequest(activeRequest, request, setLoadingCatalog);
       }
     })();
-  }, [beginRequest, loadSeatMap, notify, state.catalog.theaters]);
+  }, [beginRequest, loadSeatMap, notify, state.catalog?.theaters]);
 
   const toggleSeat = useCallback((label: string) => {
     setPickedSeats((current) => current.includes(label)

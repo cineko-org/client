@@ -53,15 +53,3 @@ func TestScheduleWindowUsesCivilDateForExtendedProviderClock(t *testing.T) {
 		t.Fatal("extended 25:00 clock was rejected")
 	}
 }
-
-func TestScheduleDateFromShowtimeSourceKey(t *testing.T) {
-	t.Parallel()
-	if got, err := ScheduleDateFromShowtimeSourceKey("0056/2026-08-14/0007/0003"); err != nil || got != "2026-08-14" {
-		t.Fatalf("ScheduleDateFromShowtimeSourceKey() = %q, %v", got, err)
-	}
-	for _, sourceKey := range []string{"source", "0056/not-a-date/0007/0003", "0056/2026-08-14//0003"} {
-		if _, err := ScheduleDateFromShowtimeSourceKey(sourceKey); err == nil {
-			t.Fatalf("invalid source key %q was accepted", sourceKey)
-		}
-	}
-}
