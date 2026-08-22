@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.3](https://github.com/cineko-org/client/compare/v2.7.2...v2.7.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* publish releases with typed contracts ([#31](https://github.com/cineko-org/client/issues/31)) ([26fa0aa](https://github.com/cineko-org/client/commit/26fa0aaccceae246d44ce2529cb2acecd82e0f2f))
+
 ## [2.7.2](https://github.com/cineko-org/client/compare/v2.7.1...v2.7.2) (2026-08-22)
 
 
