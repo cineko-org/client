@@ -80,10 +80,5 @@ if [[ -n "${CINEKO_BROWSER_RELEASE_PAYLOAD_OUT:-}" ]]; then
 fi
 : "${CINEKO_CENTRAL_URL:?required}"
 : "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
-curl --fail-with-body --retry 3 --retry-all-errors \
-  -H "Authorization: Bearer $CINEKO_RELEASE_PUBLISH_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data-binary "@$payload" \
-  --output "$work_dir/publish-response.json" \
-  "${CINEKO_CENTRAL_URL%/}/v1/release-registry/browser"
+scripts/post-release-registry.sh browser "$payload" "$work_dir/publish-response.json"
 "$release_contract" verify-response browser "$work_dir/publish-response.json"

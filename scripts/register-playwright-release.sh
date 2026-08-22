@@ -63,13 +63,7 @@ append_release linux amd64 tar.gz node
 readonly payload="$temporary_root/playwright-release-set.json"
 "$release_contract" set playwright "${release_paths[@]}" >"$payload"
 readonly response="$temporary_root/publish-response.json"
-curl --fail-with-body --retry 3 --retry-all-errors \
-  --request POST \
-  --header "Authorization: Bearer ${CINEKO_RELEASE_PUBLISH_TOKEN}" \
-  --header 'Content-Type: application/json' \
-  --data-binary "@$payload" \
-  --output "$response" \
-  "${CINEKO_CENTRAL_URL%/}/v1/release-registry/playwright"
+scripts/post-release-registry.sh playwright "$payload" "$response"
 "$release_contract" verify-response playwright "$response"
 
 printf 'registered Playwright %s for all supported platforms\n' "$version"

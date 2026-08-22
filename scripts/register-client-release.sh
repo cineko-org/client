@@ -95,13 +95,7 @@ append_release linux amd64 tar.gz 'Cineko'
 readonly payload="$temporary_root/client-release-set.json"
 "$release_contract" set client "${release_paths[@]}" >"$payload"
 readonly response="$temporary_root/publish-response.json"
-curl --fail-with-body --retry 3 --retry-all-errors \
-  --request POST \
-  --header "Authorization: Bearer ${CINEKO_RELEASE_PUBLISH_TOKEN}" \
-  --header 'Content-Type: application/json' \
-  --data-binary "@$payload" \
-  --output "$response" \
-  "${CINEKO_CENTRAL_URL%/}/v1/release-registry/client"
+scripts/post-release-registry.sh client "$payload" "$response"
 "$release_contract" verify-response client "$response"
 
 printf 'registered Client v%s for all supported platforms\n' "$version"

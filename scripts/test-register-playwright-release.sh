@@ -24,6 +24,7 @@ done
 cat "$source" >>"$FAKE_PAYLOADS"
 printf '\n' >>"$FAKE_PAYLOADS"
 printf '{}\n' >"$output"
+printf '200'
 SH
 chmod +x "$test_root/bin/curl"
 
