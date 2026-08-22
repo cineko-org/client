@@ -19,6 +19,9 @@ func TestShowtimeDomainFromProtoHandlesNil(t *testing.T) {
 	if got := showtimeDomainFromProto(nil); got.ID != "" {
 		t.Fatalf("showtimeDomainFromProto(nil) = %+v", got)
 	}
+	if got := localDateValue(nil); got != "" {
+		t.Fatalf("localDateValue(nil) = %q", got)
+	}
 	year, month, day := int32(2026), int32(8), int32(22)
 	if got := localDateValue(commonLocalDate(year, month, day)); got != "2026-08-22" {
 		t.Fatalf("localDateValue() = %q", got)
