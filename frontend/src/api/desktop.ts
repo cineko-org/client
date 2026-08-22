@@ -7,6 +7,8 @@ export interface DesktopBridge {
 	GetHookSettings(): Promise<string>;
 	SaveHookSettings(input: string): Promise<string>;
 	GetUserID(): Promise<string>;
+	WatchSeatMap(auditoriumId: string): Promise<void>;
+	StopSeatMapWatch(): Promise<void>;
 	Exit(): Promise<void>;
 }
 

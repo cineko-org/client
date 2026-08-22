@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -46,18 +46,70 @@ func showtimeProtoFromDomain(value domain.Showtime) *catalogpb.Showtime {
 	if strings.TrimSpace(value.ID) == "" {
 		return nil
 	}
-	id, providerID, sourceKey, theaterID := value.ID, value.ProviderID, value.SourceKey, value.TheaterID
+	id, providerID, theaterID := value.ID, value.ProviderID, value.TheaterID
 	movieID, title, posterURL := value.MovieID, value.Movie, value.PosterURL
 	auditoriumID, auditoriumName := value.AuditoriumID, value.AuditoriumName
-	emptySource := ""
 	availableSeats, _ := int32Checked(value.AvailableSeats, "showtime available seats")
 	capacity, _ := int32Checked(value.Capacity, "showtime capacity")
 	soldOut := value.SoldOut
-	return catalogpb.Showtime_builder{Id: &id, ProviderId: &providerID, SourceKey: &sourceKey, TheaterId: &theaterID,
-		Movie:        catalogpb.Movie_builder{Id: &movieID, ProviderId: &providerID, SourceKey: &emptySource, Title: &title, PosterUrl: &posterURL}.Build(),
-		Auditorium:   catalogpb.Auditorium_builder{Id: &auditoriumID, TheaterId: &theaterID, SourceKey: &emptySource, Name: &auditoriumName, ScreenTypes: append([]string(nil), value.ScreenTypes...), Capacity: &capacity}.Build(),
-		ScheduleDate: showtimeScheduleDateForTest(value.Date), StartsAt: showtimeTimestampsForTest(value), EndsAt: showtimeEndTimestampForTest(value),
+	showtimeIdentity := catalogTestShowtimeIdentity(value.SourceKey, value.Date)
+	cgvIdentity := showtimeIdentity.GetCgv()
+	return catalogpb.Showtime_builder{Id: &id, ProviderId: &providerID, Identity: showtimeIdentity, TheaterId: &theaterID,
+		Movie: catalogpb.Movie_builder{Id: &movieID, ProviderId: &providerID,
+			Identity: catalogTestMovieIdentity(movieID), Title: &title, PosterUrl: &posterURL}.Build(),
+		Auditorium: catalogpb.Auditorium_builder{Id: &auditoriumID, TheaterId: &theaterID,
+			Identity: catalogTestAuditoriumIdentity(cgvIdentity.GetSiteNo(), cgvIdentity.GetScreenNo()),
+			Name:     &auditoriumName, ScreenTypes: append([]string(nil), value.ScreenTypes...), Capacity: &capacity}.Build(),
+		StartsAt: showtimeTimestampsForTest(value), EndsAt: showtimeEndTimestampForTest(value),
 		AvailableSeats: &availableSeats, Capacity: &capacity, SoldOut: &soldOut}.Build()
+}
+
+func catalogTestTheaterIdentity(sourceKey string) *catalogpb.TheaterIdentity {
+	siteNo := numericTestPart(sourceKey, "56")
+	return catalogpb.TheaterIdentity_builder{Cgv: catalogpb.CgvTheaterIdentity_builder{SiteNo: &siteNo}.Build()}.Build()
+}
+
+func catalogTestMovieIdentity(sourceKey string) *catalogpb.MovieIdentity {
+	movieNo := numericTestPart(sourceKey, "1")
+	return catalogpb.MovieIdentity_builder{Cgv: catalogpb.CgvMovieIdentity_builder{MovieNo: &movieNo}.Build()}.Build()
+}
+
+func catalogTestAuditoriumIdentity(siteNo, screenNo string) *catalogpb.AuditoriumIdentity {
+	siteNo = numericTestPart(siteNo, "56")
+	screenNo = numericTestPart(screenNo, "7")
+	return catalogpb.AuditoriumIdentity_builder{Cgv: catalogpb.CgvAuditoriumIdentity_builder{
+		SiteNo: &siteNo, ScreenNo: &screenNo,
+	}.Build()}.Build()
+}
+
+func catalogTestShowtimeIdentity(sourceKey, date string) *catalogpb.ShowtimeIdentity {
+	parts := strings.Split(sourceKey, "/")
+	values := []string{"56", date, "7", "3"}
+	for index := range values {
+		if index < len(parts) && strings.TrimSpace(parts[index]) != "" {
+			values[index] = strings.TrimSpace(parts[index])
+		}
+	}
+	dateValue := showtimeScheduleDateForTest(values[1])
+	values[0] = numericTestPart(values[0], "56")
+	values[2] = numericTestPart(values[2], "7")
+	values[3] = numericTestPart(values[3], "3")
+	return catalogpb.ShowtimeIdentity_builder{Cgv: catalogpb.CgvShowtimeIdentity_builder{
+		SiteNo: &values[0], ScheduleDate: dateValue, ScreenNo: &values[2], Sequence: &values[3],
+	}.Build()}.Build()
+}
+
+func numericTestPart(value, fallback string) string {
+	digits := strings.Map(func(character rune) rune {
+		if character >= '0' && character <= '9' {
+			return character
+		}
+		return -1
+	}, value)
+	if digits == "" {
+		return fallback
+	}
+	return digits
 }
 
 func showtimeScheduleDateForTest(value string) *commonpb.LocalDate {

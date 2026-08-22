@@ -1,10 +1,11 @@
 import { create } from '@bufbuild/protobuf';
 import {
-	AuditoriumSchema, CatalogIndexSchema, LocalDateSchema, LocalTimeSchema, MonitorFailedSchema,
+	AuditoriumIdentitySchema, AuditoriumSchema, CatalogIndexSchema, CgvAuditoriumIdentitySchema,
+	CgvMovieIdentitySchema, CgvTheaterIdentitySchema, LocalDateSchema, LocalTimeSchema, MonitorFailedSchema,
 	MonitorPendingSchema, MonitorRunningSchema, MonitorSchema, MonitorStateSchema,
-	MonitorTriggeredSchema, MovieSchema, PresetSchema, ProviderSchema,
+	MonitorTriggeredSchema, MovieIdentitySchema, MovieSchema, PresetSchema, ProviderSchema,
 	ReservationSchema, SeatPreferenceSchema, TheaterSchema, WebUIAccountAuthenticatedSchema,
-	WebUIAccountStateSchema, DirectNetworkSchema, NetworkSettingsSchema, ProxyNetworkSchema,
+	TheaterIdentitySchema, WebUIAccountStateSchema, DirectNetworkSchema, NetworkSettingsSchema, ProxyNetworkSchema,
 	type Auditorium, type CatalogIndex, type Monitor, type Preset, type Reservation,
 	type WebUIAccountState, type NetworkSettings,
 } from '../api/proto';
@@ -40,6 +41,18 @@ function localTime(value: string | undefined) {
 	const [hour, minute] = value.split(':').map(Number);
 	return create(LocalTimeSchema, { hour, minute });
 }
+
+const movieIdentity = (movieNo: string) => create(MovieIdentitySchema, {
+	provider: { case: 'cgv', value: create(CgvMovieIdentitySchema, { movieNo }) },
+});
+
+const theaterIdentity = (siteNo: string) => create(TheaterIdentitySchema, {
+	provider: { case: 'cgv', value: create(CgvTheaterIdentitySchema, { siteNo }) },
+});
+
+const auditoriumIdentity = (siteNo: string, screenNo: string) => create(AuditoriumIdentitySchema, {
+	provider: { case: 'cgv', value: create(CgvAuditoriumIdentitySchema, { siteNo, screenNo }) },
+});
 
 export const presets: Preset[] = [
 	create(PresetSchema, {
@@ -105,22 +118,22 @@ export const catalog: CatalogIndex = create(CatalogIndexSchema, {
 	generation: 42n,
 	providers: [create(ProviderSchema, { id: 'cgv', name: 'CGV' })],
 	movies: [
-		create(MovieSchema, { id: 'movie-dune', providerId: 'cgv', sourceKey: '듄: 메시아', title: '듄: 메시아', posterUrl: '/storybook/poster-dune.svg' }),
-		create(MovieSchema, { id: 'movie-avengers', providerId: 'cgv', sourceKey: '어벤져스: 시크릿 워즈', title: '어벤져스: 시크릿 워즈', posterUrl: '/storybook/poster-avengers.svg' }),
-		create(MovieSchema, { id: 'movie-hail-mary', providerId: 'cgv', sourceKey: '프로젝트 헤일메리', title: '프로젝트 헤일메리', posterUrl: '/storybook/poster-hail-mary.svg' }),
+		create(MovieSchema, { id: 'movie-dune', providerId: 'cgv', identity: movieIdentity('1001'), title: '듄: 메시아', posterUrl: '/storybook/poster-dune.svg' }),
+		create(MovieSchema, { id: 'movie-avengers', providerId: 'cgv', identity: movieIdentity('1002'), title: '어벤져스: 시크릿 워즈', posterUrl: '/storybook/poster-avengers.svg' }),
+		create(MovieSchema, { id: 'movie-hail-mary', providerId: 'cgv', identity: movieIdentity('1003'), title: '프로젝트 헤일메리', posterUrl: '/storybook/poster-hail-mary.svg' }),
 	],
 	theaters: [
-		create(TheaterSchema, { id: 'cgv-yongsan', providerId: 'cgv', sourceKey: '서울/용산아이파크몰', region: '서울', name: '용산아이파크몰' }),
-		create(TheaterSchema, { id: 'cgv-yeouido', providerId: 'cgv', sourceKey: '서울/여의도', region: '서울', name: '여의도' }),
-		create(TheaterSchema, { id: 'cgv-centum', providerId: 'cgv', sourceKey: '부산/센텀시티', region: '부산', name: '센텀시티' }),
-		create(TheaterSchema, { id: 'cgv-pangyo', providerId: 'cgv', sourceKey: '경기/판교', region: '경기', name: '판교' }),
+		create(TheaterSchema, { id: 'cgv-yongsan', providerId: 'cgv', identity: theaterIdentity('0056'), region: '서울', name: '용산아이파크몰' }),
+		create(TheaterSchema, { id: 'cgv-yeouido', providerId: 'cgv', identity: theaterIdentity('0013'), region: '서울', name: '여의도' }),
+		create(TheaterSchema, { id: 'cgv-centum', providerId: 'cgv', identity: theaterIdentity('0089'), region: '부산', name: '센텀시티' }),
+		create(TheaterSchema, { id: 'cgv-pangyo', providerId: 'cgv', identity: theaterIdentity('0229'), region: '경기', name: '판교' }),
 	],
 });
 
-export const auditoriums: Auditorium[] = liveSeatMapFixtures.map((fixture) => create(AuditoriumSchema, {
+export const auditoriums: Auditorium[] = liveSeatMapFixtures.map((fixture, index) => create(AuditoriumSchema, {
 	id: fixture.seatMap.auditoriumId,
 	theaterId: 'cgv-yongsan',
-	sourceKey: `서울/용산아이파크몰/${fixture.auditorium}`,
+	identity: auditoriumIdentity('0056', String(index + 1).padStart(4, '0')),
 	name: fixture.auditorium,
 	screenTypes: fixture.screenTypes,
 	capacity: fixture.scheduleCapacity,

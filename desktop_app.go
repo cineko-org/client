@@ -9,17 +9,30 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"buf.build/go/protovalidate"
 	"github.com/cineko-org/client/internal/adapters/egress"
 	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/interfaces/webui"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"google.golang.org/protobuf/encoding/protojson"
+)
+
+const (
+	desktopSeatMapEvent      = "cineko.seat-map"
+	desktopSeatMapErrorEvent = "cineko.seat-map.error"
 )
 
 type desktopSettingsRepository interface {
 	GetSettings(context.Context, *clientpb.Settings) (int64, error)
 	PutSettings(context.Context, *clientpb.Settings, int64) error
+}
+
+type desktopSeatMapWatcher interface {
+	WatchSeatMap(context.Context, string, func(*seatmappb.Resolution) error) error
 }
 
 type DesktopApp struct {
@@ -32,7 +45,10 @@ type DesktopApp struct {
 
 	contextMu      sync.RWMutex
 	ctx            context.Context
-	emitEvent      func(string)
+	emitEvent      func(string, ...any)
+	seatMapMu      sync.Mutex
+	seatMapCancel  context.CancelFunc
+	seatMapWatchID uint64
 	settingsMu     sync.Mutex
 	updateNeeded   atomic.Bool
 	validateEgress func(context.Context, egress.Config) error
@@ -59,7 +75,7 @@ func newDesktopApp(
 func (app *DesktopApp) startup(ctx context.Context) {
 	app.contextMu.Lock()
 	app.ctx = ctx
-	app.emitEvent = func(name string) { runtime.EventsEmit(ctx, name) }
+	app.emitEvent = func(name string, args ...any) { runtime.EventsEmit(ctx, name, args...) }
 	app.contextMu.Unlock()
 	if updates, ok := app.settings.(interface{ UpdateRequired() <-chan struct{} }); ok {
 		go func() {
@@ -124,9 +140,72 @@ func (app *DesktopApp) activeUserID() string {
 }
 
 func (app *DesktopApp) Exit() {
+	app.StopSeatMapWatch()
 	if appContext := app.context(); appContext != nil {
 		runtime.Quit(appContext)
 	}
+}
+
+// WatchSeatMap bridges Central's generated stream through Wails runtime
+// events. Wails' virtual AssetServer response writer does not support the
+// streaming semantics required by EventSource.
+func (app *DesktopApp) WatchSeatMap(auditoriumID string) error {
+	auditoriumID = strings.TrimSpace(auditoriumID)
+	if auditoriumID == "" {
+		return errors.New("auditorium ID is required")
+	}
+	watcher, supported := app.settings.(desktopSeatMapWatcher)
+	if !supported {
+		return errors.New("seat-map streaming is unavailable")
+	}
+
+	app.seatMapMu.Lock()
+	if app.seatMapCancel != nil {
+		app.seatMapCancel()
+	}
+	ctx, cancel := context.WithCancel(app.contextOrBackground())
+	app.seatMapWatchID++
+	watchID := app.seatMapWatchID
+	app.seatMapCancel = cancel
+	app.seatMapMu.Unlock()
+
+	go func() {
+		err := watcher.WatchSeatMap(ctx, auditoriumID, func(resolution *seatmappb.Resolution) error {
+			response := servicepb.WatchSeatMapResponse_builder{Resolution: resolution}.Build()
+			if err := protovalidate.Validate(response); err != nil {
+				return fmt.Errorf("validate seat-map stream response: %w", err)
+			}
+			payload, err := (protojson.MarshalOptions{UseProtoNames: false}).Marshal(response)
+			if err != nil {
+				return fmt.Errorf("encode seat-map stream response: %w", err)
+			}
+			if !app.ownsSeatMapWatch(watchID) || ctx.Err() != nil {
+				return context.Canceled
+			}
+			app.emit(desktopSeatMapEvent, string(payload))
+			return nil
+		})
+		if err != nil && !errors.Is(err, context.Canceled) && app.ownsSeatMapWatch(watchID) {
+			app.emit(desktopSeatMapErrorEvent)
+		}
+	}()
+	return nil
+}
+
+func (app *DesktopApp) StopSeatMapWatch() {
+	app.seatMapMu.Lock()
+	app.seatMapWatchID++
+	if app.seatMapCancel != nil {
+		app.seatMapCancel()
+		app.seatMapCancel = nil
+	}
+	app.seatMapMu.Unlock()
+}
+
+func (app *DesktopApp) ownsSeatMapWatch(watchID uint64) bool {
+	app.seatMapMu.Lock()
+	defer app.seatMapMu.Unlock()
+	return app.seatMapWatchID == watchID && app.seatMapCancel != nil
 }
 
 func (app *DesktopApp) readSettings() (*clientpb.Settings, error) {
@@ -181,11 +260,11 @@ func (app *DesktopApp) context() context.Context {
 	return app.ctx
 }
 
-func (app *DesktopApp) emit(name string) {
+func (app *DesktopApp) emit(name string, args ...any) {
 	app.contextMu.RLock()
 	emitter := app.emitEvent
 	app.contextMu.RUnlock()
 	if emitter != nil {
-		emitter(name)
+		emitter(name, args...)
 	}
 }

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -18,6 +18,8 @@ type scheduleEntry struct {
 	Showtime       domain.Showtime
 	AuditoriumName string
 	ScreenTypes    []string
+	SiteNo         string
+	ScreenNo       string
 }
 
 func (adapter *Adapter) ResolveTheater(
@@ -69,11 +71,16 @@ func (adapter *Adapter) DiscoverAuditoriums(
 			if observation == nil {
 				id := entry.Showtime.AuditoriumID
 				theaterID := theater.GetId()
-				sourceKey := entry.Showtime.SourceKey
 				name := entry.AuditoriumName
 				capacity := boundedInt32(entry.Showtime.Capacity)
+				siteNo := entry.SiteNo
+				screenNo := entry.ScreenNo
 				observation = catalogpb.Auditorium_builder{
-					Id: &id, TheaterId: &theaterID, SourceKey: &sourceKey, Name: &name,
+					Id: &id, TheaterId: &theaterID,
+					Identity: catalogpb.AuditoriumIdentity_builder{Cgv: catalogpb.CgvAuditoriumIdentity_builder{
+						SiteNo: &siteNo, ScreenNo: &screenNo,
+					}.Build()}.Build(),
+					Name:        &name,
 					ScreenTypes: append([]string(nil), entry.ScreenTypes...), Capacity: &capacity,
 				}.Build()
 				byName[entry.AuditoriumName] = observation
@@ -302,7 +309,10 @@ func scheduleEntryFromProviderRow(row providerScheduleRow, theater domain.Theate
 		SoldOut: row.Available == 0, ObservedAt: time.Now(),
 		SourceLabel: strings.Join([]string{startClock, endClock, row.MovieTitle, auditoriumName}, " "),
 	}
-	return scheduleEntry{Showtime: showtime, AuditoriumName: auditoriumName, ScreenTypes: screenTypes}, nil
+	return scheduleEntry{
+		Showtime: showtime, AuditoriumName: auditoriumName, ScreenTypes: screenTypes,
+		SiteNo: strings.TrimSpace(row.SiteNo), ScreenNo: strings.TrimSpace(row.AuditoriumNo),
+	}, nil
 }
 
 func parseAuditorium(group, structuredName string) (string, []string) {

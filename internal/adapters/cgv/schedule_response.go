@@ -15,10 +15,9 @@ import (
 
 const (
 	// These are the CGV response paths that carry the provider showtime tuple.
-	scheduleResponsePath       = "/api/v1/booking/searchMovScnInfo"
-	legacyScheduleResponsePath = "/cnm/atkt/searchMovScnInfo"
-	maxScheduleResponseBytes   = 8 << 20
-	maximumProviderClockHour   = 47
+	scheduleResponsePath     = "/api/v1/booking/searchMovScnInfo"
+	maxScheduleResponseBytes = 8 << 20
+	maximumProviderClockHour = 47
 )
 
 var errScheduleResponseMissing = errors.New("CGV schedule response was not captured")
@@ -52,7 +51,7 @@ func (adapter *Adapter) captureProviderResponse(response playwright.Response) {
 		return
 	}
 	path, ok := providerResponsePath(response.URL())
-	if !ok || (path != scheduleResponsePath && path != legacyScheduleResponsePath) {
+	if !ok || path != scheduleResponsePath {
 		return
 	}
 	captured := capturedProviderResponse{path: path, status: response.Status()}
@@ -87,7 +86,7 @@ func (adapter *Adapter) captureScheduleRows() ([]providerScheduleRow, error) {
 	var rows []providerScheduleRow
 	seen := make(map[string]struct{})
 	for _, captured := range captures {
-		if captured.path != scheduleResponsePath && captured.path != legacyScheduleResponsePath {
+		if captured.path != scheduleResponsePath {
 			continue
 		}
 		if captured.err != nil {
@@ -122,7 +121,7 @@ func providerResponsePath(rawURL string) (string, bool) {
 		return "", false
 	}
 	switch parsed.Path {
-	case scheduleResponsePath, legacyScheduleResponsePath:
+	case scheduleResponsePath:
 		return parsed.Path, true
 	default:
 		return "", false

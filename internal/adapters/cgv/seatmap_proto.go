@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

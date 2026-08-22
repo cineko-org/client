@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/cineko-org/client/internal/application"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	"google.golang.org/protobuf/proto"
 )
 

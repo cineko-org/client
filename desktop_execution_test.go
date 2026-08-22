@@ -10,10 +10,10 @@ import (
 
 	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/application"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -232,7 +232,7 @@ func TestExecutionUsesExactCommandShowtime(t *testing.T) {
 	showtime := server.showtime
 	server.mu.Unlock()
 	if showtime.GetId() != command.GetPayload().GetShowtime().GetId() || showtime.GetMovie().GetTitle() != "영화" ||
-		showtime.GetAuditorium().GetId() != "auditorium" || showtime.GetSourceKey() != "0056/2026-08-20/0007/0003" ||
+		showtime.GetAuditorium().GetId() != "auditorium" || !executionIdentityEquals(showtime.GetIdentity().GetCgv(), "0056", "2026-08-20", "0007", "0003") ||
 		showtime.GetStartsAt().AsTime() != command.GetPayload().GetShowtime().GetStartsAt().AsTime() ||
 		showtime.GetEndsAt().AsTime() != command.GetPayload().GetShowtime().GetEndsAt().AsTime() {
 		t.Fatalf("executed showtime = %+v", showtime)
@@ -247,11 +247,14 @@ func TestExecutionPreservesProviderDateForAfterMidnightShowtime(t *testing.T) {
 	payload := executionpb.Payload_builder{
 		ObservedAt: timestamppb.New(time.Date(2026, 8, 20, 23, 0, 0, 0, location)),
 		Showtime: catalogpb.Showtime_builder{
-			Id: stringPointer("showtime"), ProviderId: stringPointer("cgv"), SourceKey: stringPointer("0056/2026-08-20/0007/0003"), TheaterId: stringPointer("theater"),
-			Movie:        catalogpb.Movie_builder{Id: stringPointer("movie_1"), Title: stringPointer("영화")}.Build(),
-			Auditorium:   catalogpb.Auditorium_builder{Id: stringPointer("auditorium"), Name: stringPointer("IMAX")}.Build(),
-			ScheduleDate: commonpb.LocalDate_builder{Year: int32Pointer(2026), Month: int32Pointer(8), Day: int32Pointer(20)}.Build(),
-			StartsAt:     timestamppb.New(time.Date(2026, 8, 21, 1, 30, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 21, 4, 32, 0, 0, location)),
+			Id: stringPointer("showtime"), ProviderId: stringPointer("cgv"), Identity: executionShowtimeIdentity(), TheaterId: stringPointer("theater"),
+			Movie: catalogpb.Movie_builder{
+				Id: stringPointer("movie_1"), ProviderId: stringPointer("cgv"), Identity: executionMovieIdentity(), Title: stringPointer("영화"),
+			}.Build(),
+			Auditorium: catalogpb.Auditorium_builder{
+				Id: stringPointer("auditorium"), TheaterId: stringPointer("theater"), Identity: executionAuditoriumIdentity(), Name: stringPointer("IMAX"),
+			}.Build(),
+			StartsAt: timestamppb.New(time.Date(2026, 8, 21, 1, 30, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 21, 4, 32, 0, 0, location)),
 			AvailableSeats: int32Pointer(2), Capacity: int32Pointer(100),
 		}.Build(),
 	}.Build()
@@ -259,7 +262,7 @@ func TestExecutionPreservesProviderDateForAfterMidnightShowtime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if showtime.GetSourceKey() != "0056/2026-08-20/0007/0003" ||
+	if !executionIdentityEquals(showtime.GetIdentity().GetCgv(), "0056", "2026-08-20", "0007", "0003") ||
 		showtime.GetStartsAt().AsTime().In(location).Format(time.DateOnly) != "2026-08-21" ||
 		showtime.GetStartsAt().AsTime().In(location).Format("15:04") != "01:30" ||
 		showtime.GetEndsAt().AsTime().In(location).Format("15:04") != "04:32" {
@@ -355,15 +358,51 @@ func validExecutionCommand(expiresAt time.Time) *executionpb.Command {
 		Payload: executionpb.Payload_builder{
 			ObservedAt: timestamppb.New(time.Date(2026, 8, 12, 19, 59, 0, 0, location)),
 			Showtime: catalogpb.Showtime_builder{
-				Id: stringPointer("showtime"), ProviderId: stringPointer("cgv"), SourceKey: stringPointer("0056/2026-08-20/0007/0003"), TheaterId: stringPointer("theater"),
-				Movie:        catalogpb.Movie_builder{Id: stringPointer("movie_1"), Title: stringPointer("영화")}.Build(),
-				Auditorium:   catalogpb.Auditorium_builder{Id: stringPointer("auditorium"), Name: stringPointer("IMAX")}.Build(),
-				ScheduleDate: commonpb.LocalDate_builder{Year: int32Pointer(2026), Month: int32Pointer(8), Day: int32Pointer(20)}.Build(),
-				StartsAt:     timestamppb.New(time.Date(2026, 8, 20, 20, 0, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 20, 22, 0, 0, 0, location)),
+				Id: stringPointer("showtime"), ProviderId: stringPointer("cgv"), Identity: executionShowtimeIdentity(), TheaterId: stringPointer("theater"),
+				Movie: catalogpb.Movie_builder{
+					Id: stringPointer("movie_1"), ProviderId: stringPointer("cgv"), Identity: executionMovieIdentity(), Title: stringPointer("영화"),
+				}.Build(),
+				Auditorium: catalogpb.Auditorium_builder{
+					Id: stringPointer("auditorium"), TheaterId: stringPointer("theater"), Identity: executionAuditoriumIdentity(), Name: stringPointer("IMAX"),
+				}.Build(),
+				StartsAt: timestamppb.New(time.Date(2026, 8, 20, 20, 0, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 20, 22, 0, 0, 0, location)),
 				AvailableSeats: int32Pointer(10), Capacity: int32Pointer(100),
 			}.Build(),
 		}.Build(),
 	}.Build()
+}
+
+func executionShowtimeIdentity() *catalogpb.ShowtimeIdentity {
+	siteNo, screenNo, sequence := "0056", "0007", "0003"
+	return catalogpb.ShowtimeIdentity_builder{Cgv: catalogpb.CgvShowtimeIdentity_builder{
+		SiteNo: &siteNo,
+		ScheduleDate: commonpb.LocalDate_builder{
+			Year: int32Pointer(2026), Month: int32Pointer(8), Day: int32Pointer(20),
+		}.Build(),
+		ScreenNo: &screenNo,
+		Sequence: &sequence,
+	}.Build()}.Build()
+}
+
+func executionMovieIdentity() *catalogpb.MovieIdentity {
+	movieNo := "1"
+	return catalogpb.MovieIdentity_builder{Cgv: catalogpb.CgvMovieIdentity_builder{MovieNo: &movieNo}.Build()}.Build()
+}
+
+func executionAuditoriumIdentity() *catalogpb.AuditoriumIdentity {
+	siteNo, screenNo := "0056", "0007"
+	return catalogpb.AuditoriumIdentity_builder{Cgv: catalogpb.CgvAuditoriumIdentity_builder{
+		SiteNo: &siteNo, ScreenNo: &screenNo,
+	}.Build()}.Build()
+}
+
+func executionIdentityEquals(identity *catalogpb.CgvShowtimeIdentity, siteNo, date, screenNo, sequence string) bool {
+	if identity == nil || identity.GetScheduleDate() == nil {
+		return false
+	}
+	scheduleDate := identity.GetScheduleDate()
+	actualDate := fmt.Sprintf("%04d-%02d-%02d", scheduleDate.GetYear(), scheduleDate.GetMonth(), scheduleDate.GetDay())
+	return identity.GetSiteNo() == siteNo && actualDate == date && identity.GetScreenNo() == screenNo && identity.GetSequence() == sequence
 }
 
 func stringPointer(value string) *string { return &value }

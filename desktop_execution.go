@@ -8,9 +8,9 @@ import (
 
 	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/application"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
 )
 
 type desktopExecutionWorker struct {
@@ -261,7 +261,11 @@ func validateExecutionShowtime(value *catalogpb.Showtime, observedAt time.Time) 
 }
 
 func executionScheduleDateInvalid(value *catalogpb.Showtime) bool {
-	date := value.GetScheduleDate()
+	identity := value.GetIdentity().GetCgv()
+	if identity == nil {
+		return true
+	}
+	date := identity.GetScheduleDate()
 	if date == nil {
 		return true
 	}
@@ -270,9 +274,31 @@ func executionScheduleDateInvalid(value *catalogpb.Showtime) bool {
 }
 
 func executionIdentityMissing(value *catalogpb.Showtime) bool {
-	return value == nil || value.GetId() == "" || value.GetProviderId() == "" || value.GetSourceKey() == "" ||
-		value.GetTheaterId() == "" || value.GetMovie() == nil || value.GetMovie().GetId() == "" || value.GetMovie().GetTitle() == "" ||
-		value.GetAuditorium() == nil || value.GetAuditorium().GetId() == "" || value.GetAuditorium().GetName() == ""
+	if value == nil {
+		return true
+	}
+	return value.GetId() == "" || value.GetProviderId() == "" || value.GetTheaterId() == "" ||
+		executionShowtimeIdentityMissing(value) || executionMovieIdentityMissing(value) || executionAuditoriumIdentityMissing(value)
+}
+
+func executionShowtimeIdentityMissing(value *catalogpb.Showtime) bool {
+	showtimeIdentity := value.GetIdentity().GetCgv()
+	return showtimeIdentity == nil || showtimeIdentity.GetSiteNo() == "" || showtimeIdentity.GetScheduleDate() == nil ||
+		showtimeIdentity.GetScreenNo() == "" || showtimeIdentity.GetSequence() == ""
+}
+
+func executionMovieIdentityMissing(value *catalogpb.Showtime) bool {
+	movieIdentity := value.GetMovie().GetIdentity().GetCgv()
+	return value.GetMovie() == nil || value.GetMovie().GetId() == "" || value.GetMovie().GetTitle() == "" ||
+		movieIdentity == nil || movieIdentity.GetMovieNo() == ""
+}
+
+func executionAuditoriumIdentityMissing(value *catalogpb.Showtime) bool {
+	showtimeIdentity := value.GetIdentity().GetCgv()
+	auditoriumIdentity := value.GetAuditorium().GetIdentity().GetCgv()
+	return value.GetAuditorium() == nil || value.GetAuditorium().GetId() == "" || value.GetAuditorium().GetName() == "" ||
+		auditoriumIdentity == nil || auditoriumIdentity.GetSiteNo() != showtimeIdentity.GetSiteNo() ||
+		auditoriumIdentity.GetScreenNo() != showtimeIdentity.GetScreenNo()
 }
 
 func executionTimeInvalid(value *catalogpb.Showtime, observedAt time.Time) bool {

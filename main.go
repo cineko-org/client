@@ -17,7 +17,7 @@ import (
 	"github.com/cineko-org/client/internal/booking"
 	"github.com/cineko-org/client/internal/interfaces/webui"
 	"github.com/cineko-org/client/internal/platform"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"

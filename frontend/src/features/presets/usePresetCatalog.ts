@@ -1,27 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { create } from '@bufbuild/protobuf';
-import { api, errorMessage } from '../../api/client';
+import { api, errorMessage, watchSeatMap } from '../../api/client';
 import {
-	AuditoriumResponseSchema, ResolutionSchema, SeatMapRequestSchema, type Auditorium, type Preset,
+	AuditoriumResponseSchema, type Resolution, type Auditorium, type Preset,
 	type Snapshot, type WebUIState,
 } from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
 
 interface ActiveCatalogLoad {
   current: AbortController | null;
-}
-
-const seatMapResolutionRetryDelaysMs = [2_000, 3_000, 5_000, 8_000, 10_000, 10_000, 10_000, 10_000];
-
-/** Waits for Central without leaving a timer behind when the selection changes. */
-function waitForSeatMapRetry(signal: AbortSignal, delayMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = window.setTimeout(resolve, delayMs);
-    signal.addEventListener('abort', () => {
-      window.clearTimeout(timer);
-      resolve();
-    }, { once: true });
-  });
 }
 
 /** Completes only the catalog request that still owns the loading state. */
@@ -39,31 +25,42 @@ export function usePresetCatalog(state: WebUIState, notify: Notify) {
   const [region, setRegionValue] = useState('');
   const [theater, setTheaterValue] = useState('');
   const [activeTheaterId, setActiveTheaterId] = useState('');
-  const [auditoriumId, setAuditoriumIdValue] = useState('');
-  const [auditoriums, setAuditoriums] = useState<Auditorium[]>([]);
+	const [auditoriumId, setAuditoriumIdValue] = useState('');
+	const [auditoriums, setAuditoriums] = useState<Auditorium[]>([]);
 	const [seatMap, setSeatMap] = useState<Snapshot | null>(null);
-	const seatMapVersion = seatMap?.layoutHash;
   const [pickedSeats, setPickedSeats] = useState<string[]>([]);
   const [catalogMessage, setCatalogMessage] = useState('');
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const activeRequest = useRef<AbortController | null>(null);
+	const activeSeatMapWatch = useRef<(() => void) | null>(null);
+
+	const stopSeatMapWatch = useCallback(() => {
+		const stop = activeSeatMapWatch.current;
+		activeSeatMapWatch.current = null;
+		stop?.();
+	}, []);
 
   const cancelRequest = useCallback(() => {
     const request = activeRequest.current;
     activeRequest.current = null;
     request?.abort();
+		stopSeatMapWatch();
     setLoadingCatalog(false);
-  }, []);
+  }, [stopSeatMapWatch]);
 
   const beginRequest = useCallback(() => {
     activeRequest.current?.abort();
+		stopSeatMapWatch();
     const request = new AbortController();
     activeRequest.current = request;
     setLoadingCatalog(false);
     return request;
-  }, []);
+  }, [stopSeatMapWatch]);
 
-  useEffect(() => () => activeRequest.current?.abort(), []);
+  useEffect(() => () => {
+		activeRequest.current?.abort();
+		activeSeatMapWatch.current?.();
+	}, []);
 
   const reset = useCallback(() => {
     cancelRequest();
@@ -134,43 +131,82 @@ export function usePresetCatalog(state: WebUIState, notify: Notify) {
     }
     setLoadingCatalog(true);
     setCatalogMessage('Central에 저장된 좌석 배치를 확인합니다.');
-    try {
-      const resolve = async (attempt: number): Promise<void> => {
-		const response = await api('/api/catalog/seat-map', ResolutionSchema, {
-			method: 'POST',
-			signal: request.signal,
-		}, SeatMapRequestSchema, create(SeatMapRequestSchema, { auditoriumId: id }));
-        if (request.signal.aborted) return;
-		if (response.result.case === 'ready' && response.result.value.snapshot) {
-			const snapshot = response.result.value.snapshot;
-			setSeatMap(snapshot);
-			setPickedSeats((current) => current.filter((label) => snapshot.layout?.seats.some((seat) => seat.label === label)));
+    await new Promise<void>((resolve) => {
+		let firstEvent = true;
+		let stop: (() => void) | null = null;
+		const ownsWatch = () => stop !== null && activeSeatMapWatch.current === stop && !request.signal.aborted;
+		const finishInitialEvent = () => {
+			if (!firstEvent) return;
+			firstEvent = false;
+			finishCatalogRequest(activeRequest, request, setLoadingCatalog);
+			resolve();
+		};
+		const applyResolution = (response: Resolution) => {
+			if (!ownsWatch()) return;
+			const stateCase = response.state?.state.case;
+			if (!stateCase || (stateCase === 'idle' && !response.snapshot)) {
+				throw new Error('Cineko가 올바르지 않은 좌석 배치 상태를 보냈습니다.');
+			}
+			const snapshot = response.snapshot;
+      setSeatMap(snapshot ?? null);
+      setPickedSeats((current) => snapshot
+        ? current.filter((label) => snapshot.layout?.seats.some((seat) => seat.label === label))
+        : []);
+			switch (stateCase) {
+        case 'idle':
           setCatalogMessage('저장된 좌석 배치를 불러왔습니다.');
-          return;
-        }
-        setPickedSeats([]);
-        if (attempt >= seatMapResolutionRetryDelaysMs.length) {
-          setCatalogMessage('좌석 배치를 아직 준비하지 못했습니다. 잠시 후 다시 선택해 주세요.');
-          return;
-        }
-        setCatalogMessage('Central에서 좌석 배치를 준비 중입니다.');
-        await waitForSeatMapRetry(request.signal, seatMapResolutionRetryDelaysMs[attempt]);
-        if (request.signal.aborted) return;
-        await resolve(attempt + 1);
-      };
-      await resolve(0);
-    } catch (error) {
-      if (!request.signal.aborted) notify(errorMessage(error), { tone: 'error' });
-    } finally {
-      finishCatalogRequest(activeRequest, request, setLoadingCatalog);
-    }
-  }, [beginRequest, notify]);
-
-	const catalogSeatMapVersion = state.catalog?.auditoriums.find((item) => item.id === auditoriumId)?.currentLayoutHash;
-  useEffect(() => {
-    if (!auditoriumId || !catalogSeatMapVersion || seatMapVersion === catalogSeatMapVersion) return;
-    queueMicrotask(() => void loadSeatMap(auditoriumId));
-  }, [auditoriumId, catalogSeatMapVersion, loadSeatMap, seatMapVersion]);
+          break;
+        case 'queued':
+          setCatalogMessage('좌석 배치 수집을 기다리고 있습니다.');
+          break;
+        case 'collecting':
+          setCatalogMessage('Central에서 좌석 배치를 수집하고 있습니다.');
+          break;
+        case 'waitingForShowtime':
+          setCatalogMessage('좌석을 확인할 수 있는 상영 회차를 기다리고 있습니다.');
+          break;
+        case 'retryScheduled':
+          setCatalogMessage('좌석 배치 수집을 다시 시도할 예정입니다.');
+          break;
+        case 'blocked':
+          setCatalogMessage('좌석 배치를 준비하지 못했습니다. 관리자 확인이 필요합니다.');
+          break;
+        default:
+				throw new Error('Cineko가 올바르지 않은 좌석 배치 상태를 보냈습니다.');
+      }
+			finishInitialEvent();
+		};
+		try {
+			stop = watchSeatMap(
+				id,
+				(response) => {
+					if (!response.resolution) {
+						throw new Error('Cineko가 올바르지 않은 좌석 배치 상태를 보냈습니다.');
+					}
+					applyResolution(response.resolution);
+				},
+				(error) => {
+					if (!ownsWatch()) return;
+					activeSeatMapWatch.current = null;
+					stop?.();
+					setCatalogMessage(errorMessage(error));
+					finishInitialEvent();
+				},
+			);
+			activeSeatMapWatch.current = stop;
+		} catch (error) {
+			if (!request.signal.aborted) setCatalogMessage(errorMessage(error));
+			finishInitialEvent();
+		}
+		request.signal.addEventListener('abort', () => {
+			if (stop !== null && activeSeatMapWatch.current === stop) {
+				activeSeatMapWatch.current = null;
+				stop();
+			}
+			resolve();
+		}, { once: true });
+	});
+  }, [beginRequest]);
 
   const loadPreset = useCallback((preset: Preset) => {
     const request = beginRequest();
