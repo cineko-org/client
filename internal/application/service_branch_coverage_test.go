@@ -30,7 +30,7 @@ func TestBookingWorkerCoversMalformedResourcesAndCompletionFailures(t *testing.T
 	if _, err := worker.RunClaimedShowtime(ctx, &clientpb.Resource{}, &clientpb.Resource{}, nil, nil, nil); err == nil {
 		t.Fatal("RunClaimedShowtime accepted a malformed monitor resource")
 	}
-	monitor := monitorFixtureForTest("preset", "Movie", []string{"2026-08-10"})
+	monitor := monitorFixtureForTest("Movie", []string{"2026-08-10"})
 	if _, err := worker.RunClaimedShowtime(ctx, resourceForMonitor(monitor, 0), &clientpb.Resource{}, nil, nil, nil); err == nil {
 		t.Fatal("RunClaimedShowtime accepted a malformed preset resource")
 	}
@@ -47,7 +47,7 @@ func TestCancellationServiceCoversMissingRequestsAndDraftIdentity(t *testing.T) 
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
 	repository := &reservationRepositoryFake{
-		reservation: bookedReservationFixtureForTest("monitor"),
+		reservation: bookedReservationFixtureForTest(),
 	}
 	gateway := &emptyCancellationGateway{}
 	service := NewCancellationService(repository, gateway, fixedClock{now})
@@ -84,7 +84,7 @@ func TestMonitorServiceRejectsMalformedStoredResources(t *testing.T) {
 		t.Fatal("Delete accepted a malformed monitor")
 	}
 
-	monitors := &monitorRepositoryFake{job: monitorFixtureForTest("preset", "Movie", []string{"2026-08-10"}), revision: 1}
+	monitors := &monitorRepositoryFake{job: monitorFixtureForTest("Movie", []string{"2026-08-10"}), revision: 1}
 	malformedPresets := &malformedPresetRepository{
 		presetRepositoryFake: presets,
 		getResource:          &clientpb.Resource{},

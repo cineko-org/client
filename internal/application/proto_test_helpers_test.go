@@ -26,8 +26,8 @@ func presetFixtureForTest(id, userID, theaterID, auditoriumID string, explicitSe
 	}.Build()
 }
 
-func monitorFixtureForTest(presetID, title string, targetDates []string) *clientpb.Monitor {
-	id, userID := "monitor", "user"
+func monitorFixtureForTest(title string, targetDates []string) *clientpb.Monitor {
+	id, userID, presetID := "monitor", "user", "preset"
 	movieID := "movie_1"
 	horizon := int32(0)
 	return clientpb.Monitor_builder{
@@ -38,16 +38,16 @@ func monitorFixtureForTest(presetID, title string, targetDates []string) *client
 	}.Build()
 }
 
-func bookedReservationFixtureForTest(monitorID string) *clientpb.Reservation {
-	id, userID := "reservation", "user"
+func bookedReservationFixtureForTest() *clientpb.Reservation {
+	id, userID, monitorID := "reservation", "user", "monitor"
 	return clientpb.Reservation_builder{
 		Id: &id, UserId: &userID, MonitorId: &monitorID,
 		Booked: clientpb.ReservationBooked_builder{}.Build(),
 	}.Build()
 }
 
-func cancellationResultFixtureForTest(refundAmount string) *clientpb.WebUICancellationResult {
-	reservationID, bookingNumber := "reservation", "booking"
+func cancellationResultFixtureForTest() *clientpb.WebUICancellationResult {
+	reservationID, bookingNumber, refundAmount := "reservation", "booking", "10000"
 	return clientpb.WebUICancellationResult_builder{ReservationId: &reservationID, BookingNumber: &bookingNumber, RefundAmount: &refundAmount}.Build()
 }
 

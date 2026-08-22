@@ -242,8 +242,8 @@ func TestCancellationServiceCoversReviewCommitAndFailures(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
-	repository := &reservationRepositoryFake{reservation: bookedReservationFixtureForTest("monitor")}
-	booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest("10000")}
+	repository := &reservationRepositoryFake{reservation: bookedReservationFixtureForTest()}
+	booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest()}
 	service := NewCancellationService(repository, booking, fixedClock{now})
 
 	draft, err := service.Cancel(ctx, cancellationRequest("user", false))
@@ -339,8 +339,8 @@ func TestCancellationOperationLedgerPaths(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
 	newHarness := func() (*reservationSequenceRepository, *bookingGatewayFake, *operationRepositoryFake, *CancellationService) {
-		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest("monitor")}
-		booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest("10000")}
+		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest()}
+		booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest()}
 		operations := &operationRepositoryFake{}
 		return reservations, booking, operations, NewCancellationService(reservations, booking, fixedClock{now}, operations)
 	}
@@ -383,10 +383,10 @@ func TestCancellationCommitRefreshesRevisionAndUsesStableOperationID(t *testing.
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
 	reservations := &reservationSequenceRepository{
-		reservation: bookedReservationFixtureForTest("monitor"),
+		reservation: bookedReservationFixtureForTest(),
 		revision:    7,
 	}
-	booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest("10000")}
+	booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest()}
 	booking.prepareCancellationHook = func(*clientpb.Reservation) { reservations.revision = 12 }
 	operations := &operationRepositoryFake{}
 	service := NewCancellationService(reservations, booking, fixedClock{now}, operations)
@@ -414,14 +414,14 @@ func TestCancellationRetryAfterConfirmedCancellationIsIdempotent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
-	reservation := bookedReservationFixtureForTest("monitor")
+	reservation := bookedReservationFixtureForTest()
 	reservation.SetCancelled(clientpb.ReservationCancelled_builder{}.Build())
 	reservation.SetCancelledAt(timestamppb.New(now))
 	reservation.SetBookingNumber("booking")
 	reservation.SetRefundAmount("10000")
 	reservations := &reservationSequenceRepository{reservation: reservation}
 	booking := &bookingGatewayFake{
-		draft:                 cancellationResultFixtureForTest("10000"),
+		draft:                 cancellationResultFixtureForTest(),
 		commitCancellationErr: errInjected,
 	}
 	service := NewCancellationService(reservations, booking, fixedClock{now})
