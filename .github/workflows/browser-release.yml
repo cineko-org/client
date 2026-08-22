@@ -138,10 +138,10 @@ jobs:
             mkdir -p existing-release
             gh release download "$BROWSER_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern browser-release-set.json --dir existing-release
-            cmp --silent release-assets/browser-release-set.json existing-release/browser-release-set.json || {
-              printf 'content-addressed browser release differs from its immutable asset\n' >&2
-              exit 1
-            }
+            scripts/verify-browser-release-identity.sh \
+              "$BROWSER_TAG" \
+              release-assets/browser-release-set.json \
+              existing-release/browser-release-set.json
           else
             gh release create "$BROWSER_TAG" release-assets/browser-release-set.json \
               --repo "$GITHUB_REPOSITORY" \
