@@ -43,6 +43,7 @@ while [[ $# -gt 0 ]]; do
 done
 cp "$source" "$FAKE_POSTED"
 printf '{}\n' >"$output"
+printf '200'
 SH
 chmod +x "$test_root/bin/curl"
 

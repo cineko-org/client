@@ -137,6 +137,7 @@ if [[ "$url" == "$CINEKO_CENTRAL_URL"/* ]]; then
     esac
   done
   printf '{}\n' > "$output"
+  printf '200'
   exit 0
 fi
 output=''
@@ -267,6 +268,7 @@ if [[ "$url" == "$CINEKO_CENTRAL_URL"/* ]]; then
     esac
   done
   printf '{}\\n' > "$output"
+  printf '200'
   exit 0
 fi
 printf 'unexpected public CDN request: %s\\n' "$url" >&2

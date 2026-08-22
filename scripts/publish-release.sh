@@ -76,10 +76,5 @@ while IFS=$'\t' read -r artifact object_key public_url expected_size expected_sh
 done <"$publish_plan"
 
 readonly response="$temporary_directory/publish-response.json"
-curl --fail-with-body --retry 3 --retry-all-errors \
-  -H "Authorization: Bearer $CINEKO_RELEASE_PUBLISH_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data-binary "@$batch_payload" \
-  --output "$response" \
-  "${CINEKO_CENTRAL_URL%/}/v1/release-registry/$component"
+scripts/post-release-registry.sh "$component" "$batch_payload" "$response"
 "$release_contract" verify-response "$component" "$response"
