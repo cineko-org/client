@@ -107,6 +107,8 @@ test('official browser publisher produces verified Chrome for Testing metadata w
   const registration = join(root, 'registration.json');
   const manifest = join(root, 'browser-release-set.json');
   const repeatedManifest = join(root, 'browser-release-set-repeated.json');
+  const reformattedManifest = join(root, 'browser-release-set-reformatted.json');
+  const changedManifest = join(root, 'browser-release-set-changed.json');
   const legacyManifest = join(root, 'legacy-browser-release-set.json');
   const targets = [
     ['mac-arm64', 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'],
@@ -188,6 +190,18 @@ cp "$FAKE_BROWSER_FIXTURES/chrome-$platform.zip" "$output"
     assert.equal(execFileSync('go', [
       'run', '-mod=vendor', './cmd/releasecontract', 'fingerprint', 'browser', repeatedManifest,
     ], { env: { ...process.env, GOWORK: 'off' }, encoding: 'utf8' }).trim(), fingerprint, 'repeated generation must preserve the semantic tag');
+
+    await writeFile(reformattedManifest, JSON.stringify(releaseSet));
+    const browserTag = `browser-r1228-${fingerprint}`;
+    execFileSync('bash', [
+      'scripts/verify-browser-release-identity.sh', browserTag, manifest, reformattedManifest,
+    ], { env: process.env });
+    const changedReleaseSet = structuredClone(releaseSet);
+    changedReleaseSet.releases[0].artifact.sha256 = '0'.repeat(64);
+    await writeFile(changedManifest, JSON.stringify(changedReleaseSet));
+    assert.throws(() => execFileSync('bash', [
+      'scripts/verify-browser-release-identity.sh', browserTag, manifest, changedManifest,
+    ], { env: process.env, stdio: 'pipe' }), 'semantic release changes must not reuse an immutable browser tag');
 
     await writeFile(legacyManifest, JSON.stringify({ schemaVersion: 1, ...releaseSet }));
     assert.throws(() => execFileSync('go', [
