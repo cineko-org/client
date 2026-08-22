@@ -10,61 +10,8 @@ import (
 	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
-
-func TestBestShowtimeDoesNotTrustPossiblyStaleSeatCount(t *testing.T) {
-	t.Parallel()
-
-	showtime, ok := bestShowtime([]*catalogpb.Showtime{
-		showtimeProtoFromDomain(domain.Showtime{ID: "sold-out", SoldOut: true, AvailableSeats: 2}),
-		showtimeProtoFromDomain(domain.Showtime{ID: "open", SourceKey: "cgv/2026-08-10/a/1", Date: "2026-08-10", StartsAt: "20:30", AvailableSeats: 0}),
-	})
-	if !ok || showtime.GetId() != "open" {
-		t.Fatalf("bestShowtime() = %+v, %t", showtime, ok)
-	}
-}
-
-func TestBookingWorkerStopsAtPreparedPaymentWhenCommitIsDisabled(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	repository := &workerRepository{
-		job:        monitorFixtureForTest("monitor-1", "user-1", "preset-1", "오디세이", false, []string{"2026-08-10"}),
-		preset:     presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"H10"}),
-		theater:    domain.Theater{ID: "theater-1"},
-		auditorium: domain.Auditorium{ID: "auditorium-1"},
-		seatMap: domain.SeatMap{AuditoriumID: "auditorium-1", Seats: []domain.Seat{{
-			Label: "H10", Row: "H", Number: 10, X: .5, Y: .55, Type: domain.SeatTypeStandard,
-		}}},
-	}
-	gateway := &workerGateway{
-		showtimes: []*catalogpb.Showtime{showtimeProtoFromDomain(domain.Showtime{ID: "showtime-1", SourceKey: "cgv/2026-08-10/a/1", Date: "2026-08-10", StartsAt: "20:30"})},
-		live:      []domain.LiveSeat{{Label: "H10", Available: true}},
-	}
-	worker := NewBookingWorker(BookingWorkerDependencies{
-		Monitors: repository, Presets: repository, Theaters: repository,
-		Auditoriums: repository, Reservations: repository,
-		Showtimes: gateway, Booking: gateway, IDs: &sequenceIDs{},
-		Clock: fixedClock{now: now}, Waiter: noWaiter{}, WorkerID: "worker-1",
-	})
-
-	reservation, err := worker.Run(context.Background(), "monitor-1")
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if reservation.GetReservation().GetPrepared() == nil || repository.job.GetState().GetTriggered() == nil {
-		t.Fatalf("reservation/job = %+v / %+v", reservation, repository.job)
-	}
-	if repository.reservation.GetId() == "" {
-		t.Fatal("prepared reservation was not persisted")
-	}
-	wantDates := []string{"2026-08-10"}
-	if fmt.Sprint(gateway.lastTargetDates) != fmt.Sprint(wantDates) {
-		t.Fatalf("FindShowtimes target dates = %v, want %v", gateway.lastTargetDates, wantDates)
-	}
-}
 
 func TestMonitorServiceDefaultsRollingWeekdayHorizon(t *testing.T) {
 	t.Parallel()
@@ -73,7 +20,7 @@ func TestMonitorServiceDefaultsRollingWeekdayHorizon(t *testing.T) {
 	repository := &workerRepository{preset: presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"A1"})}
 	service := NewMonitorService(repository, repository, &sequenceIDs{}, fixedClock{now: now})
 
-	resource, err := service.Create(context.Background(), monitorMutationForTest(0, "", "", "user-1", "preset-1", openingMonitorModeForTest(), "movie_1", "오디세이", nil, []int{int(time.Saturday)}, 0, "", "", 5*time.Second, 0))
+	resource, err := service.Create(context.Background(), monitorMutationForTest(0, "", "", "user-1", "preset-1", "movie_1", "오디세이", nil, []int{int(time.Saturday)}, 0, "", ""))
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -90,36 +37,9 @@ func TestMonitorServiceRejectsExpiredExactDates(t *testing.T) {
 	repository := &workerRepository{preset: presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"A1"})}
 	service := NewMonitorService(repository, repository, &sequenceIDs{}, fixedClock{now: now})
 
-	_, err := service.Create(context.Background(), monitorMutationForTest(0, "", "", "user-1", "preset-1", openingMonitorModeForTest(), "movie_1", "오디세이", []string{"2026-08-08"}, nil, 0, "", "", 5*time.Second, 0))
+	_, err := service.Create(context.Background(), monitorMutationForTest(0, "", "", "user-1", "preset-1", "movie_1", "오디세이", []string{"2026-08-08"}, nil, 0, "", ""))
 	if !errors.Is(err, ErrMonitorExpired) {
 		t.Fatalf("Create() error = %v, want %v", err, ErrMonitorExpired)
-	}
-}
-
-func TestCancellationMonitorFailsWhenShowtimeIsNotOpen(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	repository := &workerRepository{
-		job:     monitorFixtureForTest("monitor-1", "user-1", "preset-1", "오디세이", true, []string{"2026-08-10"}),
-		preset:  presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"H10"}),
-		theater: domain.Theater{ID: "theater-1"}, auditorium: domain.Auditorium{ID: "auditorium-1"},
-		seatMap: domain.SeatMap{AuditoriumID: "auditorium-1"},
-	}
-	gateway := &workerGateway{}
-	worker := NewBookingWorker(BookingWorkerDependencies{
-		Monitors: repository, Presets: repository, Theaters: repository,
-		Auditoriums: repository, Reservations: repository,
-		Showtimes: gateway, Booking: gateway, IDs: &sequenceIDs{},
-		Clock: fixedClock{now: now}, Waiter: noWaiter{}, WorkerID: "worker-1",
-	})
-
-	_, err := worker.Run(context.Background(), "monitor-1")
-	if !errors.Is(err, ErrBookingNotOpen) {
-		t.Fatalf("Run() error = %v, want %v", err, ErrBookingNotOpen)
-	}
-	if repository.job.GetState().GetFailed() == nil {
-		t.Fatalf("monitor status = %s, want failed", monitorStateName(repository.job))
 	}
 }
 
@@ -132,22 +52,6 @@ type workerRepository struct {
 	reservation *clientpb.Reservation
 }
 
-func (repository *workerRepository) AcquireMonitor(
-	_ context.Context, id, _ string, _ time.Time, _ time.Duration,
-) (*clientpb.Resource, error) {
-	if repository.job == nil || id != repository.job.GetId() {
-		return nil, ErrNotFound
-	}
-	return resourceForMonitor(cloneMonitor(repository.job), 0), nil
-}
-
-func (repository *workerRepository) RenewMonitor(
-	context.Context, string, string, time.Time, time.Duration,
-) error {
-	return nil
-}
-
-func (repository *workerRepository) ReleaseMonitor(context.Context, string, string) error { return nil }
 func (repository *workerRepository) PutMonitor(_ context.Context, resource *clientpb.Resource) error {
 	job, _, err := monitorMessage(resource)
 	if err != nil {
@@ -217,15 +121,9 @@ func (repository *workerRepository) ListReservationsByUser(context.Context, stri
 }
 
 type workerGateway struct {
-	showtimes       []*catalogpb.Showtime
-	live            []domain.LiveSeat
-	lastTargetDates []string
+	live []domain.LiveSeat
 }
 
-func (gateway *workerGateway) FindShowtimes(_ context.Context, _ *catalogpb.Theater, _ *catalogpb.Auditorium, _ string, targetDates []string, _ []int32, _ *commonpb.LocalTime, _ *commonpb.LocalTime) ([]*catalogpb.Showtime, error) {
-	gateway.lastTargetDates = append([]string(nil), targetDates...)
-	return gateway.showtimes, nil
-}
 func (gateway *workerGateway) OpenSeatSelection(
 	context.Context,
 	*catalogpb.Showtime,

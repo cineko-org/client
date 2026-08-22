@@ -1,29 +1,8 @@
 package domain
 
 import (
-	"fmt"
-	"strings"
 	"time"
 )
-
-// ScheduleDateFromShowtimeSourceKey extracts the provider service date from a
-// canonical showtime tuple. The provider date is distinct from the civil date
-// for extended clocks such as 25:30.
-func ScheduleDateFromShowtimeSourceKey(sourceKey string) (string, error) {
-	parts := strings.Split(strings.TrimSpace(sourceKey), "/")
-	if len(parts) != 4 {
-		return "", fmt.Errorf("showtime source key must contain provider, date, auditorium, and sequence")
-	}
-	for _, part := range parts {
-		if strings.TrimSpace(part) == "" {
-			return "", fmt.Errorf("showtime source key contains an empty tuple component")
-		}
-	}
-	if _, err := time.Parse(time.DateOnly, parts[1]); err != nil {
-		return "", fmt.Errorf("showtime source key has invalid schedule date: %w", err)
-	}
-	return parts[1], nil
-}
 
 type Showtime struct {
 	ID string

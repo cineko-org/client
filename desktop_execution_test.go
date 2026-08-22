@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/application"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -245,9 +248,10 @@ func TestExecutionPreservesProviderDateForAfterMidnightShowtime(t *testing.T) {
 		ObservedAt: timestamppb.New(time.Date(2026, 8, 20, 23, 0, 0, 0, location)),
 		Showtime: catalogpb.Showtime_builder{
 			Id: stringPointer("showtime"), ProviderId: stringPointer("cgv"), SourceKey: stringPointer("0056/2026-08-20/0007/0003"), TheaterId: stringPointer("theater"),
-			Movie:      catalogpb.Movie_builder{Id: stringPointer("movie_1"), Title: stringPointer("영화")}.Build(),
-			Auditorium: catalogpb.Auditorium_builder{Id: stringPointer("auditorium"), Name: stringPointer("IMAX")}.Build(),
-			StartsAt:   timestamppb.New(time.Date(2026, 8, 21, 1, 30, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 21, 4, 32, 0, 0, location)),
+			Movie:        catalogpb.Movie_builder{Id: stringPointer("movie_1"), Title: stringPointer("영화")}.Build(),
+			Auditorium:   catalogpb.Auditorium_builder{Id: stringPointer("auditorium"), Name: stringPointer("IMAX")}.Build(),
+			ScheduleDate: commonpb.LocalDate_builder{Year: int32Pointer(2026), Month: int32Pointer(8), Day: int32Pointer(20)}.Build(),
+			StartsAt:     timestamppb.New(time.Date(2026, 8, 21, 1, 30, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 21, 4, 32, 0, 0, location)),
 			AvailableSeats: int32Pointer(2), Capacity: int32Pointer(100),
 		}.Build(),
 	}.Build()
@@ -286,13 +290,59 @@ func TestExecutionFailureCodeSeparatesAvailabilityFromTransientFailures(t *testi
 	}{
 		{name: "preferred seats", err: application.ErrSeatUnavailable, want: executionReasonPreferredSeatsUnavailable},
 		{name: "showtime", err: application.ErrBookingNotOpen, want: executionReasonShowtimeUnavailable},
-		{name: "interrupted", err: context.Canceled, want: "client_interrupted"},
-		{name: "transient", err: errors.New("browser failed"), want: "booking_preparation_failed"},
+		{name: "authentication", err: cgv.ErrAuthenticationRequired, want: executionReasonAuthenticationRequired},
+		{name: "captcha", err: cgv.ErrCaptchaRequired, want: executionReasonCaptchaRequired},
+		{name: "provider contract", err: cgv.ErrUIContractChanged, want: executionReasonProviderContractChanged},
+		{name: "provider access blocked", err: cgv.ErrProviderAccessBlocked, want: executionReasonProviderAccessBlocked},
+		{name: "provider throttled", err: cgv.ErrProviderThrottled, want: executionReasonProviderThrottled},
+		{name: "interrupted", err: context.Canceled, want: executionReasonClientInterrupted},
+		{name: "transient", err: errors.New("browser failed"), want: executionReasonBookingPreparationFailed},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if got := executionFailureCode(test.err); got != test.want {
 				t.Fatalf("executionFailureCode() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestExecutionFailureOutcomeUsesRetryOnlyForGenericPreparationFailure(t *testing.T) {
+	tests := []struct {
+		name  string
+		err   error
+		retry bool
+		want  string
+	}{
+		{name: "generic preparation", err: errors.New("browser failed"), retry: true, want: executionReasonBookingPreparationFailed},
+		{name: "preferred seats", err: application.ErrSeatUnavailable, want: executionReasonPreferredSeatsUnavailable},
+		{name: "showtime", err: application.ErrBookingNotOpen, want: executionReasonShowtimeUnavailable},
+		{name: "authentication", err: cgv.ErrAuthenticationRequired, want: executionReasonAuthenticationRequired},
+		{name: "captcha", err: cgv.ErrCaptchaRequired, want: executionReasonCaptchaRequired},
+		{name: "provider contract", err: cgv.ErrUIContractChanged, want: executionReasonProviderContractChanged},
+		{name: "provider access blocked", err: cgv.ErrProviderAccessBlocked, want: executionReasonProviderAccessBlocked},
+		{name: "provider throttled", err: cgv.ErrProviderThrottled, want: executionReasonProviderThrottled},
+		{name: "interrupted", err: context.Canceled, want: executionReasonClientInterrupted},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &executionStoreFake{completed: make(chan *executionpb.ResultRequest, 1)}
+			server := &executionServerFake{run: func(context.Context) error {
+				return fmt.Errorf("execution failed: %w", test.err)
+			}}
+			(&desktopExecutionWorker{store: store, server: server, userID: "user"}).execute(
+				t.Context(), validExecutionCommand(time.Now().Add(time.Minute)),
+			)
+			result := <-store.completed
+			if test.retry {
+				if result.GetRetryRequested() == nil || result.GetFailed() != nil ||
+					result.GetRetryRequested().GetReasonCode() != test.want {
+					t.Fatalf("retry outcome = %s, want retry_requested(%q)", result, test.want)
+				}
+				return
+			}
+			if result.GetFailed() == nil || result.GetRetryRequested() != nil || result.GetFailed().GetReasonCode() != test.want {
+				t.Fatalf("failed outcome = %s, want failed(%q)", result, test.want)
 			}
 		})
 	}
@@ -306,9 +356,10 @@ func validExecutionCommand(expiresAt time.Time) *executionpb.Command {
 			ObservedAt: timestamppb.New(time.Date(2026, 8, 12, 19, 59, 0, 0, location)),
 			Showtime: catalogpb.Showtime_builder{
 				Id: stringPointer("showtime"), ProviderId: stringPointer("cgv"), SourceKey: stringPointer("0056/2026-08-20/0007/0003"), TheaterId: stringPointer("theater"),
-				Movie:      catalogpb.Movie_builder{Id: stringPointer("movie_1"), Title: stringPointer("영화")}.Build(),
-				Auditorium: catalogpb.Auditorium_builder{Id: stringPointer("auditorium"), Name: stringPointer("IMAX")}.Build(),
-				StartsAt:   timestamppb.New(time.Date(2026, 8, 20, 20, 0, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 20, 22, 0, 0, 0, location)),
+				Movie:        catalogpb.Movie_builder{Id: stringPointer("movie_1"), Title: stringPointer("영화")}.Build(),
+				Auditorium:   catalogpb.Auditorium_builder{Id: stringPointer("auditorium"), Name: stringPointer("IMAX")}.Build(),
+				ScheduleDate: commonpb.LocalDate_builder{Year: int32Pointer(2026), Month: int32Pointer(8), Day: int32Pointer(20)}.Build(),
+				StartsAt:     timestamppb.New(time.Date(2026, 8, 20, 20, 0, 0, 0, location)), EndsAt: timestamppb.New(time.Date(2026, 8, 20, 22, 0, 0, 0, location)),
 				AvailableSeats: int32Pointer(10), Capacity: int32Pointer(100),
 			}.Build(),
 		}.Build(),

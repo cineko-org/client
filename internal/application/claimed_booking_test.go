@@ -15,20 +15,10 @@ import (
 
 type centralFenceRepository struct {
 	*workerRepository
-	acquireCalled bool
-	putCalls      int
-	putErrAt      int
-}
-
-func (repository *centralFenceRepository) AcquireMonitor(
-	context.Context,
-	string,
-	string,
-	time.Time,
-	time.Duration,
-) (*clientpb.Resource, error) {
-	repository.acquireCalled = true
-	return nil, errors.New("local monitor lease must not be acquired")
+	putCalls     int
+	putErrAt     int
+	putRevisions []int64
+	nextRevision int64
 }
 
 func (repository *centralFenceRepository) PutMonitor(_ context.Context, resource *clientpb.Resource) error {
@@ -40,16 +30,20 @@ func (repository *centralFenceRepository) PutMonitor(_ context.Context, resource
 	if err != nil {
 		return err
 	}
+	repository.putRevisions = append(repository.putRevisions, resource.GetIdentity().GetRevision())
 	repository.job = cloneMonitor(job)
+	if repository.nextRevision > 0 {
+		resource.GetIdentity().SetRevision(repository.nextRevision)
+		repository.nextRevision++
+	}
 	return nil
 }
 
 type exactShowtimeGateway struct {
 	*workerGateway
-	findCalled bool
-	opened     *catalogpb.Showtime
-	openErr    error
-	openCalls  int
+	opened    *catalogpb.Showtime
+	openErr   error
+	openCalls int
 }
 
 type refreshingShowtimeGateway struct {
@@ -72,14 +66,6 @@ func (gateway *refreshingShowtimeGateway) RefreshSeatSelection(
 	selection := gateway.selections[index]
 	snapshot := seatSnapshotForDomain()
 	return snapshot, availableSeatsForDomain(snapshot, selection.LiveSeats), nil
-}
-
-func (gateway *exactShowtimeGateway) FindShowtimes(
-	context.Context,
-	*catalogpb.Theater, *catalogpb.Auditorium, string, []string, []int32, *commonpb.LocalTime, *commonpb.LocalTime,
-) ([]*catalogpb.Showtime, error) {
-	gateway.findCalled = true
-	return nil, errors.New("schedule lookup must not run")
 }
 
 func (gateway *exactShowtimeGateway) OpenSeatSelection(
@@ -107,7 +93,7 @@ func availableSeatsForDomain(snapshot *seatmappb.Snapshot, live []domain.LiveSea
 func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
 	base := &workerRepository{
-		job:        monitorFixtureForTest("monitor", "user", "preset", "영화", false, []string{"2026-08-20"}),
+		job:        monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"}),
 		preset:     presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"}),
 		theater:    domain.Theater{ID: "theater"},
 		auditorium: domain.Auditorium{ID: "auditorium", TheaterID: "theater"},
@@ -126,17 +112,13 @@ func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 		AvailableSeats: 10, Capacity: 100,
 	}
 	worker := NewBookingWorker(BookingWorkerDependencies{
-		Monitors: repository, Presets: repository, Theaters: repository,
-		Auditoriums: repository, Reservations: repository,
-		Showtimes: gateway, Booking: gateway, IDs: &sequenceIDs{},
-		Clock: fixedClock{now: now}, Waiter: noWaiter{}, WorkerID: "irrelevant-local-worker",
+		Monitors: repository, Reservations: repository,
+		Booking: gateway, IDs: &sequenceIDs{},
+		Clock: fixedClock{now: now}, Waiter: noWaiter{},
 	})
 	reservation, err := runClaimedShowtime(t.Context(), worker, base, showtime)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if repository.acquireCalled || gateway.findCalled {
-		t.Fatalf("local lease/schedule lookup called = %t/%t", repository.acquireCalled, gateway.findCalled)
 	}
 	if gateway.opened.GetId() != showtime.ID || gateway.opened.GetStartsAt().AsTime().In(domain.KoreaLocation).Format("15:04") != showtime.StartsAt {
 		t.Fatalf("opened showtime = %+v", gateway.opened)
@@ -189,9 +171,76 @@ func TestRunClaimedShowtimeStopsOnRefreshError(t *testing.T) {
 	}
 }
 
+func TestRunClaimedShowtimeAttemptErrorKeepsMonitorRunning(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	base := &workerRepository{
+		job:        monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"}),
+		preset:     presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"}),
+		theater:    domain.Theater{ID: "theater"},
+		auditorium: domain.Auditorium{ID: "auditorium"},
+	}
+	attemptErr := errors.New("seat page failed")
+	gateway := &exactShowtimeGateway{
+		workerGateway: &workerGateway{live: []domain.LiveSeat{{Label: "H10", Available: true}}},
+		openErr:       attemptErr,
+	}
+	worker := NewBookingWorker(BookingWorkerDependencies{
+		Monitors: base, Reservations: base,
+		Booking: gateway, IDs: &sequenceIDs{}, Clock: fixedClock{now: now}, Waiter: noWaiter{},
+	})
+
+	_, err := runClaimedShowtime(t.Context(), worker, base, claimedSeatWatchShowtime())
+	if !errors.Is(err, attemptErr) {
+		t.Fatalf("attempt error = %v, want %v", err, attemptErr)
+	}
+	if got := monitorStateName(base.job); got != "running" {
+		t.Fatalf("monitor state = %q, want running", got)
+	}
+	if base.job.GetState().GetFailed() != nil {
+		t.Fatal("attempt error marked the monitor failed")
+	}
+	if checkedAt := base.job.GetLastCheckedAt(); checkedAt == nil || !checkedAt.AsTime().Equal(now) {
+		t.Fatalf("last checked at = %v, want %v", checkedAt, now)
+	}
+}
+
+func TestRunClaimedShowtimeCarriesAuthoritativeMonitorRevisionAcrossAttemptFailure(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	monitor, preset, theater, auditorium, showtime := validClaimedValues()
+	base := &workerRepository{
+		job:        monitor,
+		preset:     preset,
+		theater:    domain.Theater{ID: theater.GetId()},
+		auditorium: domain.Auditorium{ID: auditorium.GetId(), TheaterID: theater.GetId()},
+	}
+	repository := &centralFenceRepository{workerRepository: base, nextRevision: 41}
+	attemptErr := errors.New("seat page failed")
+	gateway := &exactShowtimeGateway{
+		workerGateway: &workerGateway{live: []domain.LiveSeat{{Label: "H10", Available: true}}},
+		openErr:       attemptErr,
+	}
+	worker := NewBookingWorker(BookingWorkerDependencies{
+		Monitors: repository, Reservations: repository, Booking: gateway, IDs: &sequenceIDs{},
+		Clock: fixedClock{now: now}, Waiter: noWaiter{},
+	})
+
+	monitorResource := resourceForMonitor(cloneMonitor(monitor), 7)
+	presetResource := resourceForPreset(clonePreset(preset), 9)
+	_, err := worker.RunClaimedShowtime(t.Context(), monitorResource, presetResource, theater, auditorium, showtime)
+	if !errors.Is(err, attemptErr) {
+		t.Fatalf("attempt error = %v, want %v", err, attemptErr)
+	}
+	if len(repository.putRevisions) != 2 || repository.putRevisions[0] != 7 || repository.putRevisions[1] != 41 {
+		t.Fatalf("monitor CAS revisions = %v, want [7 41]", repository.putRevisions)
+	}
+	if monitorStateName(base.job) != "running" || base.job.GetLastCheckedAt() == nil {
+		t.Fatalf("monitor after attempt failure = %s / %v", monitorStateName(base.job), base.job.GetLastCheckedAt())
+	}
+}
+
 func claimedSeatWatchRepository() *workerRepository {
 	return &workerRepository{
-		job:     monitorFixtureForTest("monitor", "user", "preset", "영화", false, []string{"2026-08-20"}),
+		job:     monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"}),
 		preset:  presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"}),
 		theater: domain.Theater{ID: "theater"}, auditorium: domain.Auditorium{ID: "auditorium"},
 	}
@@ -203,9 +252,8 @@ func claimedSeatWatchWorker(
 	now time.Time,
 ) *BookingWorker {
 	return NewBookingWorker(BookingWorkerDependencies{
-		Monitors: repository, Presets: repository, Theaters: repository,
-		Auditoriums: repository, Reservations: repository,
-		Showtimes: gateway, Booking: gateway, IDs: &sequenceIDs{},
+		Monitors: repository, Reservations: repository,
+		Booking: gateway, IDs: &sequenceIDs{},
 		Clock: fixedClock{now: now}, Waiter: noWaiter{},
 		Jitter: func(time.Duration) time.Duration { return 0 },
 		ClaimedWatch: ClaimedSeatWatchPolicy{
@@ -255,7 +303,8 @@ func TestClaimedBookingValidationBoundaries(t *testing.T) {
 			showtime.SetEndsAt(nil)
 		}},
 		{"outside schedule", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
-			showtime.SetSourceKey("0056/2026-08-21/0007/0003")
+			year, month, day := int32(2026), int32(8), int32(21)
+			showtime.SetScheduleDate(commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build())
 		}},
 	}
 	for _, test := range tests {
@@ -274,7 +323,7 @@ func TestClaimedBookingValidationBoundaries(t *testing.T) {
 }
 
 func validClaimedValues() (*clientpb.Monitor, *clientpb.Preset, *catalogpb.Theater, *catalogpb.Auditorium, *catalogpb.Showtime) {
-	monitor := monitorFixtureForTest("monitor", "user", "preset", "영화", false, []string{"2026-08-20"})
+	monitor := monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"})
 	preset := presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"})
 	theater := coverageTheater(domain.Theater{ID: "theater"})
 	auditorium := coverageAuditorium(domain.Auditorium{ID: "auditorium", TheaterID: "theater"})
@@ -286,7 +335,7 @@ func TestRunClaimedShowtimeFailureBoundaries(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
 	makeWorker := func(putErrAt int, openErr error) (*BookingWorker, *centralFenceRepository, domain.Showtime) {
 		base := &workerRepository{
-			job:        monitorFixtureForTest("monitor", "user", "preset", "영화", false, []string{"2026-08-20"}),
+			job:        monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"}),
 			preset:     presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"}),
 			theater:    domain.Theater{ID: "theater"},
 			auditorium: domain.Auditorium{ID: "auditorium"},
@@ -301,9 +350,8 @@ func TestRunClaimedShowtimeFailureBoundaries(t *testing.T) {
 			openErr:       openErr,
 		}
 		worker := NewBookingWorker(BookingWorkerDependencies{
-			Monitors: repository, Presets: repository, Theaters: repository,
-			Auditoriums: repository, Reservations: repository,
-			Showtimes: gateway, Booking: gateway, IDs: &sequenceIDs{},
+			Monitors: repository, Reservations: repository,
+			Booking: gateway, IDs: &sequenceIDs{},
 			Clock: fixedClock{now: now}, Waiter: noWaiter{},
 		})
 		showtime := domain.Showtime{

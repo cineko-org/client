@@ -11,7 +11,6 @@ import (
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -26,12 +25,6 @@ func showtimeProtoForTest(value domain.Showtime) *catalogpb.Showtime {
 	message := showtimeToProto(value)
 	location := time.FixedZone("Asia/Seoul", 9*60*60)
 	date := value.Date
-	if date == "" {
-		parts := strings.Split(value.SourceKey, "/")
-		if len(parts) > 1 {
-			date = parts[1]
-		}
-	}
 	if startsAt, err := time.ParseInLocation(time.DateOnly+" 15:04", date+" "+value.StartsAt, location); err == nil {
 		message.SetStartsAt(timestamppb.New(startsAt))
 	}
@@ -85,13 +78,9 @@ func monitorProtoFixture(
 ) *clientpb.Monitor {
 	id := "monitor"
 	userID := "user"
-	pollInterval := time.Minute
-	maximumPollInterval := 2 * time.Minute
 	return clientpb.Monitor_builder{
 		Id: &id, UserId: &userID, PresetId: &presetID,
-		Mode:    clientpb.MonitorMode_builder{Opening: clientpb.OpeningMonitor_builder{}.Build()}.Build(),
 		MovieId: &movieID, MovieTitle: &movieTitle, TargetDates: localDates(targetDates),
-		PollInterval: durationpb.New(pollInterval), MaximumPollInterval: durationpb.New(maximumPollInterval),
 		State: state, ReservationId: &reservationID,
 	}.Build()
 }
@@ -115,7 +104,8 @@ func showtimeToProto(value domain.Showtime) *catalogpb.Showtime {
 	}.Build()
 	return catalogpb.Showtime_builder{
 		Id: &id, ProviderId: &providerID, SourceKey: &sourceKey, TheaterId: &theaterID,
-		Movie: movie, Auditorium: auditorium, StartsAt: timestampText(value.StartsAt), EndsAt: timestampText(value.EndsAt),
+		Movie: movie, Auditorium: auditorium, ScheduleDate: localDate(value.Date),
+		StartsAt: timestampText(value.StartsAt), EndsAt: timestampText(value.EndsAt),
 		AvailableSeats: &availableSeats, Capacity: &capacity, SoldOut: &soldOut,
 	}.Build()
 }

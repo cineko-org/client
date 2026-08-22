@@ -1,8 +1,8 @@
 import { create } from '@bufbuild/protobuf';
 import {
 	AuditoriumSchema, CatalogIndexSchema, LocalDateSchema, LocalTimeSchema, MonitorFailedSchema,
-	MonitorModeSchema, MonitorPendingSchema, MonitorRunningSchema, MonitorSchema, MonitorStateSchema,
-	MonitorTriggeredSchema, MovieSchema, OpeningMonitorSchema, PresetSchema, ProviderSchema,
+	MonitorPendingSchema, MonitorRunningSchema, MonitorSchema, MonitorStateSchema,
+	MonitorTriggeredSchema, MovieSchema, PresetSchema, ProviderSchema,
 	ReservationSchema, SeatPreferenceSchema, TheaterSchema, WebUIAccountAuthenticatedSchema,
 	WebUIAccountStateSchema, DirectNetworkSchema, NetworkSettingsSchema, ProxyNetworkSchema,
 	type Auditorium, type CatalogIndex, type Monitor, type Preset, type Reservation,
@@ -83,10 +83,8 @@ function fixtureMonitor(input: {
 }) {
 	return create(MonitorSchema, {
 		id: input.id, userId: 'user', presetId: 'preset-imax', movieId: input.movieId, movieTitle: input.movieTitle,
-		mode: create(MonitorModeSchema, { mode: { case: 'opening', value: create(OpeningMonitorSchema) } }),
-		targetDates: [localDate(input.date)], targetWeekdays: [], searchHorizonDays: 28,
+		targetDates: [localDate(input.date)], targetWeekdays: [], searchHorizonDays: 14,
 		earliestTime: localTime(input.earliestTime), latestTime: localTime(input.latestTime),
-		pollInterval: { seconds: 180n, nanos: 0 }, maximumPollInterval: { seconds: 480n, nanos: 0 },
 		state: monitorState(input.status, input.reason),
 	});
 }

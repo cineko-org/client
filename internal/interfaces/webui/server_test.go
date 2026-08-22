@@ -19,7 +19,6 @@ import (
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func TestListenLoopbackRejectsPublicBinding(t *testing.T) {
@@ -84,7 +83,7 @@ type webCredentialVault struct {
 	credentials domain.AccountCredentials
 }
 
-func TestRefreshBookingDemandRequiresAuthenticatedSessionAndActiveMonitor(t *testing.T) {
+func TestRefreshBookingDemandSupportsNonMemberActiveMonitor(t *testing.T) {
 	ctx := t.Context()
 	store := memoryrepo.New()
 	demands := make(chan bool, 4)
@@ -103,20 +102,9 @@ func TestRefreshBookingDemandRequiresAuthenticatedSessionAndActiveMonitor(t *tes
 	if err := store.PutMonitor(ctx, resourceFromMonitor(monitor)); err != nil {
 		t.Fatal(err)
 	}
-	server.account = clientpb.WebUIAccountState_builder{
-		Authenticated: clientpb.WebUIAccountAuthenticated_builder{}.Build(),
-	}.Build()
 	server.refreshBookingDemand(ctx)
 	if active := <-demands; !active {
-		t.Fatal("active opening monitor did not create warm demand")
-	}
-	monitor.SetMode(clientpb.MonitorMode_builder{Cancellation: clientpb.CancellationMonitor_builder{}.Build()}.Build())
-	if err := store.PutMonitor(ctx, resourceFromMonitor(monitor)); err != nil {
-		t.Fatal(err)
-	}
-	server.refreshBookingDemand(ctx)
-	if active := <-demands; !active {
-		t.Fatal("active cancellation monitor did not create warm demand")
+		t.Fatal("active monitor did not create warm demand for a nonmember")
 	}
 }
 
@@ -327,19 +315,6 @@ type webProbeAutomation struct {
 	savedLogin    chan domain.AccountCredentials
 }
 
-func (automation *webProbeAutomation) FindShowtimes(
-	context.Context,
-	*catalogpb.Theater,
-	*catalogpb.Auditorium,
-	string,
-	[]string,
-	[]int32,
-	*commonpb.LocalTime,
-	*commonpb.LocalTime,
-) ([]*catalogpb.Showtime, error) {
-	automation.probes.Add(1)
-	return nil, nil
-}
 func (*webProbeAutomation) CaptureSchedules(context.Context, domain.Theater, []string) ([]domain.ScheduleCapture, error) {
 	return nil, nil
 }
@@ -481,12 +456,7 @@ func monitorMutationJSON(t *testing.T, commandID, userID, presetID, movieID, mov
 		Mutation: commonpb.MutationIdentity_builder{CommandId: &command, ExpectedRevision: &revision}.Build(),
 		Monitor: clientpb.Monitor_builder{
 			UserId: &user, PresetId: &preset, MovieId: &movie, MovieTitle: &title,
-			Mode: clientpb.MonitorMode_builder{
-				Opening: clientpb.OpeningMonitor_builder{}.Build(),
-			}.Build(),
-			TargetDates:         []*commonpb.LocalDate{commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()},
-			PollInterval:        durationpb.New(3 * time.Minute),
-			MaximumPollInterval: durationpb.New(8 * time.Minute),
+			TargetDates: []*commonpb.LocalDate{commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()},
 			State: clientpb.MonitorState_builder{
 				Pending: clientpb.MonitorPending_builder{}.Build(),
 			}.Build(),

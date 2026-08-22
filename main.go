@@ -179,14 +179,12 @@ func newWarmBookingPool(
 		ctx,
 		browserfactory.Task{Purpose: egress.PurposeSession, SessionKey: userID},
 		func(ctx context.Context, adapter *cgv.Adapter) error {
-			authenticated, err := adapter.IsAuthenticated(ctx)
-			if err != nil {
-				return err
-			}
-			if !authenticated {
-				return fmt.Errorf("%w: manual CGV login is required", booking.ErrPermanent)
-			}
-			return nil
+			// A member session is useful when present, but CGV's supported
+			// non-member booking path is also valid warm capacity. Keep the
+			// browser ready in either case; execution reports a distinct
+			// authentication-required result only if the provider demands it.
+			_, err := adapter.IsAuthenticated(ctx)
+			return err
 		},
 	)
 }

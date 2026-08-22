@@ -10,6 +10,7 @@ import (
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var errInjected = errors.New("injected failure")
@@ -109,12 +110,11 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 	presets.values["preset"] = applicationPreset("user", "auditorium", now)
 	monitors := &monitorRepositoryFake{}
 	service := NewMonitorService(monitors, presets, &sequenceIDs{}, fixedClock{now})
-	request := monitorMutationForTest(0, "", "", "user", "preset", openingMonitorModeForTest(), "movie_1", " Movie ", nil, []int{1}, 0, "", "", 0, 0)
+	request := monitorMutationForTest(0, "", "", "user", "preset", "movie_1", " Movie ", nil, []int{1}, 0, "", "")
 	createdResource, err := service.Create(ctx, request)
 	created := createdResource.GetMonitor()
-	if err != nil || created == nil || created.GetMode().GetOpening() == nil ||
-		created.GetPollInterval().AsDuration() != 3*time.Minute || created.GetMaximumPollInterval().AsDuration() != 8*time.Minute ||
-		created.GetSearchHorizonDays() != defaultSearchHorizonDays {
+	if err != nil || created == nil || created.GetSearchHorizonDays() != defaultSearchHorizonDays ||
+		created.GetState().GetPending() == nil {
 		t.Fatalf("Create() = %+v, %v", createdResource, err)
 	}
 	monitors.revision = 1
@@ -141,7 +141,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 		t.Fatalf("Update() retained stale execution state: %+v, %v", updatedResource, err)
 	}
 	monitors.getErr = ErrNotFound
-	missing := monitorMutationForTest(1, "", "missing", "user", "preset", openingMonitorModeForTest(), "movie_1", "Movie", []string{"2026-08-10"}, nil, 0, "", "", 5*time.Second, 8*time.Second)
+	missing := monitorMutationForTest(1, "", "missing", "user", "preset", "movie_1", "Movie", []string{"2026-08-10"}, nil, 0, "", "")
 	if _, err := service.Update(ctx, missing); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Update(missing) error = %v", err)
 	}
@@ -181,7 +181,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 		t.Fatalf("Update preset error = %v", err)
 	}
 	presets.getErr = nil
-	expiredUpdate := monitorMutationForTest(1, "", created.GetId(), "user", "preset", openingMonitorModeForTest(), "movie_1", "Movie", []string{"2026-08-08"}, nil, 0, "", "", 5*time.Second, 8*time.Second)
+	expiredUpdate := monitorMutationForTest(1, "", created.GetId(), "user", "preset", "movie_1", "Movie", []string{"2026-08-08"}, nil, 0, "", "")
 	if _, err := service.Update(ctx, expiredUpdate); !errors.Is(err, ErrMonitorExpired) {
 		t.Fatalf("Update expired error = %v", err)
 	}
@@ -191,7 +191,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 	}
 	monitors.putErr = nil
 
-	explicit := monitorMutationForTest(0, "", "", "user", "preset", cancellationMonitorModeForTest(), "movie_1", "Movie", []string{"2026-08-10"}, nil, 9, "", "", 7*time.Second, 11*time.Second)
+	explicit := monitorMutationForTest(0, "", "", "user", "preset", "movie_1", "Movie", []string{"2026-08-10"}, nil, 9, "", "")
 	if _, err := service.Create(ctx, explicit); err != nil {
 		t.Fatalf("Create(explicit) error = %v", err)
 	}
@@ -209,7 +209,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 	if _, err := service.Create(ctx, invalid); err == nil {
 		t.Fatal("Create() accepted invalid monitor")
 	}
-	expired := monitorMutationForTest(0, "", "", "user", "preset", cancellationMonitorModeForTest(), "movie_1", "Movie", []string{"2026-08-08"}, nil, 9, "", "", 7*time.Second, 11*time.Second)
+	expired := monitorMutationForTest(0, "", "", "user", "preset", "movie_1", "Movie", []string{"2026-08-08"}, nil, 9, "", "")
 	if _, err := service.Create(ctx, expired); !errors.Is(err, ErrMonitorExpired) {
 		t.Fatalf("Create() expiration error = %v", err)
 	}
@@ -242,8 +242,8 @@ func TestCancellationServiceCoversReviewCommitAndFailures(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
-	repository := &reservationRepositoryFake{reservation: bookedReservationFixtureForTest("reservation", "user", "monitor")}
-	booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest("reservation", "booking", "10000")}
+	repository := &reservationRepositoryFake{reservation: bookedReservationFixtureForTest("user", "monitor")}
+	booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest("booking", "10000")}
 	service := NewCancellationService(repository, booking, fixedClock{now})
 
 	draft, err := service.Cancel(ctx, cancellationRequest("user", false))
@@ -262,6 +262,7 @@ func TestCancellationServiceCoversReviewCommitAndFailures(t *testing.T) {
 		t.Fatalf("Cancel() get error = %v", err)
 	}
 	repository.getErr = nil
+	repository.reservation.SetBooked(clientpb.ReservationBooked_builder{}.Build())
 	booking.prepareCancellationErr = errInjected
 	if _, err := service.Cancel(ctx, cancellationRequest("user", true)); !errors.Is(err, errInjected) {
 		t.Fatalf("Cancel() prepare error = %v", err)
@@ -272,6 +273,7 @@ func TestCancellationServiceCoversReviewCommitAndFailures(t *testing.T) {
 		t.Fatalf("Cancel() commit error = %v", err)
 	}
 	booking.commitCancellationErr = nil
+	repository.reservation.SetBooked(clientpb.ReservationBooked_builder{}.Build())
 	repository.putErr = errInjected
 	if _, err := service.Cancel(ctx, cancellationRequest("user", true)); !errors.Is(err, errInjected) {
 		t.Fatalf("Cancel() put error = %v", err)
@@ -282,7 +284,7 @@ func TestMonitorServiceCreateIdempotentPaths(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
-	request := monitorMutationForTest(0, "", "", "user", "preset", openingMonitorModeForTest(), "movie_1", "Movie", []string{"2026-08-10"}, nil, 0, "", "", 5*time.Second, 8*time.Second)
+	request := monitorMutationForTest(0, "", "", "user", "preset", "movie_1", "Movie", []string{"2026-08-10"}, nil, 0, "", "")
 	presets := newPresetRepositoryFake()
 	presets.values["preset"] = applicationPreset("user", "auditorium", now)
 
@@ -337,8 +339,8 @@ func TestCancellationOperationLedgerPaths(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
 	newHarness := func() (*reservationSequenceRepository, *bookingGatewayFake, *operationRepositoryFake, *CancellationService) {
-		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest("reservation", "user", "monitor")}
-		booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest("reservation", "booking", "10000")}
+		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest("user", "monitor")}
+		booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest("booking", "10000")}
 		operations := &operationRepositoryFake{}
 		return reservations, booking, operations, NewCancellationService(reservations, booking, fixedClock{now}, operations)
 	}
@@ -376,14 +378,78 @@ func TestCancellationOperationLedgerPaths(t *testing.T) {
 	}
 }
 
+func TestCancellationCommitRefreshesRevisionAndUsesStableOperationID(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
+	reservations := &reservationSequenceRepository{
+		reservation: bookedReservationFixtureForTest("user", "monitor"),
+		revision:    7,
+	}
+	booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest("booking", "10000")}
+	booking.prepareCancellationHook = func(*clientpb.Reservation) { reservations.revision = 12 }
+	operations := &operationRepositoryFake{}
+	service := NewCancellationService(reservations, booking, fixedClock{now}, operations)
+
+	if _, err := service.Cancel(ctx, cancellationRequest("user", true)); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+	if len(reservations.putRevisions) != 2 || reservations.putRevisions[0] != 12 || reservations.putRevisions[1] != 13 {
+		t.Fatalf("reservation CAS revisions = %v, want [12 13]", reservations.putRevisions)
+	}
+	if len(operations.ids) != 3 {
+		t.Fatalf("operation writes = %d, want prepared/confirmed/reconciled", len(operations.ids))
+	}
+	for _, id := range operations.ids {
+		if id != "cancellation:reservation" {
+			t.Fatalf("operation id = %q, want stable cancellation:reservation", id)
+		}
+	}
+	if operations.revisions[0] != 0 || operations.revisions[1] != 1 || operations.revisions[2] != 2 {
+		t.Fatalf("operation CAS revisions = %v, want [0 1 2]", operations.revisions)
+	}
+}
+
+func TestCancellationRetryAfterConfirmedCancellationIsIdempotent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
+	reservation := bookedReservationFixtureForTest("user", "monitor")
+	reservation.SetCancelled(clientpb.ReservationCancelled_builder{}.Build())
+	reservation.SetCancelledAt(timestamppb.New(now))
+	reservation.SetBookingNumber("booking")
+	reservation.SetRefundAmount("10000")
+	reservations := &reservationSequenceRepository{reservation: reservation}
+	booking := &bookingGatewayFake{
+		draft:                 cancellationResultFixtureForTest("booking", "10000"),
+		commitCancellationErr: errInjected,
+	}
+	service := NewCancellationService(reservations, booking, fixedClock{now})
+
+	result, err := service.Cancel(ctx, cancellationRequest("user", true))
+	if err != nil {
+		t.Fatalf("idempotent Cancel() error = %v", err)
+	}
+	if result.GetReservationId() != "reservation" || result.GetBookingNumber() != "booking" || result.GetRefundAmount() != "10000" {
+		t.Fatalf("idempotent cancellation result = %s", result)
+	}
+	if booking.prepareCancellationCalls != 0 || booking.commitCancellationCalls != 0 {
+		t.Fatalf("idempotent retry reopened provider flow: prepare=%d commit=%d", booking.prepareCancellationCalls, booking.commitCancellationCalls)
+	}
+}
+
 type operationRepositoryFake struct {
-	puts   int
-	failAt int
-	last   *clientpb.ExternalOperation
+	puts      int
+	failAt    int
+	last      *clientpb.ExternalOperation
+	ids       []string
+	revisions []int64
 }
 
 func (repository *operationRepositoryFake) PutExternalOperation(_ context.Context, resource *clientpb.Resource) error {
 	repository.puts++
+	repository.ids = append(repository.ids, resource.GetExternalOperation().GetId())
+	repository.revisions = append(repository.revisions, resource.GetIdentity().GetRevision())
 	if repository.puts == repository.failAt {
 		return errInjected
 	}
@@ -391,14 +457,17 @@ func (repository *operationRepositoryFake) PutExternalOperation(_ context.Contex
 	if message == nil {
 		return errors.New("external operation resource is required")
 	}
+	resource.GetIdentity().SetRevision(int64(repository.puts))
 	repository.last = cloneExternalOperation(message)
 	return nil
 }
 
 type reservationSequenceRepository struct {
-	reservation *clientpb.Reservation
-	puts        int
-	failAt      int
+	reservation  *clientpb.Reservation
+	revision     int64
+	puts         int
+	failAt       int
+	putRevisions []int64
 }
 
 func (repository *reservationSequenceRepository) PutReservation(_ context.Context, resource *clientpb.Resource) error {
@@ -406,16 +475,18 @@ func (repository *reservationSequenceRepository) PutReservation(_ context.Contex
 	if repository.puts == repository.failAt {
 		return errInjected
 	}
-	value, _, err := reservationMessage(resource)
+	value, revision, err := reservationMessage(resource)
 	if err != nil {
 		return err
 	}
+	repository.putRevisions = append(repository.putRevisions, revision)
+	repository.revision = revision + 1
 	repository.reservation = cloneReservation(value)
 	return nil
 }
 
 func (repository *reservationSequenceRepository) GetReservation(context.Context, string) (*clientpb.Resource, error) {
-	return resourceForReservation(cloneReservation(repository.reservation), 0), nil
+	return resourceForReservation(cloneReservation(repository.reservation), repository.revision), nil
 }
 
 func (repository *reservationSequenceRepository) ListReservationsByUser(context.Context, string) ([]*clientpb.Resource, error) {
@@ -450,21 +521,6 @@ func applicationPreset(userID, auditoriumID string, now time.Time) *clientpb.Res
 	preset.SetCreatedAt(domainTimestampForTest(now))
 	preset.SetUpdatedAt(domainTimestampForTest(now))
 	return presetResourceFixture(preset, 0)
-}
-
-func validApplicationSeatMap(auditoriumID string, now time.Time) domain.SeatMap {
-	return domain.SeatMap{
-		AuditoriumID: auditoriumID, Version: "version", ObservedAt: now,
-		Seats: []domain.Seat{{
-			ID: "seat", AuditoriumID: auditoriumID, Label: "A1", Row: "A", Number: 1,
-			X: 0.5, Y: 0.5, Type: domain.SeatTypeStandard,
-		}},
-		Evidence: domain.LayoutEvidence{
-			ScreenshotPath: "layout.png", ScreenshotSHA256: "screen", SnapshotSHA256: "snapshot",
-			SourceShowtimeID: "showtime", DOMSeatCount: 1, SnapshotSeatCount: 1,
-			CaptureTrigger: "refresh", CapturedAt: now,
-		},
-	}
 }
 
 type presetRepositoryFake struct {
@@ -553,14 +609,12 @@ func (repository *seatMapRepositoryFake) GetSeatMap(_ context.Context, id string
 }
 
 type monitorRepositoryFake struct {
-	job        *clientpb.Monitor
-	revision   int64
-	getErr     error
-	putErr     error
-	listErr    error
-	deleteErr  error
-	renewErr   error
-	releaseErr error
+	job       *clientpb.Monitor
+	revision  int64
+	getErr    error
+	putErr    error
+	listErr   error
+	deleteErr error
 }
 
 func (repository *monitorRepositoryFake) PutMonitor(_ context.Context, resource *clientpb.Resource) error {
@@ -592,25 +646,6 @@ func (repository *monitorRepositoryFake) ListMonitorsByUser(context.Context, str
 
 func (repository *monitorRepositoryFake) DeleteMonitor(context.Context, string) error {
 	return repository.deleteErr
-}
-
-func (repository *monitorRepositoryFake) AcquireMonitor(
-	context.Context, string, string, time.Time, time.Duration,
-) (*clientpb.Resource, error) {
-	if repository.getErr != nil {
-		return nil, repository.getErr
-	}
-	return resourceForMonitor(cloneMonitor(repository.job), repository.revision), nil
-}
-
-func (repository *monitorRepositoryFake) RenewMonitor(
-	context.Context, string, string, time.Time, time.Duration,
-) error {
-	return repository.renewErr
-}
-
-func (repository *monitorRepositoryFake) ReleaseMonitor(context.Context, string, string) error {
-	return repository.releaseErr
 }
 
 type reservationRepositoryFake struct {
@@ -646,9 +681,12 @@ func (repository *reservationRepositoryFake) ListReservationsByUser(
 }
 
 type bookingGatewayFake struct {
-	draft                  *clientpb.WebUICancellationResult
-	prepareCancellationErr error
-	commitCancellationErr  error
+	draft                    *clientpb.WebUICancellationResult
+	prepareCancellationErr   error
+	commitCancellationErr    error
+	prepareCancellationHook  func(*clientpb.Reservation)
+	prepareCancellationCalls int
+	commitCancellationCalls  int
 }
 
 func (*bookingGatewayFake) OpenSeatSelection(
@@ -671,8 +709,12 @@ func (gateway *bookingGatewayFake) PrepareCancellation(
 	_ context.Context,
 	reservation *clientpb.Reservation,
 ) (*clientpb.WebUICancellationResult, error) {
+	gateway.prepareCancellationCalls++
 	if gateway.prepareCancellationErr != nil {
 		return nil, gateway.prepareCancellationErr
+	}
+	if gateway.prepareCancellationHook != nil {
+		gateway.prepareCancellationHook(reservation)
 	}
 	reservationID, bookingNumber, refundAmount := gateway.draft.GetReservationId(), gateway.draft.GetBookingNumber(), gateway.draft.GetRefundAmount()
 	if reservationID == "" && reservation != nil {
@@ -682,5 +724,6 @@ func (gateway *bookingGatewayFake) PrepareCancellation(
 }
 
 func (gateway *bookingGatewayFake) CommitCancellation(context.Context) error {
+	gateway.commitCancellationCalls++
 	return gateway.commitCancellationErr
 }

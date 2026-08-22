@@ -166,7 +166,6 @@ func claimedSeatWatchInputs(repository *workerRepository, showtime domain.Showti
 
 type claimedSeatWatchGateway interface {
 	BookingGateway
-	ShowtimeGateway
 }
 
 func newClaimedSeatWatchTestWorker(
@@ -177,9 +176,8 @@ func newClaimedSeatWatchTestWorker(
 	policy ClaimedSeatWatchPolicy,
 ) *BookingWorker {
 	return NewBookingWorker(BookingWorkerDependencies{
-		Monitors: repository, Presets: repository, Theaters: repository,
-		Auditoriums: repository, Reservations: repository,
-		Showtimes: gateway, Booking: gateway, IDs: &sequenceIDs{}, Clock: clock, Waiter: waiter,
+		Monitors: repository, Reservations: repository,
+		Booking: gateway, IDs: &sequenceIDs{}, Clock: clock, Waiter: waiter,
 		Jitter: func(time.Duration) time.Duration { return 0 }, ClaimedWatch: policy,
 	})
 }

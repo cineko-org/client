@@ -8,7 +8,6 @@ import (
 
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func TestApplicationServicesRejectMissingProtoMutations(t *testing.T) {
@@ -55,11 +54,9 @@ func TestGeneratedProtoStateHelpers(t *testing.T) {
 	hour, minute := int32(18), int32(30)
 	message := clientpb.Monitor_builder{
 		Id: &id, UserId: &userID, PresetId: &presetID,
-		Mode:    clientpb.MonitorMode_builder{Opening: clientpb.OpeningMonitor_builder{}.Build()}.Build(),
 		MovieId: &movieID, MovieTitle: &title,
 		TargetDates:       []*commonpb.LocalDate{commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()},
 		SearchHorizonDays: &horizon, EarliestTime: commonpb.LocalTime_builder{Hour: &hour, Minute: &minute}.Build(),
-		PollInterval: durationpb.New(5 * time.Second), MaximumPollInterval: durationpb.New(7 * time.Second),
 	}.Build()
 	revision := int64(2)
 	mutation := clientpb.WebUIResourceMutation_builder{
@@ -68,12 +65,6 @@ func TestGeneratedProtoStateHelpers(t *testing.T) {
 	got, actualRevision, err := monitorMutationMessage(mutation)
 	if err != nil || got != message || actualRevision != 2 {
 		t.Fatalf("monitorMutationMessage() = %v, %d, %v", got, actualRevision, err)
-	}
-	if got := monitorPollInterval(message); got != 5*time.Second {
-		t.Fatalf("monitorPollInterval() = %v", got)
-	}
-	if got := monitorPollIntervalMax(message); got != 7*time.Second {
-		t.Fatalf("monitorPollIntervalMax() = %v", got)
 	}
 	if got := localTimeValue(message.GetEarliestTime()); got != "18:30" {
 		t.Fatalf("localTimeValue() = %q", got)

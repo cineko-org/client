@@ -9,7 +9,6 @@ import (
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestShowtimeDomainFromProtoHandlesNil(t *testing.T) {
@@ -23,58 +22,23 @@ func TestBookingWorkerCoversMalformedResourcesAndCompletionFailures(t *testing.T
 	t.Parallel()
 	ctx := context.Background()
 
-	worker, monitors, _, _, _, _ := newWorkerCoverageHarness()
-	failingMonitors := &runOnceMonitorRepository{monitorRepositoryFake: monitors, failAt: 2}
-	worker.monitors = failingMonitors
-	if _, err := worker.RunOnce(ctx, "monitor"); !errors.Is(err, errInjected) {
-		t.Fatalf("RunOnce(complete persist) = %v", err)
-	}
-
-	worker, _, _, _, _, _ = newWorkerCoverageHarness()
+	worker := NewBookingWorker(BookingWorkerDependencies{
+		Monitors: &monitorRepositoryFake{}, Reservations: &workerRepository{},
+		Booking: &emptyCancellationGateway{}, IDs: &sequenceIDs{},
+		Clock: fixedClock{time.Now()}, Waiter: noWaiter{},
+	})
 	if _, err := worker.RunClaimedShowtime(ctx, &clientpb.Resource{}, &clientpb.Resource{}, nil, nil, nil); err == nil {
 		t.Fatal("RunClaimedShowtime accepted a malformed monitor resource")
 	}
-	monitor := validWorkerJob()
+	monitor := monitorFixtureForTest("user", "preset", "Movie", []string{"2026-08-10"})
 	if _, err := worker.RunClaimedShowtime(ctx, resourceForMonitor(monitor, 0), &clientpb.Resource{}, nil, nil, nil); err == nil {
 		t.Fatal("RunClaimedShowtime accepted a malformed preset resource")
 	}
-
-	malformedMonitors := &malformedMonitorRepository{
-		monitorRepositoryFake: &monitorRepositoryFake{},
-		resource:              &clientpb.Resource{},
-	}
-	worker.monitors = malformedMonitors
-	if _, err := worker.startMonitor(ctx, "monitor"); err == nil {
-		t.Fatal("startMonitor accepted a malformed monitor resource")
-	}
-
-	if _, _, _, err := worker.complete(ctx, monitor, nil, time.Now()); err == nil {
+	if _, err := worker.complete(ctx, monitor, nil, time.Now(), 0); err == nil {
 		t.Fatal("complete accepted a missing reservation")
 	}
-	if err := worker.putMonitor(ctx, nil, 0); err == nil {
+	if _, err := worker.putMonitor(ctx, nil, 0); err == nil {
 		t.Fatal("putMonitor accepted a nil monitor")
-	}
-}
-
-func TestBookingWorkerCoversMalformedPresetAndNilShowtimeOrdering(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	worker, _, presets, _, _, _ := newWorkerCoverageHarness()
-	worker.presets = &malformedPresetRepository{
-		presetRepositoryFake: presets,
-		getResource:          &clientpb.Resource{},
-	}
-	if _, _, _, err := worker.loadBookingContext(ctx, validWorkerJob()); err == nil {
-		t.Fatal("loadBookingContext accepted a malformed preset resource")
-	}
-
-	idWithTime, idWithoutTime := "with-time", "without-time"
-	startsAt := timestamppb.New(time.Date(2026, time.August, 10, 20, 0, 0, 0, time.UTC))
-	withTime := catalogpb.Showtime_builder{Id: &idWithTime, StartsAt: startsAt}.Build()
-	withoutTime := catalogpb.Showtime_builder{Id: &idWithoutTime}.Build()
-	best, ok := bestShowtime([]*catalogpb.Showtime{withoutTime, withTime})
-	if !ok || best.GetId() != idWithTime {
-		t.Fatalf("bestShowtime(nil timestamp ordering) = %+v, %t", best, ok)
 	}
 }
 
@@ -83,7 +47,7 @@ func TestCancellationServiceCoversMissingRequestsAndDraftIdentity(t *testing.T) 
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
 	repository := &reservationRepositoryFake{
-		reservation: bookedReservationFixtureForTest("reservation", "user", "monitor"),
+		reservation: bookedReservationFixtureForTest("user", "monitor"),
 	}
 	gateway := &emptyCancellationGateway{}
 	service := NewCancellationService(repository, gateway, fixedClock{now})
@@ -104,7 +68,7 @@ func TestMonitorServiceRejectsMalformedStoredResources(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 9, 10, 0, 0, 0, time.UTC)
-	request := monitorMutationForTest(1, "", "monitor", "user", "preset", openingMonitorModeForTest(), "movie", "Movie", []string{"2026-08-10"}, nil, 0, "", "", 5*time.Second, 8*time.Second)
+	request := monitorMutationForTest(1, "", "monitor", "user", "preset", "movie", "Movie", []string{"2026-08-10"}, nil, 0, "", "")
 	presets := newPresetRepositoryFake()
 	presets.values["preset"] = applicationPreset("user", "auditorium", now)
 
@@ -120,7 +84,7 @@ func TestMonitorServiceRejectsMalformedStoredResources(t *testing.T) {
 		t.Fatal("Delete accepted a malformed monitor")
 	}
 
-	monitors := &monitorRepositoryFake{job: validWorkerJob(), revision: 1}
+	monitors := &monitorRepositoryFake{job: monitorFixtureForTest("user", "preset", "Movie", []string{"2026-08-10"}), revision: 1}
 	malformedPresets := &malformedPresetRepository{
 		presetRepositoryFake: presets,
 		getResource:          &clientpb.Resource{},
@@ -129,7 +93,7 @@ func TestMonitorServiceRejectsMalformedStoredResources(t *testing.T) {
 	if _, err := service.Update(ctx, request); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Update(malformed preset) = %v", err)
 	}
-	create := monitorMutationForTest(0, "", "", "user", "preset", openingMonitorModeForTest(), "movie", "Movie", []string{"2026-08-10"}, nil, 0, "", "", 5*time.Second, 8*time.Second)
+	create := monitorMutationForTest(0, "", "", "user", "preset", "movie", "Movie", []string{"2026-08-10"}, nil, 0, "", "")
 	if _, err := service.Create(ctx, create); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Create(malformed preset) = %v", err)
 	}
@@ -184,19 +148,6 @@ type malformedMonitorRepository struct {
 }
 
 func (repository *malformedMonitorRepository) GetMonitor(context.Context, string) (*clientpb.Resource, error) {
-	if repository.getErr != nil {
-		return nil, repository.getErr
-	}
-	return repository.resource, nil
-}
-
-func (repository *malformedMonitorRepository) AcquireMonitor(
-	context.Context,
-	string,
-	string,
-	time.Time,
-	time.Duration,
-) (*clientpb.Resource, error) {
 	if repository.getErr != nil {
 		return nil, repository.getErr
 	}

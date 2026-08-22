@@ -71,9 +71,6 @@ type Store struct {
 	refreshToken     string
 	refreshExpiresAt time.Time
 
-	leaseMu sync.Mutex
-	leases  map[string]monitorLease
-
 	releaseGeneration atomic.Int64
 	updateRequired    chan struct{}
 	updateOnce        sync.Once
@@ -82,11 +79,6 @@ type Store struct {
 	resyncOnce        sync.Once
 	resourceChanged   chan struct{}
 	executionReady    chan struct{}
-}
-
-type monitorLease struct {
-	owner     string
-	expiresAt time.Time
 }
 
 type centralAPIError struct {
@@ -247,7 +239,7 @@ func newStore(baseURL string, userID string, client *http.Client) (*Store, error
 	}
 	return &Store{
 		baseURL: validatedURL, userID: strings.TrimSpace(userID), client: client,
-		clock: time.Now, leases: make(map[string]monitorLease), updateRequired: make(chan struct{}),
+		clock: time.Now, updateRequired: make(chan struct{}),
 		resyncRequired:  make(chan struct{}),
 		resourceChanged: make(chan struct{}, 1), executionReady: make(chan struct{}, 1),
 	}, nil
@@ -561,55 +553,6 @@ func (store *Store) ListMonitorsByUser(ctx context.Context, userID string) ([]*c
 
 func (store *Store) DeleteMonitor(ctx context.Context, id string) error {
 	return store.delete(ctx, "monitors", id)
-}
-
-func (store *Store) AcquireMonitor(
-	ctx context.Context,
-	id string,
-	owner string,
-	now time.Time,
-	ttl time.Duration,
-) (*clientpb.Resource, error) {
-	store.leaseMu.Lock()
-	defer store.leaseMu.Unlock()
-	if lease, exists := store.leases[id]; exists && lease.owner != owner && lease.expiresAt.After(now) {
-		return nil, application.ErrConflict
-	}
-	monitor, err := store.GetMonitor(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if monitor.GetMonitor() == nil || monitor.GetMonitor().GetUserId() != store.userID {
-		return nil, application.ErrNotFound
-	}
-	store.leases[id] = monitorLease{owner: owner, expiresAt: now.Add(ttl)}
-	return monitor, nil
-}
-
-func (store *Store) RenewMonitor(
-	_ context.Context,
-	id string,
-	owner string,
-	now time.Time,
-	ttl time.Duration,
-) error {
-	store.leaseMu.Lock()
-	defer store.leaseMu.Unlock()
-	lease, exists := store.leases[id]
-	if !exists || lease.owner != owner || !lease.expiresAt.After(now) {
-		return application.ErrConflict
-	}
-	store.leases[id] = monitorLease{owner: owner, expiresAt: now.Add(ttl)}
-	return nil
-}
-
-func (store *Store) ReleaseMonitor(_ context.Context, id string, owner string) error {
-	store.leaseMu.Lock()
-	defer store.leaseMu.Unlock()
-	if lease, exists := store.leases[id]; exists && lease.owner == owner {
-		delete(store.leases, id)
-	}
-	return nil
 }
 
 func (store *Store) PutReservation(ctx context.Context, resource *clientpb.Resource) error {

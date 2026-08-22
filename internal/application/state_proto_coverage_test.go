@@ -1,7 +1,6 @@
 package application
 
 import (
-	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -9,18 +8,14 @@ import (
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestStateProtoPrimitiveResourceAndCloneHelpers(t *testing.T) {
 	t.Parallel()
 
-	if durationValue(nil) != 0 || localTimeValue(nil) != "" || monitorCommandID(nil) != "" || monitorCommandID(&clientpb.WebUIResourceMutation{}) != "" {
+	if localTimeValue(nil) != "" || monitorCommandID(nil) != "" || monitorCommandID(&clientpb.WebUIResourceMutation{}) != "" {
 		t.Fatal("nil Proto helper returned a non-zero value")
-	}
-	if durationValue(durationpb.New(time.Second)) != time.Second {
-		t.Fatal("duration Proto helper lost the duration")
 	}
 
 	preset := validStatePresetForTest()
@@ -164,14 +159,6 @@ func TestStateProtoMonitorValidationAndDefaults(t *testing.T) {
 		func(value *clientpb.Monitor) { value.SetPresetId("") },
 		func(value *clientpb.Monitor) { value.SetMovieId("") },
 		func(value *clientpb.Monitor) { value.SetTargetDates(nil) },
-		func(value *clientpb.Monitor) { value.SetMode(nil) },
-		func(value *clientpb.Monitor) { value.SetMode(&clientpb.MonitorMode{}) },
-		func(value *clientpb.Monitor) {
-			value.SetMode(clientpb.MonitorMode_builder{Cancellation: clientpb.CancellationMonitor_builder{}.Build()}.Build())
-			value.SetTargetWeekdays([]int32{1})
-		},
-		func(value *clientpb.Monitor) { value.SetPollInterval(durationpb.New(time.Second)) },
-		func(value *clientpb.Monitor) { value.SetMaximumPollInterval(durationpb.New(2 * time.Second)) },
 		func(value *clientpb.Monitor) { value.SetTargetDates([]*commonpb.LocalDate{nil}) },
 		func(value *clientpb.Monitor) {
 			value.SetTargetDates([]*commonpb.LocalDate{stateDateForTest(2, 30)})
@@ -199,7 +186,7 @@ func TestStateProtoMonitorValidationAndDefaults(t *testing.T) {
 		func(value *clientpb.Monitor) {
 			value.SetTargetDates(nil)
 			value.SetTargetWeekdays([]int32{1})
-			value.SetSearchHorizonDays(366)
+			value.SetSearchHorizonDays(15)
 		},
 		func(value *clientpb.Monitor) { value.SetEarliestTime(stateTimeForTest(24, 0)) },
 		func(value *clientpb.Monitor) { value.SetEarliestTime(stateTimeForTest(-1, 0)) },
@@ -219,31 +206,22 @@ func TestStateProtoMonitorValidationAndDefaults(t *testing.T) {
 	if err := validateLocalTime(stateTimeForTest(12, 30)); err != nil {
 		t.Fatalf("valid local time rejected: %v", err)
 	}
-
-	if monitorModeIsCancellation(nil) || monitorModeIsCancellation(&clientpb.Monitor{}) {
-		t.Fatal("empty monitor reported cancellation mode")
+	horizonAtMaximum := validStateMonitorForTest()
+	horizonAtMaximum.SetTargetDates(nil)
+	horizonAtMaximum.SetTargetWeekdays([]int32{1})
+	horizonAtMaximum.SetSearchHorizonDays(maxSearchHorizonDays)
+	if err := validateMonitorMessage(horizonAtMaximum); err != nil {
+		t.Fatalf("maximum weekday search horizon rejected: %v", err)
 	}
-	cancellation := validStateMonitorForTest()
-	cancellation.SetMode(clientpb.MonitorMode_builder{Cancellation: clientpb.CancellationMonitor_builder{}.Build()}.Build())
-	if !monitorModeIsCancellation(cancellation) {
-		t.Fatal("cancellation monitor mode was not detected")
-	}
-	if monitorPollInterval(nil) != 3*time.Minute || monitorPollInterval(&clientpb.Monitor{}) != 3*time.Minute {
-		t.Fatal("missing poll interval did not use the default")
-	}
-	if monitorPollIntervalMax(nil) != 8*time.Minute {
-		t.Fatal("nil monitor maximum poll interval did not use the default")
-	}
-	withoutMaximum := validStateMonitorForTest()
-	withoutMaximum.SetMaximumPollInterval(nil)
-	if monitorPollIntervalMax(withoutMaximum) != 12*time.Second/5 {
-		t.Fatalf("derived maximum poll interval = %v", monitorPollIntervalMax(withoutMaximum))
+	horizonTooLarge := cloneMonitor(horizonAtMaximum)
+	horizonTooLarge.SetSearchHorizonDays(maxSearchHorizonDays + 1)
+	if err := validateMonitorMessage(horizonTooLarge); err == nil || err.Error() != "weekday search horizon must be between 1 and 14 days" {
+		t.Fatalf("oversized weekday search horizon error = %v", err)
 	}
 
 	defaults := clientpb.Monitor_builder{TargetWeekdays: []int32{1}}.Build()
 	applyMonitorDefaults(defaults)
-	if defaults.GetMode().GetOpening() == nil || defaults.GetPollInterval().AsDuration() != 3*time.Minute ||
-		defaults.GetMaximumPollInterval().AsDuration() != 8*time.Minute || defaults.GetSearchHorizonDays() != defaultSearchHorizonDays ||
+	if defaults.GetSearchHorizonDays() != defaultSearchHorizonDays ||
 		defaults.GetState().GetPending() == nil {
 		t.Fatalf("monitor defaults = %+v", defaults)
 	}
@@ -294,14 +272,10 @@ func TestStateProtoMonitorLifecycleDatesAndRankingAdapters(t *testing.T) {
 	if monitorStateName(transitioned) != "failed" {
 		t.Fatal("monitor failure was not recorded")
 	}
-	monitorRecordCheck(nil, now, nil)
-	monitorRecordCheck(transitioned, now, nil)
-	if monitorStateName(transitioned) != "running" {
-		t.Fatal("successful check did not recover failed monitor")
-	}
-	monitorRecordCheck(transitioned, now, errors.New("boom"))
-	if monitorStateName(transitioned) != "failed" || transitioned.GetState().GetFailed().GetReason() != "boom" {
-		t.Fatal("failed check did not retain its cause")
+	monitorRecordCheck(nil, now)
+	monitorRecordCheck(transitioned, now)
+	if monitorStateName(transitioned) != "failed" || !transitioned.GetLastCheckedAt().AsTime().Equal(now) {
+		t.Fatal("recorded check changed terminal state or timestamp")
 	}
 
 	if monitorResolveTargetDates(nil, now) != nil {
@@ -357,9 +331,7 @@ func validStateMonitorForTest() *clientpb.Monitor {
 	id, userID, presetID, movieID := "monitor", "user", "preset", "movie"
 	return clientpb.Monitor_builder{
 		Id: &id, UserId: &userID, PresetId: &presetID, MovieId: &movieID,
-		Mode:         clientpb.MonitorMode_builder{Opening: clientpb.OpeningMonitor_builder{}.Build()}.Build(),
-		TargetDates:  []*commonpb.LocalDate{stateDateForTest(8, 10)},
-		PollInterval: durationpb.New(2 * time.Second), MaximumPollInterval: durationpb.New(3 * time.Second),
+		TargetDates: []*commonpb.LocalDate{stateDateForTest(8, 10)},
 	}.Build()
 }
 

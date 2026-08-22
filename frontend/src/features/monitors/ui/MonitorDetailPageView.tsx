@@ -5,8 +5,8 @@ import { Metric } from '../../../components/core/Metric';
 import { PageHeader } from '../../../components/core/PageHeader';
 import { EmptyState, Section } from '../../../components/core/Section';
 import type { Monitor } from '../../../api/proto';
-import { monitorMode, monitorMovie, monitorStatus } from '../../../api/resources';
-import { monitorIntervalLabel, monitorScheduleLabel, monitorStatusLabel, monitorTimeLabel } from '../model';
+import { monitorMovie, monitorStatus } from '../../../api/resources';
+import { monitorScheduleLabel, monitorStatusLabel, monitorTimeLabel } from '../model';
 
 interface MonitorDetailPageViewProps {
   monitor?: Monitor;
@@ -29,17 +29,18 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
 	const awaitingPayment = status === 'triggered';
 	const paymentUnknown = status === 'payment_unknown';
 	const running = status === 'running';
+	const retryable = awaitingPayment || paymentUnknown || status === 'failed' || status === 'stopped';
   const retryLabel = paymentUnknown ? '확인 후 다시 찾기' : '다시 찾기';
   return (
     <Stack gap="xl">
       <PageHeader
-		title={monitorMovie(monitor)}
-		description={monitorMode(monitor) === 'cancellation' ? '취소표 전용 모니터' : '예매 오픈·취소표 모니터'}
+		 title={monitorMovie(monitor)}
+		description="예매 오픈부터 취소표까지 감시하는 모니터"
         actions={(
           <Group gap="xs">
             <SecondaryButton onClick={onBack}>목록</SecondaryButton>
             <SecondaryButton onClick={onEdit} disabled={mutating || running || awaitingPayment || paymentUnknown}>편집</SecondaryButton>
-            {awaitingPayment || paymentUnknown
+			{retryable
               ? <PrimaryButton loading={mutating} onClick={onRetry}>{retryLabel}</PrimaryButton>
               : null}
           </Group>
@@ -57,7 +58,6 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
           color={awaitingPayment || paymentUnknown ? 'orange' : running ? 'blue' : 'gray'}
           processing={running}
         />
-        <Metric label="확인 간격" value={monitorIntervalLabel(monitor)} detail="매회 범위 내 무작위" color="violet" />
         <Metric label="진행 범위" value={paymentUnknown ? '결과 확인 필요' : awaitingPayment ? '결제 대기' : '결제 전까지'} detail={monitorTimeLabel(monitor)} color="orange" />
       </Columns>
       <Section title="관람 조건">

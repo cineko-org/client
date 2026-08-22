@@ -15,25 +15,19 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type monitorLease struct {
-	owner     string
-	expiresAt time.Time
-}
-
 // Repository mirrors production generated-Proto ports so tests cannot
 // accidentally reintroduce a parallel DTO boundary.
 type Repository struct {
-	mu            sync.RWMutex
-	theaters      map[string]*catalogpb.Theater
-	auditoriums   map[string]*catalogpb.Auditorium
-	seatMaps      map[string]*seatmappb.Snapshot
-	presets       map[string]*clientpb.Resource
-	monitors      map[string]*clientpb.Resource
-	reservations  map[string]*clientpb.Resource
-	operations    map[string]*clientpb.Resource
-	events        map[string]*clientpb.Resource
-	monitorLeases map[string]monitorLease
-	catalog       *catalogpb.CatalogIndex
+	mu           sync.RWMutex
+	theaters     map[string]*catalogpb.Theater
+	auditoriums  map[string]*catalogpb.Auditorium
+	seatMaps     map[string]*seatmappb.Snapshot
+	presets      map[string]*clientpb.Resource
+	monitors     map[string]*clientpb.Resource
+	reservations map[string]*clientpb.Resource
+	operations   map[string]*clientpb.Resource
+	events       map[string]*clientpb.Resource
+	catalog      *catalogpb.CatalogIndex
 }
 
 func New() *Repository {
@@ -42,7 +36,6 @@ func New() *Repository {
 		seatMaps: make(map[string]*seatmappb.Snapshot), presets: make(map[string]*clientpb.Resource),
 		monitors: make(map[string]*clientpb.Resource), reservations: make(map[string]*clientpb.Resource),
 		operations: make(map[string]*clientpb.Resource), events: make(map[string]*clientpb.Resource),
-		monitorLeases: make(map[string]monitorLease),
 	}
 }
 
@@ -155,45 +148,7 @@ func (repository *Repository) ListMonitorsByUser(ctx context.Context, userID str
 	return repository.list(ctx, repository.monitors, userID)
 }
 func (repository *Repository) DeleteMonitor(ctx context.Context, id string) error {
-	repository.mu.Lock()
-	delete(repository.monitorLeases, id)
-	repository.mu.Unlock()
 	return repository.delete(ctx, repository.monitors, id)
-}
-
-func (repository *Repository) AcquireMonitor(_ context.Context, id, owner string, now time.Time, ttl time.Duration) (*clientpb.Resource, error) {
-	repository.mu.Lock()
-	defer repository.mu.Unlock()
-	value := repository.monitors[id]
-	if value == nil {
-		return nil, application.ErrNotFound
-	}
-	lease := repository.monitorLeases[id]
-	if lease.owner != "" && lease.owner != owner && lease.expiresAt.After(now) {
-		return nil, application.ErrConflict
-	}
-	repository.monitorLeases[id] = monitorLease{owner: owner, expiresAt: now.Add(ttl)}
-	return clone(value), nil
-}
-
-func (repository *Repository) RenewMonitor(_ context.Context, id, owner string, now time.Time, ttl time.Duration) error {
-	repository.mu.Lock()
-	defer repository.mu.Unlock()
-	lease := repository.monitorLeases[id]
-	if lease.owner != owner || !lease.expiresAt.After(now) {
-		return application.ErrConflict
-	}
-	repository.monitorLeases[id] = monitorLease{owner: owner, expiresAt: now.Add(ttl)}
-	return nil
-}
-
-func (repository *Repository) ReleaseMonitor(_ context.Context, id, owner string) error {
-	repository.mu.Lock()
-	defer repository.mu.Unlock()
-	if repository.monitorLeases[id].owner == owner {
-		delete(repository.monitorLeases, id)
-	}
-	return nil
 }
 
 func (repository *Repository) PutReservation(ctx context.Context, value *clientpb.Resource) error {

@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Box, Divider, Group, Stack, Text } from '@mantine/core';
 import { PrimaryButton, SecondaryButton, DangerButton, IconAction } from '../components/core/Actions';
 import { Columns } from '../components/core/Columns';
-import { NumberField, SelectField, TextAreaField, TextField } from '../components/core/Fields';
+import { SelectField, TextAreaField, TextField } from '../components/core/Fields';
 import { Metric } from '../components/core/Metric';
 import { EmptyState, Section } from '../components/core/Section';
 import { StatusIndicator } from '../components/core/StatusIndicator';
@@ -31,7 +31,7 @@ export const StatusAndMetrics: Story = {
 };
 
 export const Fields: Story = {
-  render: () => <Canvas><Stack maw={760} gap="md"><TextField label="이름" value="용산 IMAX 중앙 2석" onChange={noop} /><SelectField label="연결 방식" data={['사용 안 함', 'HTTP(S) / SOCKS5']} value="HTTP(S) / SOCKS5" onChange={noop} /><NumberField label="최소 확인 간격" value={3} suffix="분" onChange={noop} /><TextAreaField label="프록시 주소" value={'socks5://127.0.0.1:1080\nhttps://proxy.example:8443'} onChange={noop} /></Stack></Canvas>,
+  render: () => <Canvas><Stack maw={760} gap="md"><TextField label="이름" value="용산 IMAX 중앙 2석" onChange={noop} /><SelectField label="연결 방식" data={['사용 안 함', 'HTTP(S) / SOCKS5']} value="HTTP(S) / SOCKS5" onChange={noop} /><TextAreaField label="프록시 주소" value={'socks5://127.0.0.1:1080\nhttps://proxy.example:8443'} onChange={noop} /></Stack></Canvas>,
 };
 
 export const Sections: Story = {
@@ -54,8 +54,8 @@ export const OpeningSchedule: Story = {
   render: () => <Canvas><Box maw={900}><ScheduleView form={{ ...initialMonitorForm, dates: ['2026-08-20'], weekdays: ['5', '6'], earliestTime: '18:00', latestTime: '23:30' }} onChange={noop} /></Box></Canvas>,
 };
 
-export const CancellationSchedule: Story = {
-  render: () => <Canvas><Box maw={900}><ScheduleView form={{ ...initialMonitorForm, monitorMode: 'cancellation', dates: ['2026-08-20'], earliestTime: '19:00' }} onChange={noop} /></Box></Canvas>,
+export const EveningSchedule: Story = {
+  render: () => <Canvas><Box maw={900}><ScheduleView form={{ ...initialMonitorForm, dates: ['2026-08-20'], earliestTime: '19:00' }} onChange={noop} /></Box></Canvas>,
 };
 
 export const AccountAndProxy: Story = {

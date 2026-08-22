@@ -1,14 +1,14 @@
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 import {
-	LocalDateSchema, LocalTimeSchema, MonitorModeSchema, MonitorSchema, MonitorStateSchema,
-	MovieSchema, OpeningMonitorSchema, PresetSchema, ProxyNetworkSchema, NetworkSettingsSchema,
+	LocalDateSchema, LocalTimeSchema, MonitorSchema, MonitorStateSchema,
+	MovieSchema, PresetSchema, ProxyNetworkSchema, NetworkSettingsSchema,
 	ReservationBookedSchema, ReservationCancelledSchema, ReservationSchema, SeatPreferenceSchema, SeatSchema, TheaterSchema, WebhookTargetSchema,
 	DirectNetworkSchema, type Theater,
 } from '../src/api/proto';
 import { emptyAppState } from '../src/features/application/model';
 import {
-	formFromMonitor, initialMonitorForm, localDateString, monitorFormError, monitorIntervalLabel,
+	formFromMonitor, initialMonitorForm, localDateString, monitorFormError,
 	monitorScheduleLabel, monitorTimeLabel, monitorSaveRequest, monitorStatusLabel, normalizeHorizon,
 	scheduleBounds, scheduleDescription, weekdayOptions, orderedCatalogMovies,
 } from '../src/features/monitors/model';
@@ -34,7 +34,6 @@ const time = (value: string) => {
 };
 const monitorWithStatus = (status: 'pending' | 'running' | 'triggered' | 'booked' | 'failed' | 'stopped', movieTitle = '오디세이') => create(MonitorSchema, {
 	id: 'monitor', movieId: 'movie', movieTitle, userId: 'user', presetId: 'preset', targetDates: [], targetWeekdays: [],
-	mode: create(MonitorModeSchema, { mode: { case: 'opening', value: create(OpeningMonitorSchema) } }),
 	state: create(MonitorStateSchema, { state: { case: status, value: status === 'failed' ? { reason: '' } : {} } }),
 });
 const reservationWithStatus = (status: 'booked' | 'cancelled') => create(ReservationSchema, {
@@ -52,7 +51,7 @@ describe('application view model', () => {
 });
 
 describe('monitor model', () => {
-	it('formats local bounds and normalizes mode and numeric input', () => {
+	it('formats local bounds and normalizes schedule input', () => {
 		const today = new Date(2026, 7, 9, 12);
 		expect(localDateString(today)).toBe('2026-08-09');
 		expect(scheduleBounds(today)).toEqual({ today: '2026-08-09', last: '2027-08-09' });
@@ -75,21 +74,18 @@ describe('monitor model', () => {
 		expect(monitorFormError(selected)).toBe('관람 날짜나 반복 요일을 하나 이상 추가하세요.');
 		expect(monitorFormError({ ...selected, dates: ['2026-08-10'] })).toBe('');
 		expect(monitorFormError({ ...selected, weekdays: ['1'] })).toBe('');
-		expect(monitorFormError({ ...selected, dates: ['2026-08-10'], pollMaxMinutes: 3 })).toBe('최대 확인 간격은 최소 간격보다 커야 합니다.');
 	});
 
 	it('maps the editor form to the protobuf resource mutation', () => {
 		const form = {
 			...initialMonitorForm, id: 'monitor', movieId: 'movie', movie: '영화', presetId: 'preset', dates: ['2026-08-10'],
-			weekdays: ['1', '6'], pollMinMinutes: 4, pollMaxMinutes: 9,
+			weekdays: ['1', '6'],
 		};
 		const mutation = monitorSaveRequest(form, 'user');
 		expect(mutation.resource.case).toBe('monitor');
 		if (mutation.resource.case !== 'monitor') return;
 		expect(mutation.resource.value).toMatchObject({ id: 'monitor', userId: 'user', movieId: 'movie', targetWeekdays: [1, 6] });
 		expect(mutation.resource.value.targetDates.map((value) => `${value.year}-${value.month}-${value.day}`)).toEqual(['2026-8-10']);
-		expect(mutation.resource.value.pollInterval?.seconds).toBe(240n);
-		expect(mutation.resource.value.maximumPollInterval?.seconds).toBe(540n);
 	});
 
 	it('keeps explicit monitor time windows in the protobuf mutation', () => {
@@ -117,13 +113,11 @@ describe('monitor model', () => {
 		]);
 		const stored = create(MonitorSchema, {
 			id: 'monitor', movieId: 'movie', movieTitle: '영화', presetId: 'preset', userId: 'user',
-			mode: create(MonitorModeSchema, { mode: { case: 'opening', value: create(OpeningMonitorSchema) } }),
 			targetDates: [date('2026-08-10')], targetWeekdays: [1], searchHorizonDays: 14,
-			earliestTime: time('18:00'), latestTime: time('22:00'), pollInterval: { seconds: 180n, nanos: 0 }, maximumPollInterval: { seconds: 480n, nanos: 0 },
+			earliestTime: time('18:00'), latestTime: time('22:00'),
 		});
-		expect(formFromMonitor(stored)).toMatchObject({ id: 'monitor', movieId: 'movie', pollMinMinutes: 3, pollMaxMinutes: 8, weekdays: ['1'], horizonDays: 14 });
-		expect(monitorIntervalLabel(stored)).toBe('3–8분');
-		expect(formFromMonitor(create(MonitorSchema, { ...stored, pollInterval: { seconds: 0n, nanos: 0 }, maximumPollInterval: { seconds: 0n, nanos: 0 }, searchHorizonDays: 0 }))).toMatchObject({ pollMinMinutes: 3, pollMaxMinutes: 8, horizonDays: 14 });
+		expect(formFromMonitor(stored)).toMatchObject({ id: 'monitor', movieId: 'movie', weekdays: ['1'], horizonDays: 14 });
+		expect(formFromMonitor(create(MonitorSchema, { ...stored, searchHorizonDays: 0 }))).toMatchObject({ horizonDays: 14 });
 		expect(monitorStatusLabel('unknown')).toBe('unknown');
 	});
 

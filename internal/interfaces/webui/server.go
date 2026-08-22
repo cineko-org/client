@@ -43,7 +43,6 @@ type seatMapResolver interface {
 }
 
 type Automation interface {
-	application.ShowtimeGateway
 	application.BookingGateway
 	AuthenticateManuallyUntil(context.Context, time.Duration) error
 	AuthenticateSavedUntil(context.Context, domain.AccountCredentials, time.Duration) error
@@ -90,8 +89,9 @@ type Dependencies struct {
 	AccountStateChanged func(bool)
 	Credentials         CredentialVault
 	UserID              string
-	// BookingDemandChanged tells the Client runtime whether authenticated
-	// opening monitors need warm booking capacity.
+	// BookingDemandChanged tells the Client runtime whether active monitors
+	// need warm booking capacity. CGV member login is optional for the
+	// supported non-member booking path.
 	BookingDemandChanged func(bool)
 	// BookingCapacityAvailable reports whether a ready booking slot exists.
 	BookingCapacityAvailable func() bool
@@ -266,8 +266,8 @@ func (server *Server) ExecutionAvailable() <-chan struct{} {
 	return server.executionReady
 }
 
-// CanAcceptExecution prevents Central claims while no authenticated browser
-// slot is ready locally.
+// CanAcceptExecution prevents Central claims while no ready browser slot is
+// available locally.
 func (server *Server) CanAcceptExecution() bool {
 	if server.bookingCapacityAvailable != nil {
 		return server.bookingCapacityAvailable()
@@ -292,10 +292,7 @@ func (server *Server) refreshBookingDemand(ctx context.Context) {
 		return
 	}
 	active := false
-	server.accountMu.RLock()
-	authenticated := server.account != nil && server.account.GetAuthenticated() != nil
-	server.accountMu.RUnlock()
-	if authenticated && strings.TrimSpace(server.userID) != "" {
+	if strings.TrimSpace(server.userID) != "" {
 		monitors, err := server.repository.ListMonitorsByUser(ctx, server.userID)
 		if err != nil {
 			server.recordMaintenanceFailure("booking-demand", err)
@@ -764,68 +761,6 @@ func (server *Server) deletePreset(writer http.ResponseWriter, request *http.Req
 	writeProtoJSON(writer, http.StatusOK, actionStatus(false))
 }
 
-func (server *Server) executeMonitorRetry(ctx context.Context, input *clientpb.WebUIMonitorRetryRequest, taskID string) {
-	monitor := input.GetMonitor()
-	err := server.runBookingSession(ctx, monitor.GetId(), !input.GetHeadful())
-	server.finishTask(taskID, err)
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-	if err != nil {
-		server.addEvent(appErrorEvent(monitor.GetUserId(), "monitor.retry_failed", "좌석을 다시 찾지 못했습니다."))
-		return
-	}
-	server.addEvent(appWarningEvent(monitor.GetUserId(), "monitor.retry_completed", "새 결제 화면을 준비했습니다."))
-}
-
-func (server *Server) runBookingSession(ctx context.Context, monitorID string, background bool) error {
-	for {
-		err := server.withBookingWorker(ctx, monitorID, background, func(
-			worker *application.BookingWorker,
-			workerContext context.Context,
-			id string,
-		) (*clientpb.Resource, error) {
-			return worker.RunWithRestartPolicy(workerContext, id, 12, 30*time.Minute)
-		})
-		if !errors.Is(err, application.ErrBrowserRotation) {
-			return err
-		}
-	}
-}
-
-func (server *Server) withBookingWorker(
-	ctx context.Context,
-	monitorID string,
-	background bool,
-	run func(*application.BookingWorker, context.Context, string) (*clientpb.Resource, error),
-) error {
-	browserContext := server.rootContext
-	if browserContext == nil {
-		browserContext = context.Background()
-	}
-	automation, err := server.factory(browserContext, background, AutomationSession, monitorID)
-	if err != nil {
-		return err
-	}
-	retained := false
-	defer func() {
-		if !retained {
-			automation.Close()
-		}
-	}()
-	worker := application.NewBookingWorker(application.BookingWorkerDependencies{
-		Monitors: server.repository, Presets: server.repository, Theaters: server.repository,
-		Auditoriums: server.repository, Reservations: server.repository,
-		Showtimes: automation, Booking: automation, IDs: server.ids, Clock: server.clock,
-		Waiter: server.waiter, WorkerID: server.ids.NewID(),
-	})
-	reservation, err := run(worker, ctx, monitorID)
-	if err == nil && reservation.GetReservation().GetPrepared() != nil {
-		retained = server.retainPaymentSession(monitorID, reservation, automation)
-	}
-	return err
-}
-
 // ExecuteAvailability runs the exact showtime selected by Central after this
 // Client receives its execution lease. Schedule discovery is deliberately not
 // repeated here: a different result would violate the command being fenced.
@@ -874,10 +809,9 @@ func (server *Server) ExecuteAvailability(
 		}
 	}()
 	worker := application.NewBookingWorker(application.BookingWorkerDependencies{
-		Monitors: server.repository, Presets: server.repository, Theaters: server.repository,
-		Auditoriums: server.repository, Reservations: server.repository,
-		Showtimes: automation, Booking: automation, IDs: server.ids, Clock: server.clock,
-		Waiter: server.waiter, WorkerID: server.ids.NewID(),
+		Monitors: server.repository, Reservations: server.repository,
+		Booking: automation, IDs: server.ids, Clock: server.clock,
+		Waiter: server.waiter,
 	})
 	reservation, err := worker.RunClaimedShowtime(ctx, monitor, preset, theater, auditorium, showtime)
 	if !stopBrowserFenceWatch() || !stopAutomationFenceWatch() || ctx.Err() != nil {
@@ -1023,7 +957,7 @@ func publicErrorMessage(err error) string {
 	switch {
 	case strings.Contains(message, "proxy"), strings.Contains(message, "soxy"), strings.Contains(message, "socks"):
 		return "프록시 설정이나 연결 상태를 확인하세요."
-	case strings.Contains(message, "credential"), strings.Contains(message, "authenticate"), strings.Contains(message, "login"):
+	case strings.Contains(message, "credential"), strings.Contains(message, "authenticate"), strings.Contains(message, "authentication"), strings.Contains(message, "login"):
 		return "CGV 로그인에 실패했습니다. 로그인 정보를 확인하고 다시 시도하세요."
 	case strings.Contains(message, "central"), strings.Contains(message, "connect"), strings.Contains(message, "dial"), strings.Contains(message, "network"):
 		return "Cineko 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요."

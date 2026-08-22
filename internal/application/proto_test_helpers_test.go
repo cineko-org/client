@@ -9,7 +9,6 @@ import (
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -27,41 +26,29 @@ func presetFixtureForTest(id, userID, theaterID, auditoriumID string, explicitSe
 	}.Build()
 }
 
-func monitorFixtureForTest(id, userID, presetID, title string, cancellation bool, targetDates []string) *clientpb.Monitor {
+func monitorFixtureForTest(userID, presetID, title string, targetDates []string) *clientpb.Monitor {
+	id := "monitor"
 	movieID := "movie_1"
-	pollInterval := 5 * time.Second
-	maximumPollInterval := 8 * time.Second
-	mode := clientpb.MonitorMode_builder{Opening: clientpb.OpeningMonitor_builder{}.Build()}
-	if cancellation {
-		mode = clientpb.MonitorMode_builder{Cancellation: clientpb.CancellationMonitor_builder{}.Build()}
-	}
 	horizon := int32(0)
 	return clientpb.Monitor_builder{
-		Id: &id, UserId: &userID, PresetId: &presetID, Mode: mode.Build(), MovieId: &movieID, MovieTitle: &title,
+		Id: &id, UserId: &userID, PresetId: &presetID, MovieId: &movieID, MovieTitle: &title,
 		TargetDates: localDatesForTest(targetDates), SearchHorizonDays: &horizon,
-		PollInterval: durationpb.New(pollInterval), MaximumPollInterval: durationpb.New(maximumPollInterval),
 		State:     clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build(),
 		CreatedAt: timestamppb.Now(), UpdatedAt: timestamppb.Now(),
 	}.Build()
 }
 
-func bookedReservationFixtureForTest(id, userID, monitorID string) *clientpb.Reservation {
+func bookedReservationFixtureForTest(userID, monitorID string) *clientpb.Reservation {
+	id := "reservation"
 	return clientpb.Reservation_builder{
 		Id: &id, UserId: &userID, MonitorId: &monitorID,
 		Booked: clientpb.ReservationBooked_builder{}.Build(),
 	}.Build()
 }
 
-func cancellationResultFixtureForTest(reservationID, bookingNumber, refundAmount string) *clientpb.WebUICancellationResult {
+func cancellationResultFixtureForTest(bookingNumber, refundAmount string) *clientpb.WebUICancellationResult {
+	reservationID := "reservation"
 	return clientpb.WebUICancellationResult_builder{ReservationId: &reservationID, BookingNumber: &bookingNumber, RefundAmount: &refundAmount}.Build()
-}
-
-func openingMonitorModeForTest() *clientpb.MonitorMode {
-	return clientpb.MonitorMode_builder{Opening: clientpb.OpeningMonitor_builder{}.Build()}.Build()
-}
-
-func cancellationMonitorModeForTest() *clientpb.MonitorMode {
-	return clientpb.MonitorMode_builder{Cancellation: clientpb.CancellationMonitor_builder{}.Build()}.Build()
 }
 
 func presetMutationForTest(revision int64, id, userID, name, theaterID, auditoriumID string, seatCount int, preference *clientpb.SeatPreference) *clientpb.WebUIResourceMutation {
@@ -76,17 +63,13 @@ func presetMutationForTest(revision int64, id, userID, name, theaterID, auditori
 }
 
 //nolint:unparam // commandID mirrors MutationIdentity even though current fixtures intentionally omit it.
-func monitorMutationForTest(revision int64, commandID, id, userID, presetID string, mode *clientpb.MonitorMode, movieID, movie string, targetDates []string, targetWeekdays []int, horizon int, earliest, latest string, pollInterval, pollIntervalMax time.Duration) *clientpb.WebUIResourceMutation {
-	if mode == nil {
-		mode = openingMonitorModeForTest()
-	}
+func monitorMutationForTest(revision int64, commandID, id, userID, presetID, movieID, movie string, targetDates []string, targetWeekdays []int, horizon int, earliest, latest string) *clientpb.WebUIResourceMutation {
 	horizonValue := mustInt32ForTest(horizon)
-	pollMax := durationpb.New(pollIntervalMax)
 	monitor := clientpb.Monitor_builder{
-		Id: &id, UserId: &userID, PresetId: &presetID, Mode: mode, MovieId: &movieID, MovieTitle: &movie,
+		Id: &id, UserId: &userID, PresetId: &presetID, MovieId: &movieID, MovieTitle: &movie,
 		TargetDates: localDatesForTest(targetDates), TargetWeekdays: int32sForTest(targetWeekdays), SearchHorizonDays: &horizonValue,
-		EarliestTime: localTimeForTest(earliest), LatestTime: localTimeForTest(latest), PollInterval: durationpb.New(pollInterval),
-		MaximumPollInterval: pollMax, State: clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build(),
+		EarliestTime: localTimeForTest(earliest), LatestTime: localTimeForTest(latest),
+		State: clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build(),
 	}.Build()
 	command := strings.TrimSpace(commandID)
 	return clientpb.WebUIResourceMutation_builder{

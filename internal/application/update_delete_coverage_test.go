@@ -15,11 +15,11 @@ func TestMonitorServiceRejectsStaleUpdateAndDelete(t *testing.T) {
 	presets := newPresetRepositoryFake()
 	presets.values["preset"] = applicationPreset("user", "auditorium", now)
 	monitors := &monitorRepositoryFake{
-		job:      monitorFixtureForTest("monitor", "user", "preset", "Movie", false, []string{"2026-08-10"}),
+		job:      monitorFixtureForTest("user", "preset", "Movie", []string{"2026-08-10"}),
 		revision: 2,
 	}
 	service := NewMonitorService(monitors, presets, &sequenceIDs{}, fixedClock{now})
-	request := monitorMutationForTest(1, "", "monitor", "user", "preset", openingMonitorModeForTest(), "movie_1", "Movie", []string{"2026-08-10"}, nil, 0, "", "", 5*time.Second, 8*time.Second)
+	request := monitorMutationForTest(1, "", "monitor", "user", "preset", "movie_1", "Movie", []string{"2026-08-10"}, nil, 0, "", "")
 
 	if _, err := service.Update(ctx, request); !errors.Is(err, ErrConflict) {
 		t.Fatalf("Update(stale revision) error = %v", err)

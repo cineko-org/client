@@ -1,10 +1,12 @@
 package application
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 )
 
 // showtimeDomainFromProto creates the small process-internal projection used
@@ -34,8 +36,13 @@ func showtimeDomainFromProto(value *catalogpb.Showtime) domain.Showtime {
 		result.AuditoriumID, result.AuditoriumName = auditorium.GetId(), auditorium.GetName()
 		result.ScreenTypes = append([]string(nil), auditorium.GetScreenTypes()...)
 	}
-	if date, err := domain.ScheduleDateFromShowtimeSourceKey(result.SourceKey); err == nil {
-		result.Date = date
-	}
+	result.Date = localDateValue(value.GetScheduleDate())
 	return result
+}
+
+func localDateValue(value *commonpb.LocalDate) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%04d-%02d-%02d", value.GetYear(), value.GetMonth(), value.GetDay())
 }

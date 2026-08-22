@@ -3,13 +3,10 @@ package cgv
 import (
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func theaterDomainFromProto(value *catalogpb.Theater) domain.Theater {
@@ -49,35 +46,10 @@ func showtimeDomainFromProto(value *catalogpb.Showtime) domain.Showtime {
 		result.AuditoriumID, result.AuditoriumName = auditorium.GetId(), auditorium.GetName()
 		result.ScreenTypes = append([]string(nil), auditorium.GetScreenTypes()...)
 	}
-	if date, err := domain.ScheduleDateFromShowtimeSourceKey(result.SourceKey); err == nil {
-		result.Date = date
+	if scheduleDate := value.GetScheduleDate(); scheduleDate != nil {
+		result.Date = fmt.Sprintf("%04d-%02d-%02d", scheduleDate.GetYear(), scheduleDate.GetMonth(), scheduleDate.GetDay())
 	}
 	return result
-}
-
-func showtimeProtoFromDomain(value domain.Showtime) *catalogpb.Showtime {
-	if strings.TrimSpace(value.ID) == "" {
-		return nil
-	}
-	id, providerID, sourceKey, theaterID := value.ID, value.ProviderID, value.SourceKey, value.TheaterID
-	movieID, title, posterURL := value.MovieID, value.Movie, value.PosterURL
-	auditoriumID, auditoriumName := value.AuditoriumID, value.AuditoriumName
-	emptySource := ""
-	availableSeats, capacity := boundedInt32(value.AvailableSeats), boundedInt32(value.Capacity)
-	soldOut := value.SoldOut
-	return catalogpb.Showtime_builder{
-		Id: &id, ProviderId: &providerID, SourceKey: &sourceKey, TheaterId: &theaterID,
-		Movie: catalogpb.Movie_builder{
-			Id: &movieID, ProviderId: &providerID, SourceKey: &emptySource,
-			Title: &title, PosterUrl: &posterURL,
-		}.Build(),
-		Auditorium: catalogpb.Auditorium_builder{
-			Id: &auditoriumID, TheaterId: &theaterID, SourceKey: &emptySource,
-			Name: &auditoriumName, ScreenTypes: append([]string(nil), value.ScreenTypes...), Capacity: &capacity,
-		}.Build(),
-		StartsAt: showtimeTimestamp(value.Date, value.StartsAt), EndsAt: showtimeTimestamp(value.Date, value.EndsAt),
-		AvailableSeats: &availableSeats, Capacity: &capacity, SoldOut: &soldOut,
-	}.Build()
 }
 
 // boundedInt32 preserves provider counts at the Proto boundary without an
@@ -92,31 +64,4 @@ func boundedInt32(value int) int32 {
 	default:
 		return int32(value)
 	}
-}
-
-func showtimeTimestamp(date, clock string) *timestamppb.Timestamp {
-	date, clock = strings.TrimSpace(date), strings.TrimSpace(clock)
-	if date == "" || clock == "" {
-		return nil
-	}
-	parsed, err := time.ParseInLocation(time.DateTime, date+" "+clock, domain.KoreaLocation)
-	if err != nil {
-		return nil
-	}
-	return timestamppb.New(parsed)
-}
-
-func int32ValuesToInt(values []int32) []int {
-	result := make([]int, len(values))
-	for index, value := range values {
-		result[index] = int(value)
-	}
-	return result
-}
-
-func localTimeToString(value *commonpb.LocalTime) string {
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprintf("%02d:%02d", value.GetHour(), value.GetMinute())
 }

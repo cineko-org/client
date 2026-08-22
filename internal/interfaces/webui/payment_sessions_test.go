@@ -10,28 +10,12 @@ import (
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
 
 type webPaymentAutomation struct {
 	*webProbeAutomation
 	closed *atomic.Int32
-}
-
-func (*webPaymentAutomation) FindShowtimes(
-	context.Context,
-	*catalogpb.Theater,
-	*catalogpb.Auditorium,
-	string,
-	[]string,
-	[]int32,
-	*commonpb.LocalTime,
-	*commonpb.LocalTime,
-) ([]*catalogpb.Showtime, error) {
-	return []*catalogpb.Showtime{showtimeProtoForTest(domain.Showtime{
-		ID: "showtime", MovieID: "movie_1", Movie: "영화", Date: "2026-08-20", StartsAt: "20:00",
-	})}, nil
 }
 
 func (*webPaymentAutomation) OpenSeatSelection(
@@ -99,7 +83,11 @@ func TestPreparedPaymentKeepsBrowserAndReusesMonitorOnRetry(t *testing.T) {
 			return automation, nil
 		},
 	}
-	if err := server.runBookingSession(taskContext, monitor.GetId(), false); err != nil {
+	if err := server.ExecuteAvailability(taskContext, monitor.GetId(), showtimeProtoForTest(domain.Showtime{
+		ID: "showtime", ProviderID: "cgv", SourceKey: "0056/2026-08-20/0007/0003",
+		MovieID: "movie_1", Movie: "영화", TheaterID: theater.ID, AuditoriumID: auditorium.ID,
+		Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00", AvailableSeats: 1, Capacity: 100,
+	})); err != nil {
 		t.Fatal(err)
 	}
 	cancelTask()

@@ -7,7 +7,6 @@ import (
 
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
 
@@ -68,9 +67,6 @@ type MonitorRepository interface {
 	GetMonitor(context.Context, string) (*clientpb.Resource, error)
 	ListMonitorsByUser(context.Context, string) ([]*clientpb.Resource, error)
 	DeleteMonitor(context.Context, string) error
-	AcquireMonitor(context.Context, string, string, time.Time, time.Duration) (*clientpb.Resource, error)
-	RenewMonitor(context.Context, string, string, time.Time, time.Duration) error
-	ReleaseMonitor(context.Context, string, string) error
 }
 
 type ReservationRepository interface {
@@ -81,19 +77,6 @@ type ReservationRepository interface {
 
 type ExternalOperationRepository interface {
 	PutExternalOperation(context.Context, *clientpb.Resource) error
-}
-
-type ShowtimeGateway interface {
-	FindShowtimes(
-		context.Context,
-		*catalogpb.Theater,
-		*catalogpb.Auditorium,
-		string,
-		[]string,
-		[]int32,
-		*commonpb.LocalTime,
-		*commonpb.LocalTime,
-	) ([]*catalogpb.Showtime, error)
 }
 
 type BookingGateway interface {

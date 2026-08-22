@@ -12,30 +12,14 @@ import (
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
 
 type executionAutomation struct {
 	*webPaymentAutomation
-	opened     chan *catalogpb.Showtime
-	closed     chan struct{}
-	closeOnce  sync.Once
-	findCalled atomic.Bool
-}
-
-func (automation *executionAutomation) FindShowtimes(
-	context.Context,
-	*catalogpb.Theater,
-	*catalogpb.Auditorium,
-	string,
-	[]string,
-	[]int32,
-	*commonpb.LocalTime,
-	*commonpb.LocalTime,
-) ([]*catalogpb.Showtime, error) {
-	automation.findCalled.Store(true)
-	return nil, nil
+	opened    chan *catalogpb.Showtime
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func (automation *executionAutomation) OpenSeatSelection(
@@ -121,9 +105,8 @@ func TestExecuteAvailabilityClosesBrowserWhenCentralFenceIsCancelled(t *testing.
 		t.Fatal("exact showtime was not opened")
 	}
 	if opened.GetId() != showtime.ID ||
-		opened.GetStartsAt().AsTime().In(domain.KoreaLocation).Format("15:04") != showtime.StartsAt ||
-		automation.findCalled.Load() {
-		t.Fatalf("opened/find = %+v/%t", opened, automation.findCalled.Load())
+		opened.GetStartsAt().AsTime().In(domain.KoreaLocation).Format("15:04") != showtime.StartsAt {
+		t.Fatalf("opened showtime = %+v", opened)
 	}
 	cancel()
 	select {

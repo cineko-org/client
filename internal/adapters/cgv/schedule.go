@@ -11,7 +11,6 @@ import (
 
 	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -94,84 +93,6 @@ func (adapter *Adapter) DiscoverAuditoriums(
 		return observations[i].GetName() < observations[j].GetName()
 	})
 	return observations, nil
-}
-
-func (adapter *Adapter) FindShowtimes(
-	ctx context.Context,
-	theater *catalogpb.Theater,
-	auditorium *catalogpb.Auditorium,
-	movieID string,
-	targetDates []string,
-	targetWeekdays []int32,
-	earliestTime *commonpb.LocalTime,
-	latestTime *commonpb.LocalTime,
-) ([]*catalogpb.Showtime, error) {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if theater == nil || auditorium == nil {
-		return nil, errors.New("theater and auditorium are required")
-	}
-	if err := adapter.selectCinemaTheater(theater.GetRegion(), theater.GetName()); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(movieID) == "" {
-		return nil, nil
-	}
-	var matches []*catalogpb.Showtime
-	domainTheater := theaterDomainFromProto(theater)
-	for _, targetDate := range targetDates {
-		if err := adapter.selectDate(targetDate); err != nil {
-			continue
-		}
-		entries, err := adapter.extractSchedules(targetDate, domainTheater)
-		if err != nil {
-			return nil, err
-		}
-		window := domain.ScheduleWindow{
-			Weekdays: int32ValuesToInt(targetWeekdays),
-			Earliest: localTimeToString(earliestTime),
-			Latest:   localTimeToString(latestTime),
-		}
-		dateMatches, dateHasAvailableMatch := matchingShowtimes(entries, auditorium, movieID, window)
-		matches = append(matches, dateMatches...)
-		if dateHasAvailableMatch {
-			// Target dates are sorted. Once the earliest matching date opens, return
-			// immediately so the booking worker can enter visitor and seat selection.
-			return matches, nil
-		}
-	}
-	return matches, nil
-}
-
-func matchingShowtimes(
-	entries []scheduleEntry,
-	auditorium *catalogpb.Auditorium,
-	movieID string,
-	window domain.ScheduleWindow,
-) ([]*catalogpb.Showtime, bool) {
-	matches := make([]*catalogpb.Showtime, 0)
-	hasAvailable := false
-	for _, entry := range entries {
-		if !scheduleEntryMatches(entry, auditorium.GetName(), movieID, window) {
-			continue
-		}
-		showtime := entry.Showtime
-		showtime.AuditoriumID = auditorium.GetId()
-		showtime.AuditoriumName = auditorium.GetName()
-		matches = append(matches, showtimeProtoFromDomain(showtime))
-		hasAvailable = hasAvailable || !showtime.SoldOut
-	}
-	return matches, hasAvailable
-}
-
-func scheduleEntryMatches(entry scheduleEntry, auditoriumName, movieID string, window domain.ScheduleWindow) bool {
-	return entry.Showtime.MovieID != "" &&
-		entry.Showtime.MovieID == movieID &&
-		auditoriumMatches(auditoriumName, entry.AuditoriumName) &&
-		window.MatchesShowtime(entry.Showtime)
 }
 
 // CaptureSchedules returns a complete, unfiltered snapshot for every requested
@@ -416,12 +337,6 @@ func detectScreenTypes(value string) []string {
 		}
 	}
 	return types
-}
-
-func auditoriumMatches(requested, observed string) bool {
-	requested = strings.ToLower(strings.ReplaceAll(normalize(requested), " ", ""))
-	observed = strings.ToLower(strings.ReplaceAll(normalize(observed), " ", ""))
-	return requested == observed || strings.HasPrefix(observed, requested) || strings.HasPrefix(requested, observed)
 }
 
 func normalize(value string) string { return strings.Join(strings.Fields(value), " ") }

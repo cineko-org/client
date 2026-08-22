@@ -3,7 +3,7 @@ import { DangerButton, PrimaryButton, SecondaryButton } from '../../../component
 import { EmptyState, Section } from '../../../components/core/Section';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
 import type { Monitor } from '../../../api/proto';
-import { monitorMode, monitorMovie, monitorStatus } from '../../../api/resources';
+import { monitorMovie, monitorStatus } from '../../../api/resources';
 import { monitorScheduleLabel, monitorStatusLabel, monitorTimeLabel } from '../model';
 
 export interface MonitorListViewProps {
@@ -30,6 +30,8 @@ function executionDescription(monitor: Monitor): string {
 	const status = monitorStatus(monitor);
 	if (status === 'triggered') return '결제 화면을 열어 두었습니다 · 최대 15분 유지';
 	if (status === 'payment_unknown') return 'CGV 예매 내역을 확인해야 합니다 · 자동 재실행 안 함';
+	if (status === 'failed') return '최근 실행에서 오류가 발생했습니다 · 다시 찾을 수 있습니다';
+	if (status === 'stopped') return '중지된 모니터 · 다시 찾으면 감시를 재개합니다';
   return `${monitorTimeLabel(monitor)} · 결제 전까지 진행`;
 }
 
@@ -49,6 +51,7 @@ export function MonitorListView({ monitors, deleteId, mutationId, onRetry, onDel
 			const status = monitorStatus(monitor);
 			const active = status === 'running';
 			const paymentBlocked = status === 'triggered' || status === 'payment_unknown';
+			const retryable = paymentBlocked || status === 'failed' || status === 'stopped';
             const mutationLocked = Boolean(mutationId);
             const mutating = mutationId === monitor.id;
             return (
@@ -58,13 +61,13 @@ export function MonitorListView({ monitors, deleteId, mutationId, onRetry, onDel
 				  <StatusIndicator label={monitorStatusLabel(status)} color={monitorColor(monitor)} processing={active} />
                 </Group>
                 <Stack gap={2}>
-				  <Text size="sm" c="dimmed">{monitorMode(monitor) === 'cancellation' ? '취소표 감시' : '오픈 · 취소표 감시'} · {monitorScheduleLabel(monitor)}</Text>
+				  <Text size="sm" c="dimmed">오픈부터 취소표까지 감시 · {monitorScheduleLabel(monitor)}</Text>
                   <Text size="sm" c="dimmed">{executionDescription(monitor)}</Text>
                 </Stack>
                 <Group gap="xs">
                   <SecondaryButton size="xs" onClick={() => onOpen(monitor.id)}>상세</SecondaryButton>
                   <SecondaryButton size="xs" onClick={() => onEdit(monitor.id)} disabled={mutationLocked || active || paymentBlocked}>편집</SecondaryButton>
-                  {paymentBlocked ? (
+				  {retryable ? (
                     <PrimaryButton size="xs" loading={mutating} disabled={mutationLocked && !mutating} onClick={() => onRetry(monitor.id)}>
                       {retryLabel(monitor)}
                     </PrimaryButton>

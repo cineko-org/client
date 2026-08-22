@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/application"
-	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
@@ -24,6 +24,13 @@ type desktopExecutionWorker struct {
 const (
 	executionReasonPreferredSeatsUnavailable = "preferred_seats_unavailable"
 	executionReasonShowtimeUnavailable       = "showtime_unavailable"
+	executionReasonAuthenticationRequired    = "authentication_required"
+	executionReasonCaptchaRequired           = "captcha_required"
+	executionReasonProviderContractChanged   = "provider_contract_changed"
+	executionReasonProviderAccessBlocked     = "provider_access_blocked"
+	executionReasonProviderThrottled         = "provider_throttled"
+	executionReasonClientInterrupted         = "client_interrupted"
+	executionReasonBookingPreparationFailed  = "booking_preparation_failed"
 )
 
 type executionStore interface {
@@ -146,10 +153,16 @@ func (worker *desktopExecutionWorker) execute(ctx context.Context, command *exec
 		} else {
 			reasonCode = executionFailureCode(err)
 		}
-		result.SetFailed(executionpb.Failed_builder{ReasonCode: &reasonCode}.Build())
-		worker.server.RecordLocalSystemEvent(desktopErrorEvent(
-			worker.userID, "execution.failed", "예매 준비에 실패했습니다. 모니터 상태를 확인하고 다시 시도하세요.",
-		))
+		if reasonCode == executionReasonBookingPreparationFailed {
+			result.SetRetryRequested(executionpb.RetryRequested_builder{ReasonCode: &reasonCode}.Build())
+		} else {
+			result.SetFailed(executionpb.Failed_builder{ReasonCode: &reasonCode}.Build())
+		}
+		message := "예매 준비에 실패했습니다. 모니터 상태를 확인하고 다시 시도하세요."
+		if reasonCode == executionReasonAuthenticationRequired {
+			message = "CGV 로그인이 필요합니다. 로그인 후 모니터를 다시 실행하세요."
+		}
+		worker.server.RecordLocalSystemEvent(desktopErrorEvent(worker.userID, "execution.failed", message))
 	} else {
 		result.SetCompleted(executionpb.Completed_builder{}.Build())
 		worker.server.RecordLocalSystemEvent(desktopSuccessEvent(
@@ -237,18 +250,23 @@ func executionShowtime(payload *executionpb.Payload) (*catalogpb.Showtime, error
 	if err := validateExecutionShowtime(value, observedAt); err != nil {
 		return nil, err
 	}
-	_, err := domain.ScheduleDateFromShowtimeSourceKey(value.GetSourceKey())
-	if err != nil {
-		return nil, fmt.Errorf("central execution showtime has invalid source key: %w", err)
-	}
 	return value, nil
 }
 
 func validateExecutionShowtime(value *catalogpb.Showtime, observedAt time.Time) error {
-	if executionIdentityMissing(value) || executionTimeInvalid(value, observedAt) || executionAvailabilityInvalid(value) {
+	if executionIdentityMissing(value) || executionScheduleDateInvalid(value) || executionTimeInvalid(value, observedAt) || executionAvailabilityInvalid(value) {
 		return errors.New("central execution showtime is incomplete or unavailable")
 	}
 	return nil
+}
+
+func executionScheduleDateInvalid(value *catalogpb.Showtime) bool {
+	date := value.GetScheduleDate()
+	if date == nil {
+		return true
+	}
+	parsed := time.Date(int(date.GetYear()), time.Month(date.GetMonth()), int(date.GetDay()), 0, 0, 0, 0, time.UTC)
+	return parsed.Year() != int(date.GetYear()) || parsed.Month() != time.Month(date.GetMonth()) || parsed.Day() != int(date.GetDay())
 }
 
 func executionIdentityMissing(value *catalogpb.Showtime) bool {
@@ -278,16 +296,28 @@ func executionHeartbeatInterval(expiresAt, now time.Time) time.Duration {
 }
 
 func executionFailureCode(err error) string {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return executionReasonClientInterrupted
+	}
 	if errors.Is(err, application.ErrSeatUnavailable) {
 		return executionReasonPreferredSeatsUnavailable
 	}
 	if errors.Is(err, application.ErrBookingNotOpen) {
 		return executionReasonShowtimeUnavailable
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return "client_interrupted"
+	switch {
+	case errors.Is(err, cgv.ErrAuthenticationRequired):
+		return executionReasonAuthenticationRequired
+	case errors.Is(err, cgv.ErrCaptchaRequired):
+		return executionReasonCaptchaRequired
+	case errors.Is(err, cgv.ErrUIContractChanged):
+		return executionReasonProviderContractChanged
+	case errors.Is(err, cgv.ErrProviderAccessBlocked):
+		return executionReasonProviderAccessBlocked
+	case errors.Is(err, cgv.ErrProviderThrottled):
+		return executionReasonProviderThrottled
 	}
-	return "booking_preparation_failed"
+	return executionReasonBookingPreparationFailed
 }
 
 func waitExecutionSignal(ctx context.Context, signal <-chan struct{}) bool {

@@ -32,10 +32,6 @@ export function monitorStatus(monitor: Monitor): string {
 	return monitor.state?.state.case ?? 'pending';
 }
 
-export function monitorMode(monitor: Monitor): 'opening' | 'cancellation' {
-	return monitor.mode?.mode.case ?? 'opening';
-}
-
 export function monitorMovie(monitor: Monitor): string {
 	return monitor.movieTitle;
 }
@@ -46,10 +42,6 @@ export function localDateText(value: { year: number; month: number; day: number 
 
 export function localTimeText(value: { hour: number; minute: number } | undefined): string {
 	return value ? `${value.hour.toString().padStart(2, '0')}:${value.minute.toString().padStart(2, '0')}` : '';
-}
-
-export function seconds(value: { seconds: bigint; nanos: number } | undefined): number {
-	return value ? Number(value.seconds) + value.nanos / 1_000_000_000 : 0;
 }
 
 export function eventTone(event: AppEvent): 'info' | 'success' | 'warning' | 'error' {

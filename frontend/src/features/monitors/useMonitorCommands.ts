@@ -42,7 +42,7 @@ export function useMonitorCommands(
 		if (mutationLock.current) return;
 		const monitor = stateMonitors(state).find((item) => item.id === id);
 		const status = monitor ? monitorStatus(monitor) : '';
-		if (status !== 'triggered') return;
+		if (!['triggered', 'payment_unknown', 'failed', 'stopped'].includes(status)) return;
 		setRetryAcknowledged(false);
 		setRetryId(id);
 	}, [state]);

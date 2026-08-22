@@ -7,6 +7,7 @@ import (
 
 	"github.com/cineko-org/client/internal/application"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/proto"
 )
 
 func (server *Server) retryMonitor(writer http.ResponseWriter, request *http.Request) {
@@ -19,33 +20,56 @@ func (server *Server) retryMonitor(writer http.ResponseWriter, request *http.Req
 
 func (server *Server) startMonitorRetry(input *clientpb.WebUIMonitorRetryRequest) error {
 	monitor := input.GetMonitor()
-	job, err := server.repository.GetMonitor(context.Background(), monitor.GetId())
+	ctx := server.lifetimeContext()
+	job, err := server.repository.GetMonitor(ctx, monitor.GetId())
 	if err != nil {
 		return err
 	}
 	state := job.GetMonitor().GetState()
-	if state.GetTriggered() == nil && state.GetPaymentUnknown() == nil {
-		return fmt.Errorf("%w: only an unfinished payment can be retried", application.ErrConflict)
+	if state.GetTriggered() == nil && state.GetPaymentUnknown() == nil && state.GetFailed() == nil && state.GetStopped() == nil {
+		return fmt.Errorf("%w: monitor is not retryable in its current state", application.ErrConflict)
 	}
 	taskID := "monitor-retry:" + monitor.GetId()
 	if !server.beginTask(taskID) {
 		return fmt.Errorf("%w: monitor retry is already running", application.ErrConflict)
 	}
-	if _, err := server.abandonPaymentSession(context.Background(), monitor.GetId()); err != nil {
+	if state.GetTriggered() != nil || state.GetPaymentUnknown() != nil {
+		_, err = server.abandonPaymentSession(ctx, monitor.GetId())
+	} else {
+		err = server.rearmMonitor(ctx, monitor.GetId())
+	}
+	if err != nil {
 		server.finishTask(taskID, err)
 		return err
 	}
-	root := server.rootContext
-	if root == nil {
-		root = context.Background()
-	}
-	// #nosec G118 -- cancel is retained until the retry task completes.
-	retryContext, cancel := context.WithCancel(root)
-	server.tasksMu.Lock()
-	server.taskCancels[taskID] = cancel
-	server.tasksMu.Unlock()
-	go server.executeMonitorRetry(retryContext, input, taskID)
+	// The durable monitor mutation is the wake-up. Central emits the
+	// execution-ready SSE and the desktop supervisor claims it when a warm
+	// browser is available; no Client-side discovery loop is started here.
+	server.finishTask(taskID, nil)
+	server.refreshBookingDemand(ctx)
 	return nil
+}
+
+func (server *Server) rearmMonitor(ctx context.Context, monitorID string) error {
+	resource, err := server.repository.GetMonitor(ctx, monitorID)
+	if err != nil {
+		return err
+	}
+	monitor := resource.GetMonitor()
+	if monitor == nil {
+		return application.ErrNotFound
+	}
+	state := monitor.GetState()
+	if state.GetFailed() == nil && state.GetStopped() == nil {
+		return fmt.Errorf("%w: monitor changed before retry", application.ErrConflict)
+	}
+	monitor = proto.CloneOf(monitor)
+	monitor.SetReservationId("")
+	monitor.SetState(pendingMonitorState())
+	monitor.SetUpdatedAt(timestamp(server.clock.Now()))
+	resource = proto.CloneOf(resource)
+	resource.SetMonitor(monitor)
+	return server.repository.PutMonitor(ctx, resource)
 }
 
 func (server *Server) createMonitor(writer http.ResponseWriter, request *http.Request) {

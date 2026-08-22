@@ -12,21 +12,16 @@ import (
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const defaultSearchHorizonDays int32 = 28
+const (
+	defaultSearchHorizonDays int32 = 14
+	maxSearchHorizonDays     int32 = 14
+)
 
 func resourceIdentity(id string, revision int64) *commonpb.ResourceIdentity {
 	return commonpb.ResourceIdentity_builder{Id: &id, Revision: &revision}.Build()
-}
-
-func durationValue(value *durationpb.Duration) time.Duration {
-	if value == nil {
-		return 0
-	}
-	return value.AsDuration()
 }
 
 func localTimeValue(value *commonpb.LocalTime) string {
@@ -94,8 +89,12 @@ func resourceForReservation(message *clientpb.Reservation, revision int64) *clie
 	return clientpb.Resource_builder{Identity: resourceIdentity(message.GetId(), revision), Reservation: message}.Build()
 }
 
-func resourceForExternalOperation(message *clientpb.ExternalOperation) *clientpb.Resource {
-	return clientpb.Resource_builder{Identity: resourceIdentity(message.GetId(), 0), ExternalOperation: message}.Build()
+func resourceForExternalOperation(message *clientpb.ExternalOperation, revisions ...int64) *clientpb.Resource {
+	revision := int64(0)
+	if len(revisions) > 0 {
+		revision = revisions[0]
+	}
+	return clientpb.Resource_builder{Identity: resourceIdentity(message.GetId(), revision), ExternalOperation: message}.Build()
 }
 
 func clonePreset(value *clientpb.Preset) *clientpb.Preset {
@@ -188,20 +187,14 @@ func validateMonitorMessage(value *clientpb.Monitor) error {
 	if err := validateMonitorIdentity(value); err != nil {
 		return err
 	}
-	if err := validateMonitorMode(value); err != nil {
-		return err
-	}
-	if err := validateMonitorPolling(value); err != nil {
-		return err
-	}
 	if err := validateTargetDates(value.GetTargetDates()); err != nil {
 		return err
 	}
 	if err := validateTargetWeekdays(value.GetTargetWeekdays()); err != nil {
 		return err
 	}
-	if len(value.GetTargetWeekdays()) > 0 && (value.GetSearchHorizonDays() < 1 || value.GetSearchHorizonDays() > 365) {
-		return errors.New("weekday search horizon must be between 1 and 365 days")
+	if len(value.GetTargetWeekdays()) > 0 && (value.GetSearchHorizonDays() < 1 || value.GetSearchHorizonDays() > maxSearchHorizonDays) {
+		return errors.New("weekday search horizon must be between 1 and 14 days")
 	}
 	if err := validateLocalTime(value.GetEarliestTime()); err != nil {
 		return err
@@ -215,28 +208,6 @@ func validateMonitorIdentity(value *clientpb.Monitor) error {
 	}
 	if strings.TrimSpace(value.GetMovieId()) == "" || len(value.GetTargetDates())+len(value.GetTargetWeekdays()) == 0 {
 		return errors.New("monitor movie id and at least one target date or weekday are required")
-	}
-	return nil
-}
-
-func validateMonitorMode(value *clientpb.Monitor) error {
-	if value.GetMode() == nil || (value.GetMode().GetOpening() == nil && value.GetMode().GetCancellation() == nil) {
-		return errors.New("invalid monitor mode")
-	}
-	if value.GetMode().GetCancellation() != nil && len(value.GetTargetWeekdays()) > 0 {
-		return errors.New("cancellation-seat monitors require exact target dates")
-	}
-	return nil
-}
-
-func validateMonitorPolling(value *clientpb.Monitor) error {
-	poll := durationValue(value.GetPollInterval())
-	maximum := durationValue(value.GetMaximumPollInterval())
-	if poll < 2*time.Second {
-		return errors.New("poll interval must be at least 2 seconds")
-	}
-	if maximum <= poll {
-		return errors.New("maximum poll interval must be greater than minimum poll interval")
 	}
 	return nil
 }
@@ -284,38 +255,7 @@ func validateLocalTime(value *commonpb.LocalTime) error {
 	return nil
 }
 
-func monitorModeIsCancellation(value *clientpb.Monitor) bool {
-	return value != nil && value.GetMode() != nil && value.GetMode().GetCancellation() != nil
-}
-
-func monitorPollInterval(value *clientpb.Monitor) time.Duration {
-	if value == nil || value.GetPollInterval() == nil {
-		return 3 * time.Minute
-	}
-	return value.GetPollInterval().AsDuration()
-}
-
-func monitorPollIntervalMax(value *clientpb.Monitor) time.Duration {
-	if value == nil {
-		return 8 * time.Minute
-	}
-	if maximum := durationValue(value.GetMaximumPollInterval()); maximum > 0 {
-		return maximum
-	}
-	interval := monitorPollInterval(value)
-	return interval + interval/5
-}
-
 func applyMonitorDefaults(value *clientpb.Monitor) {
-	if value.GetMode() == nil {
-		value.SetMode(clientpb.MonitorMode_builder{Opening: clientpb.OpeningMonitor_builder{}.Build()}.Build())
-	}
-	if value.GetPollInterval() == nil || value.GetPollInterval().AsDuration() <= 0 {
-		value.SetPollInterval(durationpb.New(3 * time.Minute))
-	}
-	if value.GetMaximumPollInterval() == nil || value.GetMaximumPollInterval().AsDuration() <= 0 {
-		value.SetMaximumPollInterval(durationpb.New(8 * time.Minute))
-	}
 	if len(value.GetTargetWeekdays()) > 0 && value.GetSearchHorizonDays() == 0 {
 		value.SetSearchHorizonDays(defaultSearchHorizonDays)
 	}
@@ -397,19 +337,12 @@ func setMonitorFailure(value *clientpb.Monitor, reason string) {
 	setMonitorState(value, "failed", reason)
 }
 
-func monitorRecordCheck(value *clientpb.Monitor, now time.Time, cause error) {
+func monitorRecordCheck(value *clientpb.Monitor, now time.Time) {
 	if value == nil {
 		return
 	}
 	value.SetLastCheckedAt(timestamppb.New(now))
 	value.SetUpdatedAt(timestamppb.New(now))
-	if cause == nil {
-		if value.GetState() != nil && value.GetState().GetFailed() != nil {
-			setMonitorState(value, "running", "")
-		}
-		return
-	}
-	setMonitorFailure(value, cause.Error())
 }
 
 func monitorResolveTargetDates(value *clientpb.Monitor, now time.Time) []string {

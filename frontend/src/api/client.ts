@@ -66,8 +66,9 @@ export function errorMessage(error: unknown): string {
 		if (error.status === 429) return '요청이 많습니다. 잠시 후 다시 시도하세요.';
 	}
 	const normalized = message.toLowerCase();
+	if (/authentication(?: is)? required|login(?: is)? required/.test(normalized)) return 'CGV 로그인이 필요합니다. 로그인 후 모니터를 다시 실행하세요.';
 	if (/proxy|soxy|socks/.test(normalized)) return '프록시 설정이나 연결 상태를 확인하세요.';
-	if (/credential|authenticate|login|unauthorized/.test(normalized)) return '로그인에 실패했습니다. 로그인 정보를 확인하고 다시 시도하세요.';
+	if (/credential|authentication|authenticate|login|unauthorized/.test(normalized)) return '로그인에 실패했습니다. 로그인 정보를 확인하고 다시 시도하세요.';
 	if (/update|release|artifact|download/.test(normalized)) return '업데이트를 완료하지 못했습니다. 네트워크 연결을 확인하세요.';
 	if (/central|network|fetch|connect|dial|timeout/.test(normalized)) return 'Cineko 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요.';
 	return '요청을 처리하지 못했습니다. 잠시 후 다시 시도하세요.';
