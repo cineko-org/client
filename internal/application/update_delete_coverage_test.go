@@ -15,7 +15,7 @@ func TestMonitorServiceRejectsStaleUpdateAndDelete(t *testing.T) {
 	presets := newPresetRepositoryFake()
 	presets.values["preset"] = applicationPreset("user", "auditorium", now)
 	monitors := &monitorRepositoryFake{
-		job:      monitorFixtureForTest("user", "preset", "Movie", []string{"2026-08-10"}),
+		job:      monitorFixtureForTest("preset", "Movie", []string{"2026-08-10"}),
 		revision: 2,
 	}
 	service := NewMonitorService(monitors, presets, &sequenceIDs{}, fixedClock{now})

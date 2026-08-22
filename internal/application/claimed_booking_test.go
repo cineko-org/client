@@ -93,7 +93,7 @@ func availableSeatsForDomain(snapshot *seatmappb.Snapshot, live []domain.LiveSea
 func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
 	base := &workerRepository{
-		job:        monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"}),
+		job:        monitorFixtureForTest("preset", "영화", []string{"2026-08-20"}),
 		preset:     presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"}),
 		theater:    domain.Theater{ID: "theater"},
 		auditorium: domain.Auditorium{ID: "auditorium", TheaterID: "theater"},
@@ -174,7 +174,7 @@ func TestRunClaimedShowtimeStopsOnRefreshError(t *testing.T) {
 func TestRunClaimedShowtimeAttemptErrorKeepsMonitorRunning(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
 	base := &workerRepository{
-		job:        monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"}),
+		job:        monitorFixtureForTest("preset", "영화", []string{"2026-08-20"}),
 		preset:     presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"}),
 		theater:    domain.Theater{ID: "theater"},
 		auditorium: domain.Auditorium{ID: "auditorium"},
@@ -240,7 +240,7 @@ func TestRunClaimedShowtimeCarriesAuthoritativeMonitorRevisionAcrossAttemptFailu
 
 func claimedSeatWatchRepository() *workerRepository {
 	return &workerRepository{
-		job:     monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"}),
+		job:     monitorFixtureForTest("preset", "영화", []string{"2026-08-20"}),
 		preset:  presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"}),
 		theater: domain.Theater{ID: "theater"}, auditorium: domain.Auditorium{ID: "auditorium"},
 	}
@@ -323,7 +323,7 @@ func TestClaimedBookingValidationBoundaries(t *testing.T) {
 }
 
 func validClaimedValues() (*clientpb.Monitor, *clientpb.Preset, *catalogpb.Theater, *catalogpb.Auditorium, *catalogpb.Showtime) {
-	monitor := monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"})
+	monitor := monitorFixtureForTest("preset", "영화", []string{"2026-08-20"})
 	preset := presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"})
 	theater := coverageTheater(domain.Theater{ID: "theater"})
 	auditorium := coverageAuditorium(domain.Auditorium{ID: "auditorium", TheaterID: "theater"})
@@ -335,7 +335,7 @@ func TestRunClaimedShowtimeFailureBoundaries(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
 	makeWorker := func(putErrAt int, openErr error) (*BookingWorker, *centralFenceRepository, domain.Showtime) {
 		base := &workerRepository{
-			job:        monitorFixtureForTest("user", "preset", "영화", []string{"2026-08-20"}),
+			job:        monitorFixtureForTest("preset", "영화", []string{"2026-08-20"}),
 			preset:     presetFixtureForTest("preset", "user", "theater", "auditorium", []string{"H10"}),
 			theater:    domain.Theater{ID: "theater"},
 			auditorium: domain.Auditorium{ID: "auditorium"},
