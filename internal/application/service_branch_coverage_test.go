@@ -1,13 +1,16 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 )
 
@@ -16,6 +19,83 @@ func TestShowtimeDomainFromProtoHandlesNil(t *testing.T) {
 	if got := showtimeDomainFromProto(nil); got.ID != "" {
 		t.Fatalf("showtimeDomainFromProto(nil) = %+v", got)
 	}
+	year, month, day := int32(2026), int32(8), int32(22)
+	if got := localDateValue(commonLocalDate(year, month, day)); got != "2026-08-22" {
+		t.Fatalf("localDateValue() = %q", got)
+	}
+}
+
+func TestRandomDelayBoundaries(t *testing.T) {
+	t.Parallel()
+
+	if got := randomJitter(0); got != 0 {
+		t.Fatalf("randomJitter(0) = %s", got)
+	}
+	if got := randomJitter(time.Nanosecond); got != 0 {
+		t.Fatalf("randomJitter(1ns) = %s", got)
+	}
+	if got := randomJitterFrom(bytes.NewReader(make([]byte, 8)), 10*time.Nanosecond); got != 0 {
+		t.Fatalf("randomJitterFrom(zeroes) = %s", got)
+	}
+	if got := randomJitterFrom(failingRandomReader{}, 10*time.Nanosecond); got != 0 {
+		t.Fatalf("randomJitterFrom(error) = %s", got)
+	}
+	if got := RandomDelayBetween(time.Nanosecond, 2*time.Nanosecond); got != time.Nanosecond {
+		t.Fatalf("RandomDelayBetween(1ns, 2ns) = %s", got)
+	}
+	if got := randomDelayBetween(bytes.NewReader(make([]byte, 8)), time.Second, 2*time.Second); got != time.Second {
+		t.Fatalf("randomDelayBetween(zeroes) = %s", got)
+	}
+	if got := randomDelayBetween(failingRandomReader{}, time.Second, 2*time.Second); got != time.Second {
+		t.Fatalf("randomDelayBetween(error) = %s", got)
+	}
+	if got := randomDelayBetween(bytes.NewReader(nil), 0, time.Second); got != 0 {
+		t.Fatalf("randomDelayBetween(invalid) = %s", got)
+	}
+}
+
+func TestPrepareSeatSelectionFailureBoundaries(t *testing.T) {
+	t.Parallel()
+	snapshot := gatewaySeatSnapshot()
+	available := gatewayAvailableSeats(snapshot, []domain.LiveSeat{{Label: "H10", Available: true}})
+	job := monitorFixtureForTest("Movie", []string{"2026-08-22"})
+	preset := presetFixtureForTest("preset", "user", "theater", "auditorium-1", []string{"H10"})
+	showtime := showtimeProtoFromDomain(domain.Showtime{
+		ID: "showtime", ProviderID: "cgv", SourceKey: "source", MovieID: "movie_1", Movie: "Movie",
+		TheaterID: "theater", AuditoriumID: "auditorium-1", Date: "2026-08-22", StartsAt: "20:00", EndsAt: "22:00",
+		AvailableSeats: 1, Capacity: 1,
+	})
+
+	t.Run("prepare payment", func(t *testing.T) {
+		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}, prepareErr: errInjected}
+		worker := NewBookingWorker(BookingWorkerDependencies{
+			Reservations: &reservationRepositoryFake{}, Booking: gateway, IDs: &sequenceIDs{},
+		})
+		if _, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, snapshot, available); !errors.Is(err, errInjected) {
+			t.Fatalf("prepareSeatSelection(payment) = %v", err)
+		}
+	})
+
+	t.Run("cancelled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}, cancel: cancel}
+		worker := NewBookingWorker(BookingWorkerDependencies{
+			Reservations: &reservationRepositoryFake{}, Booking: gateway, IDs: &sequenceIDs{},
+		})
+		if _, err := worker.prepareSeatSelection(ctx, job, preset, showtime, snapshot, available); !errors.Is(err, context.Canceled) {
+			t.Fatalf("prepareSeatSelection(cancelled) = %v", err)
+		}
+	})
+
+	t.Run("reservation persistence", func(t *testing.T) {
+		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}}
+		worker := NewBookingWorker(BookingWorkerDependencies{
+			Reservations: &reservationRepositoryFake{putErr: errInjected}, Booking: gateway, IDs: &sequenceIDs{},
+		})
+		if _, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, snapshot, available); !errors.Is(err, errInjected) {
+			t.Fatalf("prepareSeatSelection(persistence) = %v", err)
+		}
+	})
 }
 
 func TestBookingWorkerCoversMalformedResourcesAndCompletionFailures(t *testing.T) {
@@ -62,6 +142,96 @@ func TestCancellationServiceCoversMissingRequestsAndDraftIdentity(t *testing.T) 
 	if cloneCancellationResult(nil) == nil {
 		t.Fatal("cloneCancellationResult(nil) returned nil")
 	}
+}
+
+func TestCancellationServiceCoversConflictAndRefreshBoundaries(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 22, 10, 0, 0, 0, time.UTC)
+
+	conflicting := bookedReservationFixtureForTest()
+	conflicting.SetCancellationCommitting(clientpb.ReservationCancellationCommitting_builder{}.Build())
+	service := NewCancellationService(
+		&reservationRepositoryFake{reservation: conflicting},
+		&bookingGatewayFake{draft: cancellationResultFixtureForTest()}, fixedClock{now},
+	)
+	if _, err := service.Cancel(ctx, cancellationRequest("user", true)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Cancel(committing) = %v", err)
+	}
+	if cancellationResultForReservation(nil) == nil {
+		t.Fatal("cancellationResultForReservation(nil) returned nil")
+	}
+
+	readFailure := &reservationReadRepository{err: errInjected}
+	service = NewCancellationService(readFailure, &bookingGatewayFake{}, fixedClock{now})
+	if _, _, err := service.currentReservation(ctx, "reservation", "user"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("currentReservation(read failure) = %v", err)
+	}
+	readFailure.err = nil
+	readFailure.resource = &clientpb.Resource{}
+	if _, _, err := service.currentReservation(ctx, "reservation", "user"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("currentReservation(malformed) = %v", err)
+	}
+	readFailure.resource = resourceForReservation(bookedReservationFixtureForTest(), 0)
+	if _, _, err := service.currentReservation(ctx, "reservation", "other"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("currentReservation(owner) = %v", err)
+	}
+
+	t.Run("cancelled during preparation", func(t *testing.T) {
+		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest()}
+		booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest()}
+		booking.prepareCancellationHook = func(*clientpb.Reservation) {
+			reservations.reservation.SetCancelled(clientpb.ReservationCancelled_builder{}.Build())
+		}
+		service := NewCancellationService(reservations, booking, fixedClock{now})
+		if _, err := service.Cancel(ctx, cancellationRequest("user", true)); err != nil {
+			t.Fatalf("Cancel(cancelled race) = %v", err)
+		}
+	})
+
+	t.Run("conflict during preparation", func(t *testing.T) {
+		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest()}
+		booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest()}
+		booking.prepareCancellationHook = func(*clientpb.Reservation) {
+			reservations.reservation.SetCancellationUnknown(clientpb.ReservationCancellationUnknown_builder{}.Build())
+		}
+		service := NewCancellationService(reservations, booking, fixedClock{now})
+		if _, err := service.Cancel(ctx, cancellationRequest("user", true)); !errors.Is(err, ErrConflict) {
+			t.Fatalf("Cancel(conflicting race) = %v", err)
+		}
+	})
+
+	t.Run("refresh read failure", func(t *testing.T) {
+		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest(), getErrAt: 2}
+		service := NewCancellationService(
+			reservations, &bookingGatewayFake{draft: cancellationResultFixtureForTest()}, fixedClock{now},
+		)
+		if _, err := service.Cancel(ctx, cancellationRequest("user", true)); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Cancel(refresh read) = %v", err)
+		}
+	})
+
+	t.Run("final read failure", func(t *testing.T) {
+		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest(), getErrAt: 3}
+		service := NewCancellationService(
+			reservations, &bookingGatewayFake{draft: cancellationResultFixtureForTest()}, fixedClock{now},
+		)
+		if _, err := service.Cancel(ctx, cancellationRequest("user", true)); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Cancel(final read) = %v", err)
+		}
+	})
+
+	t.Run("state changed after provider confirmation", func(t *testing.T) {
+		reservations := &reservationSequenceRepository{reservation: bookedReservationFixtureForTest()}
+		booking := &bookingGatewayFake{draft: cancellationResultFixtureForTest()}
+		booking.commitCancellationHook = func() {
+			reservations.reservation.SetBooked(clientpb.ReservationBooked_builder{}.Build())
+		}
+		service := NewCancellationService(reservations, booking, fixedClock{now})
+		if _, err := service.Cancel(ctx, cancellationRequest("user", true)); !errors.Is(err, ErrConflict) {
+			t.Fatalf("Cancel(changed state) = %v", err)
+		}
+	})
 }
 
 func TestMonitorServiceRejectsMalformedStoredResources(t *testing.T) {
@@ -206,3 +376,48 @@ func (*emptyCancellationGateway) PrepareCancellation(
 }
 
 func (*emptyCancellationGateway) CommitCancellation(context.Context) error { return nil }
+
+type paymentBoundaryGateway struct {
+	*workerGateway
+	prepareErr error
+	cancel     context.CancelFunc
+}
+
+func (gateway *paymentBoundaryGateway) PreparePayment(
+	ctx context.Context,
+	showtime *catalogpb.Showtime,
+	seats []string,
+) (*clientpb.Reservation, error) {
+	if gateway.prepareErr != nil {
+		return nil, gateway.prepareErr
+	}
+	if gateway.cancel != nil {
+		gateway.cancel()
+	}
+	return gateway.workerGateway.PreparePayment(ctx, showtime, seats)
+}
+
+type reservationReadRepository struct {
+	resource *clientpb.Resource
+	err      error
+}
+
+func (*reservationReadRepository) PutReservation(context.Context, *clientpb.Resource) error {
+	return nil
+}
+
+func (repository *reservationReadRepository) GetReservation(context.Context, string) (*clientpb.Resource, error) {
+	return repository.resource, repository.err
+}
+
+func (*reservationReadRepository) ListReservationsByUser(context.Context, string) ([]*clientpb.Resource, error) {
+	return nil, nil
+}
+
+type failingRandomReader struct{}
+
+func (failingRandomReader) Read([]byte) (int, error) { return 0, errInjected }
+
+func commonLocalDate(year, month, day int32) *commonpb.LocalDate {
+	return commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()
+}

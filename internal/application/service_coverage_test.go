@@ -467,6 +467,8 @@ type reservationSequenceRepository struct {
 	revision     int64
 	puts         int
 	failAt       int
+	getCalls     int
+	getErrAt     int
 	putRevisions []int64
 }
 
@@ -486,6 +488,10 @@ func (repository *reservationSequenceRepository) PutReservation(_ context.Contex
 }
 
 func (repository *reservationSequenceRepository) GetReservation(context.Context, string) (*clientpb.Resource, error) {
+	repository.getCalls++
+	if repository.getCalls == repository.getErrAt {
+		return nil, errInjected
+	}
 	return resourceForReservation(cloneReservation(repository.reservation), repository.revision), nil
 }
 
@@ -685,6 +691,7 @@ type bookingGatewayFake struct {
 	prepareCancellationErr   error
 	commitCancellationErr    error
 	prepareCancellationHook  func(*clientpb.Reservation)
+	commitCancellationHook   func()
 	prepareCancellationCalls int
 	commitCancellationCalls  int
 }
@@ -725,5 +732,8 @@ func (gateway *bookingGatewayFake) PrepareCancellation(
 
 func (gateway *bookingGatewayFake) CommitCancellation(context.Context) error {
 	gateway.commitCancellationCalls++
+	if gateway.commitCancellationHook != nil {
+		gateway.commitCancellationHook()
+	}
 	return gateway.commitCancellationErr
 }
