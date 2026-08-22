@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.7.0](https://github.com/cineko-org/client/compare/v2.6.0...v2.7.0) (2026-08-22)
+
+
+### Features
+
+* stream durable seat collection state ([#24](https://github.com/cineko-org/client/issues/24)) ([6aa027a](https://github.com/cineko-org/client/commit/6aa027ac6215ab9f703f2b780e1574fa85ec9c5b))
+
+
+### Bug Fixes
+
+* update strict contracts to v3.5.3 ([#26](https://github.com/cineko-org/client/issues/26)) ([25e5c41](https://github.com/cineko-org/client/commit/25e5c418038011b3df66fa8370ad59c1b53af78a))
+
 ## [2.6.0](https://github.com/cineko-org/client/compare/v2.5.6...v2.6.0) (2026-08-22)
 
 
