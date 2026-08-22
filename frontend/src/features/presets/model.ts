@@ -6,6 +6,8 @@ import {
 
 export type SeatType = string;
 
+export type SeatMapLoadState = 'idle' | 'loading' | 'cached' | 'pending' | 'error';
+
 export function catalogRegions(theaters: Theater[]): string[] {
   return [...new Set(theaters.map((theater) => theater.region.trim()).filter(Boolean))]
     // The spread creates a new array, so sorting cannot mutate caller state.

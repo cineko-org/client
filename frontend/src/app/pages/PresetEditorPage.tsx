@@ -21,6 +21,7 @@ export function PresetEditorPage({ catalog, controller, onBack, onRefreshCatalog
       seatMap={controller.seatMap}
       pickedSeats={controller.pickedSeats}
       catalogMessage={controller.catalogMessage}
+      seatMapLoadState={controller.seatMapLoadState}
       loadingCatalog={controller.loadingCatalog}
       saving={controller.saving}
       onBack={onBack}

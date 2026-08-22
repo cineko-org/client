@@ -27,6 +27,7 @@ const usage = `usage:
   releasecontract set COMPONENT RELEASE_JSON...
   releasecontract component RELEASE_JSON...
   releasecontract verify-set COMPONENT SET_JSON
+  releasecontract fingerprint COMPONENT SET_JSON
   releasecontract verify-release RELEASE_JSON...
   releasecontract verify-artifacts RELEASE_JSON...
   releasecontract plan COMPONENT PUBLIC_BASE_URL RELEASE_JSON...
@@ -54,6 +55,8 @@ func run(args []string) error {
 		return writeComponent(args[1:])
 	case "verify-set":
 		return verifySet(args[1:])
+	case "fingerprint":
+		return writeSetFingerprint(args[1:])
 	case "verify-release":
 		return verifyReleaseFiles(args[1:])
 	case "verify-artifacts":
@@ -65,6 +68,28 @@ func run(args []string) error {
 	default:
 		return errors.New(usage)
 	}
+}
+
+// writeSetFingerprint emits a semantic content address from the validated
+// generated message, independent of ProtoJSON whitespace or object ordering.
+func writeSetFingerprint(args []string) error {
+	if len(args) != 2 {
+		return errors.New(usage)
+	}
+	message, err := emptyReleaseSet(args[0])
+	if err != nil {
+		return err
+	}
+	if err := readValidated(args[1], message); err != nil {
+		return err
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("marshal release set fingerprint: %w", err)
+	}
+	digest := sha256.Sum256(payload)
+	_, err = fmt.Fprintln(os.Stdout, hex.EncodeToString(digest[:]))
+	return err
 }
 
 func writeComponent(paths []string) error {

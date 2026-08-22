@@ -106,6 +106,8 @@ test('official browser publisher registers verified Chrome for Testing archives 
   const fixtures = join(root, 'fixtures');
   const registration = join(root, 'registration.json');
   const manifest = join(root, 'browser-release-set.json');
+  const repeatedManifest = join(root, 'browser-release-set-repeated.json');
+  const legacyManifest = join(root, 'legacy-browser-release-set.json');
   const argumentsFile = join(root, 'registration-arguments');
   const targets = [
     ['mac-arm64', 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'],
@@ -185,6 +187,32 @@ cp "$FAKE_BROWSER_FIXTURES/chrome-$platform.zip" "$output"
       releaseSet,
       'manifest-only mode must preserve the exact verified release set',
     );
+    const fingerprint = execFileSync('go', [
+      'run', '-mod=vendor', './cmd/releasecontract', 'fingerprint', 'browser', manifest,
+    ], { env: { ...process.env, GOWORK: 'off' }, encoding: 'utf8' }).trim();
+    assert.match(fingerprint, /^[0-9a-f]{64}$/, 'latest generated Proto must produce a semantic content address');
+
+    execFileSync('bash', ['scripts/publish-official-browser-release.sh', '1228', '149.0.7827.55', '1.61.1'], {
+      env: {
+        ...env,
+        CINEKO_BROWSER_RELEASE_PAYLOAD_OUT: repeatedManifest,
+        CINEKO_CENTRAL_URL: '',
+        CINEKO_RELEASE_PUBLISH_TOKEN: '',
+      },
+    });
+    assert.deepEqual(
+      JSON.parse(await readFile(repeatedManifest, 'utf8')),
+      releaseSet,
+      'repeated generation must preserve the exact latest-Proto release set',
+    );
+    assert.equal(execFileSync('go', [
+      'run', '-mod=vendor', './cmd/releasecontract', 'fingerprint', 'browser', repeatedManifest,
+    ], { env: { ...process.env, GOWORK: 'off' }, encoding: 'utf8' }).trim(), fingerprint, 'repeated generation must preserve the semantic tag');
+
+    await writeFile(legacyManifest, JSON.stringify({ schemaVersion: 1, ...releaseSet }));
+    assert.throws(() => execFileSync('go', [
+      'run', '-mod=vendor', './cmd/releasecontract', 'fingerprint', 'browser', legacyManifest,
+    ], { env: { ...process.env, GOWORK: 'off' }, stdio: 'pipe' }), 'legacy schemaVersion metadata must be rejected');
 
     for (const args of [
       ['0', '149.0.7827.55', '1.61.1'],

@@ -517,6 +517,29 @@ func (store *Store) ResolveSeatMap(ctx context.Context, auditoriumID string) (*s
 	return resolution, nil
 }
 
+// SubmitLiveSeatObservation reports one atomic authenticated provider read.
+// Central requires the generated mutation command ID as the HTTP idempotency
+// key and owns normalization, deduplication, and durable history.
+func (store *Store) SubmitLiveSeatObservation(
+	ctx context.Context,
+	input *servicepb.SubmitLiveSeatObservationRequest,
+) (*servicepb.SubmitLiveSeatObservationResponse, error) {
+	commandID := input.GetMutation().GetCommandId()
+	response := &servicepb.SubmitLiveSeatObservationResponse{}
+	if err := store.request(
+		ctx,
+		http.MethodPost,
+		"/v1/catalog/live-seat-observations",
+		true,
+		map[string]string{"Content-Type": "application/json", "Idempotency-Key": commandID},
+		input,
+		response,
+	); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
 func (store *Store) PutPreset(ctx context.Context, resource *clientpb.Resource) error {
 	return store.put(ctx, "presets", resource)
 }

@@ -32,6 +32,7 @@ type Repository interface {
 	application.AuditoriumRepository
 	application.SeatMapRepository
 	application.CatalogRepository
+	application.LiveSeatObservationRepository
 	application.PresetRepository
 	application.MonitorRepository
 	application.ReservationRepository
@@ -811,7 +812,8 @@ func (server *Server) ExecuteAvailability(
 	}()
 	worker := application.NewBookingWorker(application.BookingWorkerDependencies{
 		Monitors: server.repository, Reservations: server.repository,
-		Booking: automation, IDs: server.ids, Clock: server.clock,
+		Booking: automation, Observations: server.repository,
+		IDs: server.ids, Clock: server.clock,
 		Waiter: server.waiter,
 	})
 	reservation, err := worker.RunClaimedShowtime(ctx, monitor, preset, theater, auditorium, showtime)

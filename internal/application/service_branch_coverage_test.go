@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestShowtimeDomainFromProtoHandlesNil(t *testing.T) {
@@ -60,7 +63,7 @@ func TestRandomDelayBoundaries(t *testing.T) {
 func TestPrepareSeatSelectionFailureBoundaries(t *testing.T) {
 	t.Parallel()
 	snapshot := gatewaySeatSnapshot()
-	available := gatewayAvailableSeats(snapshot, []domain.LiveSeat{{Label: "H10", Available: true}})
+	observation := gatewayLiveObservation(snapshot, []domain.LiveSeat{{Label: "H10", Available: true}})
 	job := monitorFixtureForTest("Movie", []string{"2026-08-22"})
 	preset := presetFixtureForTest("preset", "user", "theater", "auditorium-1", []string{"H10"})
 	showtime := showtimeProtoFromDomain(domain.Showtime{
@@ -72,10 +75,43 @@ func TestPrepareSeatSelectionFailureBoundaries(t *testing.T) {
 	t.Run("prepare payment", func(t *testing.T) {
 		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}, prepareErr: errInjected}
 		worker := NewBookingWorker(BookingWorkerDependencies{
-			Reservations: &reservationRepositoryFake{}, Booking: gateway, IDs: &sequenceIDs{},
+			Reservations: &reservationRepositoryFake{}, Booking: gateway,
+			Observations: &liveObservationRepositoryFake{}, IDs: &sequenceIDs{},
 		})
-		if _, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, snapshot, available); !errors.Is(err, errInjected) {
+		if _, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, observation); !errors.Is(err, errInjected) {
 			t.Fatalf("prepareSeatSelection(payment) = %v", err)
+		}
+	})
+
+	t.Run("observation failure follows payment preparation", func(t *testing.T) {
+		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}}
+		observations := &liveObservationRepositoryFake{err: errInjected}
+		observations.onSubmit = func(*servicepb.SubmitLiveSeatObservationRequest) {
+			if !gateway.prepared {
+				t.Error("live observation was submitted before payment preparation")
+			}
+		}
+		worker := NewBookingWorker(BookingWorkerDependencies{
+			Reservations: &reservationRepositoryFake{}, Booking: gateway,
+			Observations: observations, IDs: &sequenceIDs{},
+		})
+		if reservation, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, observation); err != nil || reservation == nil {
+			t.Fatalf("prepareSeatSelection(observation) = %s, %v", reservation, err)
+		}
+		if len(observations.requests) != 1 {
+			t.Fatalf("live observation requests = %d", len(observations.requests))
+		}
+	})
+
+	t.Run("observation timeout preserves payment preparation", func(t *testing.T) {
+		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}}
+		worker := NewBookingWorker(BookingWorkerDependencies{
+			Reservations: &reservationRepositoryFake{}, Booking: gateway,
+			Observations: &liveObservationRepositoryFake{waitForCancellation: true},
+			IDs:          &sequenceIDs{}, ReportTimeout: time.Nanosecond,
+		})
+		if reservation, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, observation); err != nil || reservation == nil {
+			t.Fatalf("prepareSeatSelection(timeout) = %s, %v", reservation, err)
 		}
 	})
 
@@ -83,9 +119,10 @@ func TestPrepareSeatSelectionFailureBoundaries(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}, cancel: cancel}
 		worker := NewBookingWorker(BookingWorkerDependencies{
-			Reservations: &reservationRepositoryFake{}, Booking: gateway, IDs: &sequenceIDs{},
+			Reservations: &reservationRepositoryFake{}, Booking: gateway,
+			Observations: &liveObservationRepositoryFake{}, IDs: &sequenceIDs{},
 		})
-		if _, err := worker.prepareSeatSelection(ctx, job, preset, showtime, snapshot, available); !errors.Is(err, context.Canceled) {
+		if _, err := worker.prepareSeatSelection(ctx, job, preset, showtime, observation); !errors.Is(err, context.Canceled) {
 			t.Fatalf("prepareSeatSelection(cancelled) = %v", err)
 		}
 	})
@@ -93,12 +130,76 @@ func TestPrepareSeatSelectionFailureBoundaries(t *testing.T) {
 	t.Run("reservation persistence", func(t *testing.T) {
 		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}}
 		worker := NewBookingWorker(BookingWorkerDependencies{
-			Reservations: &reservationRepositoryFake{putErr: errInjected}, Booking: gateway, IDs: &sequenceIDs{},
+			Reservations: &reservationRepositoryFake{putErr: errInjected}, Booking: gateway,
+			Observations: &liveObservationRepositoryFake{}, IDs: &sequenceIDs{},
 		})
-		if _, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, snapshot, available); !errors.Is(err, errInjected) {
+		if _, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, observation); !errors.Is(err, errInjected) {
 			t.Fatalf("prepareSeatSelection(persistence) = %v", err)
 		}
 	})
+}
+
+func TestLiveSeatObservationFailureBoundaries(t *testing.T) {
+	t.Parallel()
+
+	observation := gatewayLiveObservation(
+		gatewaySeatSnapshot(),
+		[]domain.LiveSeat{{Label: "H10", Available: true}},
+	)
+	workerWithoutRepository := NewBookingWorker(BookingWorkerDependencies{})
+	if err := workerWithoutRepository.submitLiveSeatObservation(t.Context(), observation); err == nil {
+		t.Fatal("submitLiveSeatObservation() succeeded without a repository")
+	}
+
+	invalidObservation := proto.CloneOf(observation)
+	invalidObservation.GetLayout().SetAuditoriumId("\xff")
+	worker := NewBookingWorker(BookingWorkerDependencies{Observations: &liveObservationRepositoryFake{}})
+	if err := worker.submitLiveSeatObservation(t.Context(), invalidObservation); err == nil {
+		t.Fatal("submitLiveSeatObservation() accepted an unencodable observation")
+	}
+
+	worker = NewBookingWorker(BookingWorkerDependencies{Observations: &liveObservationRepositoryFake{
+		response: &servicepb.SubmitLiveSeatObservationResponse{},
+	}})
+	if err := worker.submitLiveSeatObservation(t.Context(), observation); err == nil {
+		t.Fatal("submitLiveSeatObservation() accepted an invalid response")
+	}
+
+	mismatchedSnapshot := proto.CloneOf(observation.GetLayout())
+	mismatchedSnapshot.SetLayoutHash(strings.Repeat("f", 64))
+	worker = NewBookingWorker(BookingWorkerDependencies{Observations: &liveObservationRepositoryFake{
+		snapshot: mismatchedSnapshot,
+	}})
+	if err := worker.submitLiveSeatObservation(t.Context(), observation); err == nil {
+		t.Fatal("submitLiveSeatObservation() accepted a mismatched snapshot")
+	}
+
+	if snapshot, seats := seatsFromLiveObservation(nil); snapshot != nil || seats != nil {
+		t.Fatalf("seatsFromLiveObservation(nil) = %s, %v", snapshot, seats)
+	}
+	withNilSeat := proto.CloneOf(observation)
+	withNilSeat.GetLayout().GetLayout().SetSeats(append(
+		withNilSeat.GetLayout().GetLayout().GetSeats(),
+		nil,
+	))
+	if _, seats := seatsFromLiveObservation(withNilSeat); len(seats) != 1 {
+		t.Fatalf("seatsFromLiveObservation(nil seat) = %v", seats)
+	}
+
+	job := monitorFixtureForTest("Movie", []string{"2026-08-22"})
+	preset := presetFixtureForTest("preset", "user", "theater", "auditorium-1", []string{"H10"})
+	showtime := showtimeProtoFromDomain(domain.Showtime{
+		ID: "showtime", ProviderID: "cgv", MovieID: "movie", Movie: "Movie",
+		TheaterID: "theater", AuditoriumID: "auditorium-1", Date: "2026-08-22",
+		StartsAt: "20:00", EndsAt: "22:00", AvailableSeats: 1, Capacity: 1,
+	})
+	worker = NewBookingWorker(BookingWorkerDependencies{
+		Reservations: &reservationRepositoryFake{}, Booking: &workerGateway{},
+		Observations: &liveObservationRepositoryFake{}, IDs: &sequenceIDs{},
+	})
+	if _, err := worker.prepareSeatSelection(t.Context(), job, preset, showtime, nil); err == nil {
+		t.Fatal("prepareSeatSelection() accepted a missing observation")
+	}
 }
 
 func TestBookingWorkerCoversMalformedResourcesAndCompletionFailures(t *testing.T) {
@@ -107,7 +208,7 @@ func TestBookingWorkerCoversMalformedResourcesAndCompletionFailures(t *testing.T
 
 	worker := NewBookingWorker(BookingWorkerDependencies{
 		Monitors: &monitorRepositoryFake{}, Reservations: &workerRepository{},
-		Booking: &emptyCancellationGateway{}, IDs: &sequenceIDs{},
+		Booking: &emptyCancellationGateway{}, Observations: &liveObservationRepositoryFake{}, IDs: &sequenceIDs{},
 		Clock: fixedClock{time.Now()}, Waiter: noWaiter{},
 	})
 	if _, err := worker.RunClaimedShowtime(ctx, &clientpb.Resource{}, &clientpb.Resource{}, nil, nil, nil); err == nil {
@@ -359,8 +460,8 @@ func (*emptyCancellationGateway) OpenSeatSelection(
 	context.Context,
 	*catalogpb.Showtime,
 	int,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
-	return nil, nil, nil
+) (*seatmappb.LiveSeatObservation, error) {
+	return nil, nil
 }
 
 func (*emptyCancellationGateway) PreparePayment(
@@ -384,6 +485,7 @@ type paymentBoundaryGateway struct {
 	*workerGateway
 	prepareErr error
 	cancel     context.CancelFunc
+	prepared   bool
 }
 
 func (gateway *paymentBoundaryGateway) PreparePayment(
@@ -394,6 +496,7 @@ func (gateway *paymentBoundaryGateway) PreparePayment(
 	if gateway.prepareErr != nil {
 		return nil, gateway.prepareErr
 	}
+	gateway.prepared = true
 	if gateway.cancel != nil {
 		gateway.cancel()
 	}

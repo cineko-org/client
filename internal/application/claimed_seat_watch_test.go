@@ -177,7 +177,8 @@ func newClaimedSeatWatchTestWorker(
 ) *BookingWorker {
 	return NewBookingWorker(BookingWorkerDependencies{
 		Monitors: repository, Reservations: repository,
-		Booking: gateway, IDs: &sequenceIDs{}, Clock: clock, Waiter: waiter,
+		Booking: gateway, Observations: &liveObservationRepositoryFake{},
+		IDs: &sequenceIDs{}, Clock: clock, Waiter: waiter,
 		Jitter: func(time.Duration) time.Duration { return 0 }, ClaimedWatch: policy,
 	})
 }

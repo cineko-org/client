@@ -17,7 +17,7 @@ import { useApplicationState } from '../src/features/application/useApplicationS
 import { useMonitorCommands } from '../src/features/monitors/useMonitorCommands';
 import { useMonitorEditor } from '../src/features/monitors/useMonitorEditor';
 import { useNotifications } from '../src/features/notifications/useNotifications';
-import { usePresetCatalog } from '../src/features/presets/usePresetCatalog';
+import { seatMapInitialEventTimeoutMs, usePresetCatalog } from '../src/features/presets/usePresetCatalog';
 import { useHookSettings } from '../src/features/settings/useHookSettings';
 import { useNetworkSettings } from '../src/features/settings/useNetworkSettings';
 
@@ -322,6 +322,7 @@ describe('preset catalog controller', () => {
 		await act(async () => pending!);
 		expect(FakeEventSource.instances).toHaveLength(1);
 		expect(result.current.catalogMessage).toBe('좌석 배치 수집을 기다리고 있습니다.');
+		expect(result.current.seatMapLoadState).toBe('pending');
 		expect(result.current.seatMap).toBeNull();
 		expect(notify).not.toHaveBeenCalled();
 	});
@@ -336,6 +337,7 @@ describe('preset catalog controller', () => {
 		await act(async () => ready!);
 		expect(result.current.seatMap?.layout?.seats[0].label).toBe('A1');
 		expect(result.current.catalogMessage).toBe('저장된 좌석 배치를 불러왔습니다.');
+		expect(result.current.seatMapLoadState).toBe('cached');
 
 		let invalid: Promise<void>;
 		act(() => { invalid = result.current.setAuditorium('invalid'); });
@@ -345,7 +347,24 @@ describe('preset catalog controller', () => {
 		expect(invalidSource.closed).toBe(true);
 		expect(result.current.seatMap).toBeNull();
 		expect(result.current.catalogMessage).toBe('Cineko가 올바르지 않은 좌석 배치 상태를 보냈습니다.');
+		expect(result.current.seatMapLoadState).toBe('error');
 		expect(result.current.loadingCatalog).toBe(false);
+	});
+
+	it('stops waiting when Central sends no initial seat-map state', async () => {
+		vi.useFakeTimers();
+		FakeEventSource.instances = [];
+		vi.stubGlobal('EventSource', FakeEventSource);
+		const { result } = renderHook(() => usePresetCatalog(create(WebUIStateSchema), vi.fn()));
+		let pending: Promise<void>;
+		act(() => { pending = result.current.setAuditorium('silent'); });
+		expect(result.current.seatMapLoadState).toBe('loading');
+		await act(async () => vi.advanceTimersByTimeAsync(seatMapInitialEventTimeoutMs));
+		await act(async () => pending!);
+		expect(FakeEventSource.instances[0].closed).toBe(true);
+		expect(result.current.loadingCatalog).toBe(false);
+		expect(result.current.seatMapLoadState).toBe('error');
+		expect(result.current.catalogMessage).toBe('좌석 배치 상태를 받지 못했습니다. 다시 시도하세요.');
 	});
 
 	it('does not apply an event queued by a closed older stream', async () => {

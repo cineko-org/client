@@ -112,6 +112,7 @@ function NewPresetStory() {
       catalog={catalog} form={form} region={region} theater={theater} auditoriumId={auditoriumId}
       auditoriums={availableAuditoriums} seatMap={auditoriumId ? seatMap : null} pickedSeats={pickedSeats}
       catalogMessage={theater && availableAuditoriums.length === 0 ? '이 Story에서는 용산아이파크몰 좌석만 준비되어 있습니다.' : ''}
+      seatMapLoadState={auditoriumId ? 'cached' : 'idle'}
       loadingCatalog={false} saving={false} onBack={noop} onRefreshCatalog={noop}
       onFormChange={setForm} onRegionChange={(value) => { setRegion(value); setTheater(''); setAuditoriumId(''); }}
       onTheaterChange={(value) => { setTheater(value); setAuditoriumId(''); }} onAuditoriumChange={setAuditoriumId}
@@ -126,7 +127,7 @@ export const EditPreset: Story = {
     <Canvas><PresetPageView
       catalog={catalog} form={{ ...initialPresetForm, id: presets[0].id, name: presets[0].name, seatCount: 2, preferredRows: 'H, I' }}
       region="서울" theater="용산아이파크몰" auditoriumId={imaxSeatMapFixture.seatMap.auditoriumId} auditoriums={auditoriums} seatMap={seatMap}
-      pickedSeats={imaxSeatMapFixture.pickedSeats} catalogMessage="" loadingCatalog={false} saving={false}
+      pickedSeats={imaxSeatMapFixture.pickedSeats} catalogMessage="" seatMapLoadState="cached" loadingCatalog={false} saving={false}
       onBack={noop} onRefreshCatalog={noop} onFormChange={noop} onRegionChange={noop} onTheaterChange={noop}
       onAuditoriumChange={noop} onToggleSeat={noop} onClearSeats={noop} onSave={noop} onReset={noop}
     /></Canvas>

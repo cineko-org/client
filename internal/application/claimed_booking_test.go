@@ -51,43 +51,43 @@ type refreshingShowtimeGateway struct {
 	selections   []domain.SeatSelection
 	refreshErr   error
 	refreshCalls int
+	onRefresh    func(int)
 }
 
 func (gateway *refreshingShowtimeGateway) RefreshSeatSelection(
 	_ context.Context,
 	showtime *catalogpb.Showtime,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+) (*seatmappb.LiveSeatObservation, error) {
 	gateway.refreshCalls++
+	if gateway.onRefresh != nil {
+		gateway.onRefresh(gateway.refreshCalls)
+	}
 	gateway.opened = showtime
 	if gateway.refreshErr != nil {
-		return nil, nil, gateway.refreshErr
+		return nil, gateway.refreshErr
 	}
 	index := min(gateway.refreshCalls-1, len(gateway.selections)-1)
 	selection := gateway.selections[index]
 	snapshot := seatSnapshotForDomain()
-	return snapshot, availableSeatsForDomain(snapshot, selection.LiveSeats), nil
+	return gatewayLiveObservation(snapshot, selection.LiveSeats), nil
 }
 
 func (gateway *exactShowtimeGateway) OpenSeatSelection(
 	_ context.Context,
 	showtime *catalogpb.Showtime,
 	_ int,
-) (*seatmappb.Snapshot, []*seatmappb.Seat, error) {
+) (*seatmappb.LiveSeatObservation, error) {
 	gateway.openCalls++
 	gateway.opened = showtime
 	if gateway.openErr != nil {
-		return nil, nil, gateway.openErr
+		return nil, gateway.openErr
 	}
 	snapshot := gatewaySeatSnapshot()
-	return snapshot, gatewayAvailableSeats(snapshot, gateway.live), nil
+	return gatewayLiveObservation(snapshot, gateway.live), nil
 }
 
 func seatSnapshotForDomain() *seatmappb.Snapshot {
 	return gatewaySeatSnapshot()
-}
-
-func availableSeatsForDomain(snapshot *seatmappb.Snapshot, live []domain.LiveSeat) []*seatmappb.Seat {
-	return gatewayAvailableSeats(snapshot, live)
 }
 
 func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
@@ -103,6 +103,7 @@ func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 		}}},
 	}
 	repository := &centralFenceRepository{workerRepository: base}
+	observations := &liveObservationRepositoryFake{}
 	gateway := &exactShowtimeGateway{workerGateway: &workerGateway{
 		live: []domain.LiveSeat{{Label: "H10", Available: true}},
 	}}
@@ -113,7 +114,7 @@ func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 	}
 	worker := NewBookingWorker(BookingWorkerDependencies{
 		Monitors: repository, Reservations: repository,
-		Booking: gateway, IDs: &sequenceIDs{},
+		Booking: gateway, Observations: observations, IDs: &sequenceIDs{},
 		Clock: fixedClock{now: now}, Waiter: noWaiter{},
 	})
 	reservation, err := runClaimedShowtime(t.Context(), worker, base, showtime)
@@ -125,6 +126,14 @@ func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 	}
 	if reservation.GetReservation().GetPrepared() == nil || base.job.GetState().GetTriggered() == nil {
 		t.Fatalf("reservation/monitor = %+v / %+v", reservation, base.job)
+	}
+	if len(observations.requests) != 1 {
+		t.Fatalf("live observation requests = %d", len(observations.requests))
+	}
+	report := observations.requests[0]
+	if report.GetMutation().GetExpectedRevision() != 0 || report.GetMutation().GetCommandId() == "" ||
+		report.GetObservation().GetAvailability().GetShowtimeId() == "" {
+		t.Fatalf("live observation request = %s", report)
 	}
 }
 
@@ -141,7 +150,13 @@ func TestRunClaimedShowtimeRefreshesTheSameSeatPage(t *testing.T) {
 			{SeatMap: seatMap, LiveSeats: []domain.LiveSeat{{Label: "H10", Available: true}}},
 		},
 	}
-	worker := claimedSeatWatchWorker(base, gateway, now)
+	observations := &liveObservationRepositoryFake{}
+	gateway.onRefresh = func(call int) {
+		if len(observations.requests) != 0 {
+			t.Errorf("live observation reported during hot refresh %d", call)
+		}
+	}
+	worker := claimedSeatWatchWorker(base, gateway, now, observations)
 	reservation, err := runClaimedShowtime(t.Context(), worker, base, claimedSeatWatchShowtime())
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +166,63 @@ func TestRunClaimedShowtimeRefreshesTheSameSeatPage(t *testing.T) {
 	}
 	if reservation.GetReservation().GetPrepared() == nil {
 		t.Fatalf("reservation = %+v", reservation)
+	}
+	if len(observations.requests) != 1 || len(observations.requests[0].GetObservation().GetAvailability().GetAvailableSeats()) != 1 {
+		t.Fatalf("successful live observation requests = %v", observations.requests)
+	}
+}
+
+func TestRunClaimedShowtimeReportsOnlyLatestSoldOutObservationAfterWatchExhaustion(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	base := claimedSeatWatchRepository()
+	observations := &liveObservationRepositoryFake{}
+	gateway := &refreshingShowtimeGateway{
+		exactShowtimeGateway: &exactShowtimeGateway{workerGateway: &workerGateway{
+			live: []domain.LiveSeat{{Label: "H10", Available: false}},
+		}},
+		selections: []domain.SeatSelection{{
+			SeatMap: gatewaySeatMap(), LiveSeats: []domain.LiveSeat{{Label: "H10", Available: false}},
+		}},
+	}
+	gateway.onRefresh = func(call int) {
+		if len(observations.requests) != 0 {
+			t.Errorf("sold-out observation reported during hot refresh %d", call)
+		}
+	}
+	worker := claimedSeatWatchWorker(base, gateway, now, observations)
+	_, err := runClaimedShowtime(t.Context(), worker, base, claimedSeatWatchShowtime())
+	if !errors.Is(err, ErrSeatUnavailable) {
+		t.Fatalf("watch exhaustion error = %v", err)
+	}
+	if gateway.refreshCalls != 3 {
+		t.Fatalf("refresh calls = %d, want 3", gateway.refreshCalls)
+	}
+	if len(observations.requests) != 1 {
+		t.Fatalf("sold-out observation requests = %d, want 1", len(observations.requests))
+	}
+	if got := len(observations.requests[0].GetObservation().GetAvailability().GetAvailableSeats()); got != 0 {
+		t.Fatalf("terminal available seats = %d, want 0", got)
+	}
+}
+
+func TestRunClaimedShowtimeReportsOneShotSoldOutObservation(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	base := claimedSeatWatchRepository()
+	observations := &liveObservationRepositoryFake{}
+	gateway := &exactShowtimeGateway{workerGateway: &workerGateway{
+		live: []domain.LiveSeat{{Label: "H10", Available: false}},
+	}}
+	worker := NewBookingWorker(BookingWorkerDependencies{
+		Monitors: base, Reservations: base, Booking: gateway,
+		Observations: observations, IDs: &sequenceIDs{},
+		Clock: fixedClock{now: now}, Waiter: noWaiter{},
+	})
+	_, err := runClaimedShowtime(t.Context(), worker, base, claimedSeatWatchShowtime())
+	if !errors.Is(err, ErrSeatUnavailable) {
+		t.Fatalf("one-shot sold-out error = %v", err)
+	}
+	if len(observations.requests) != 1 {
+		t.Fatalf("one-shot sold-out requests = %d, want 1", len(observations.requests))
 	}
 }
 
@@ -186,7 +258,8 @@ func TestRunClaimedShowtimeAttemptErrorKeepsMonitorRunning(t *testing.T) {
 	}
 	worker := NewBookingWorker(BookingWorkerDependencies{
 		Monitors: base, Reservations: base,
-		Booking: gateway, IDs: &sequenceIDs{}, Clock: fixedClock{now: now}, Waiter: noWaiter{},
+		Booking: gateway, Observations: &liveObservationRepositoryFake{},
+		IDs: &sequenceIDs{}, Clock: fixedClock{now: now}, Waiter: noWaiter{},
 	})
 
 	_, err := runClaimedShowtime(t.Context(), worker, base, claimedSeatWatchShowtime())
@@ -220,7 +293,8 @@ func TestRunClaimedShowtimeCarriesAuthoritativeMonitorRevisionAcrossAttemptFailu
 		openErr:       attemptErr,
 	}
 	worker := NewBookingWorker(BookingWorkerDependencies{
-		Monitors: repository, Reservations: repository, Booking: gateway, IDs: &sequenceIDs{},
+		Monitors: repository, Reservations: repository, Booking: gateway,
+		Observations: &liveObservationRepositoryFake{}, IDs: &sequenceIDs{},
 		Clock: fixedClock{now: now}, Waiter: noWaiter{},
 	})
 
@@ -250,10 +324,15 @@ func claimedSeatWatchWorker(
 	repository *workerRepository,
 	gateway claimedSeatWatchGateway,
 	now time.Time,
+	observationRepositories ...*liveObservationRepositoryFake,
 ) *BookingWorker {
+	observations := &liveObservationRepositoryFake{}
+	if len(observationRepositories) > 0 {
+		observations = observationRepositories[0]
+	}
 	return NewBookingWorker(BookingWorkerDependencies{
 		Monitors: repository, Reservations: repository,
-		Booking: gateway, IDs: &sequenceIDs{},
+		Booking: gateway, Observations: observations, IDs: &sequenceIDs{},
 		Clock: fixedClock{now: now}, Waiter: noWaiter{},
 		Jitter: func(time.Duration) time.Duration { return 0 },
 		ClaimedWatch: ClaimedSeatWatchPolicy{
@@ -296,8 +375,8 @@ func TestClaimedBookingValidationBoundaries(t *testing.T) {
 		{"showtime mismatch", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
 			showtime.GetAuditorium().SetId("different")
 		}},
-		{"unavailable showtime", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
-			showtime.SetSoldOut(true)
+		{"impossible availability", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
+			showtime.SetAvailableSeats(showtime.GetCapacity() + 1)
 		}},
 		{"incomplete schedule", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
 			showtime.SetEndsAt(nil)
@@ -319,6 +398,11 @@ func TestClaimedBookingValidationBoundaries(t *testing.T) {
 	job, preset, theater, auditorium, showtime := validClaimedValues()
 	if err := validateClaimedBooking(job, preset, theater, auditorium, showtime, now); err != nil {
 		t.Fatalf("valid claimed booking rejected: %v", err)
+	}
+	showtime.SetAvailableSeats(0)
+	showtime.SetSoldOut(true)
+	if err := validateClaimedBooking(job, preset, theater, auditorium, showtime, now); err != nil {
+		t.Fatalf("zero-seat cancellation watch rejected: %v", err)
 	}
 }
 
@@ -351,7 +435,7 @@ func TestRunClaimedShowtimeFailureBoundaries(t *testing.T) {
 		}
 		worker := NewBookingWorker(BookingWorkerDependencies{
 			Monitors: repository, Reservations: repository,
-			Booking: gateway, IDs: &sequenceIDs{},
+			Booking: gateway, Observations: &liveObservationRepositoryFake{}, IDs: &sequenceIDs{},
 			Clock: fixedClock{now: now}, Waiter: noWaiter{},
 		})
 		showtime := domain.Showtime{

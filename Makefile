@@ -66,13 +66,13 @@ workflow-check:
 	node --test scripts/release-metadata.test.mjs
 
 contract-check:
-	grep -Eq '^# github.com/cineko-org/contracts/v3 v3.5.3( => ../contracts)?$$' vendor/modules.txt
+	grep -Eq '^# github.com/cineko-org/contracts/v3 v3.6.0( => ../contracts)?$$' vendor/modules.txt
 
 contract-release-check:
 	@! grep -Eq '^[[:space:]]*replace([[:space:]]|\()' go.mod
-	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3.5.3$$' go.mod
-	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3.5.3$$' vendor/modules.txt
-	@grep -Eq '^github.com/cineko-org/contracts/v3 v3.5.3 h1:' go.sum
+	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3.6.0$$' go.mod
+	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3.6.0$$' vendor/modules.txt
+	@grep -Eq '^github.com/cineko-org/contracts/v3 v3.6.0 h1:' go.sum
 
 behavior-contract-check:
 	bash scripts/verify-behavior-contract.sh
