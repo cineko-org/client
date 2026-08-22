@@ -1,20 +1,26 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"buf.build/go/protovalidate"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
 	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -31,7 +37,13 @@ const usage = `usage:
   releasecontract verify-release RELEASE_JSON...
   releasecontract verify-artifacts RELEASE_JSON...
   releasecontract plan COMPONENT PUBLIC_BASE_URL RELEASE_JSON...
+  releasecontract publish COMPONENT CENTRAL_URL SET_JSON
   releasecontract verify-response COMPONENT RESPONSE_BODY`
+
+const (
+	maxPublishAttempts = 4
+	maxResponseBytes   = 1 << 20
+)
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -63,6 +75,8 @@ func run(args []string) error {
 		return verifyArtifacts(args[1:])
 	case "plan":
 		return writePlan(args[1:])
+	case "publish":
+		return publishFromArgs(args[1:])
 	case "verify-response":
 		return verifyResponse(args[1:])
 	default:
@@ -293,12 +307,164 @@ func verifyResponse(args []string) error {
 		return err
 	}
 	if len(strings.TrimSpace(string(payload))) == 0 {
-		payload = []byte("{}")
+		return fmt.Errorf("central returned an empty %s publish response", args[0])
 	}
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, message); err != nil {
 		return fmt.Errorf("decode %s publish response: %w", args[0], err)
 	}
 	return protovalidate.Validate(message)
+}
+
+func publishFromArgs(args []string) error {
+	if len(args) != 3 {
+		return errors.New(usage)
+	}
+	component, centralURL, setPath := args[0], strings.TrimSuffix(args[1], "/"), args[2]
+	parsed, err := url.ParseRequestURI(centralURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return errors.New("central URL must be HTTPS")
+	}
+	token := strings.TrimSpace(os.Getenv("CINEKO_RELEASE_PUBLISH_TOKEN"))
+	if token == "" {
+		return errors.New("release publisher token is required")
+	}
+	input, err := publishRequest(component, setPath)
+	if err != nil {
+		return err
+	}
+	payload, err := protojson.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("encode generated %s publish request: %w", component, err)
+	}
+	return publishRelease(
+		context.Background(), &http.Client{Timeout: 30 * time.Second}, time.Sleep,
+		centralURL+"/v1/release-registry/"+component, component, token, payload,
+	)
+}
+
+func publishRequest(component, path string) (proto.Message, error) {
+	set, err := emptyReleaseSet(component)
+	if err != nil {
+		return nil, err
+	}
+	if err := readValidated(path, set); err != nil {
+		return nil, err
+	}
+	var request proto.Message
+	switch value := set.(type) {
+	case *releasepb.ClientReleaseSet:
+		request = servicepb.PublishClientRequest_builder{ReleaseSet: value}.Build()
+	case *releasepb.BrowserReleaseSet:
+		request = servicepb.PublishBrowserRequest_builder{ReleaseSet: value}.Build()
+	case *releasepb.PlaywrightReleaseSet:
+		request = servicepb.PublishPlaywrightRequest_builder{ReleaseSet: value}.Build()
+	default:
+		return nil, fmt.Errorf("unsupported release component %q", component)
+	}
+	if err := protovalidate.Validate(request); err != nil {
+		return nil, fmt.Errorf("validate generated %s publish request: %w", component, err)
+	}
+	return request, nil
+}
+
+func publishRelease(
+	ctx context.Context,
+	client *http.Client,
+	sleep func(time.Duration),
+	endpoint string,
+	component string,
+	token string,
+	payload []byte,
+) error {
+	for attempt := 1; attempt <= maxPublishAttempts; attempt++ {
+		// #nosec G107,G704 -- publishFromArgs validates the operator-supplied Central HTTPS origin.
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("create %s release request: %w", component, err)
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request) // #nosec G704 -- endpoint was validated by publishFromArgs.
+		if err != nil {
+			if attempt == maxPublishAttempts {
+				return fmt.Errorf("central %s release registration failed after %d network attempts: %w", component, attempt, err)
+			}
+			sleep(publishBackoff(attempt))
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+		closeErr := response.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("read Central %s release response: %w", component, readErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close Central %s release response: %w", component, closeErr)
+		}
+		if len(body) > maxResponseBytes {
+			return fmt.Errorf("central %s release response exceeds size limit", component)
+		}
+		if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+			if err := validatePublishResponse(component, body); err != nil {
+				return err
+			}
+			generation, err := positiveGeneration(response.Header.Get("X-Cineko-Release-Generation"))
+			if err != nil {
+				return err
+			}
+			fmt.Printf("registered %s release generation %d\n", component, generation)
+			return nil
+		}
+		failure := centralFailure(component, response.StatusCode, body)
+		if response.StatusCode < http.StatusInternalServerError || attempt == maxPublishAttempts {
+			return failure
+		}
+		sleep(publishBackoff(attempt))
+	}
+	return fmt.Errorf("central %s release registration exhausted all attempts", component)
+}
+
+func validatePublishResponse(component string, payload []byte) error {
+	if len(bytes.TrimSpace(payload)) == 0 {
+		return fmt.Errorf("central returned an empty %s publish response", component)
+	}
+	var response proto.Message
+	switch component {
+	case "client":
+		response = &servicepb.PublishClientResponse{}
+	case "browser":
+		response = &servicepb.PublishBrowserResponse{}
+	case "playwright":
+		response = &servicepb.PublishPlaywrightResponse{}
+	default:
+		return fmt.Errorf("unsupported release component %q", component)
+	}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, response); err != nil {
+		return fmt.Errorf("decode %s publish response: %w", component, err)
+	}
+	return protovalidate.Validate(response)
+}
+
+func centralFailure(component string, status int, payload []byte) error {
+	response := &commonpb.APIErrorResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, response); err == nil && response.GetError() != nil {
+		return fmt.Errorf(
+			"central %s release registration failed with HTTP %d: %s: %s",
+			component, status, response.GetError().GetCode(), response.GetError().GetMessage(),
+		)
+	}
+	return fmt.Errorf("central %s release registration failed with HTTP %d", component, status)
+}
+
+func positiveGeneration(value string) (int64, error) {
+	generation, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || generation <= 0 {
+		return 0, errors.New("central returned an invalid release generation header")
+	}
+	return generation, nil
+}
+
+func publishBackoff(attempt int) time.Duration {
+	return time.Second * time.Duration(1<<(attempt-1))
 }
 
 func readReleaseSet(component string, paths []string) (proto.Message, error) {

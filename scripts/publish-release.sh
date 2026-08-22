@@ -5,8 +5,6 @@ if [[ $# -lt 1 ]]; then printf 'usage: %s <metadata.json>...\n' "$0" >&2; exit 2
 : "${CINEKO_RELEASES_S3_ENDPOINT:?required}"
 : "${CINEKO_RELEASES_S3_ACCESS_KEY:?required}"
 : "${CINEKO_RELEASES_S3_SECRET_KEY:?required}"
-: "${CINEKO_CENTRAL_URL:?required}"
-: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
 : "${CINEKO_RELEASES_PUBLIC_BASE_URL:?required}"
 readonly bucket="${CINEKO_RELEASES_S3_BUCKET:-cineko-releases}"
 readonly public_base_url="${CINEKO_RELEASES_PUBLIC_BASE_URL%/}"
@@ -14,7 +12,7 @@ export AWS_ACCESS_KEY_ID="$CINEKO_RELEASES_S3_ACCESS_KEY"
 export AWS_SECRET_ACCESS_KEY="$CINEKO_RELEASES_S3_SECRET_KEY"
 export AWS_DEFAULT_REGION="${CINEKO_RELEASES_S3_REGION:-us-east-1}"
 
-for command in aws curl go jq openssl; do
+for command in aws go jq openssl; do
   command -v "$command" >/dev/null || {
     printf '%s is required on the release publisher runner\n' "$command" >&2
     exit 2
@@ -75,6 +73,11 @@ while IFS=$'\t' read -r artifact object_key public_url expected_size expected_sh
   fi
 done <"$publish_plan"
 
-readonly response="$temporary_directory/publish-response.json"
-scripts/post-release-registry.sh "$component" "$batch_payload" "$response"
-"$release_contract" verify-response "$component" "$response"
+if [[ -n "${CINEKO_RELEASE_PAYLOAD_OUT:-}" ]]; then
+  cp "$batch_payload" "$CINEKO_RELEASE_PAYLOAD_OUT"
+  exit 0
+fi
+
+: "${CINEKO_CENTRAL_URL:?required}"
+: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
+"$release_contract" publish "$component" "$CINEKO_CENTRAL_URL" "$batch_payload"

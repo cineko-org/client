@@ -23,12 +23,10 @@ if [[ "$public_base" != https://* ]]; then
   exit 2
 fi
 
-for command in curl go; do
-  command -v "$command" >/dev/null || {
-    printf '%s is required on the release publisher runner\n' "$command" >&2
-    exit 2
-  }
-done
+command -v go >/dev/null || {
+  printf 'go is required on the release publisher runner\n' >&2
+  exit 2
+}
 
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/cineko-playwright-register.XXXXXX")"
 readonly temporary_root
@@ -62,8 +60,6 @@ append_release linux amd64 tar.gz node
 
 readonly payload="$temporary_root/playwright-release-set.json"
 "$release_contract" set playwright "${release_paths[@]}" >"$payload"
-readonly response="$temporary_root/publish-response.json"
-scripts/post-release-registry.sh playwright "$payload" "$response"
-"$release_contract" verify-response playwright "$response"
+"$release_contract" publish playwright "$CINEKO_CENTRAL_URL" "$payload"
 
 printf 'registered Playwright %s for all supported platforms\n' "$version"
