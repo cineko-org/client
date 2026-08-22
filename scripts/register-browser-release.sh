@@ -15,8 +15,6 @@ readonly release_contract="$temporary_root/releasecontract"
 GOWORK=off go build -mod=vendor -o "$release_contract" ./cmd/releasecontract
 "$release_contract" verify-set browser "$payload"
 
-readonly response="$temporary_root/publish-response.json"
-scripts/post-release-registry.sh browser "$payload" "$response"
-"$release_contract" verify-response browser "$response"
+"$release_contract" publish browser "$CINEKO_CENTRAL_URL" "$payload"
 
 printf 'registered browser release set\n'

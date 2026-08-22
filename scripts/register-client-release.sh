@@ -27,7 +27,7 @@ if [[ "$public_base" != https://* ]]; then
   exit 2
 fi
 
-for command in curl go jq; do
+for command in go jq; do
   command -v "$command" >/dev/null || {
     printf '%s is required on the release publisher runner\n' "$command" >&2
     exit 2
@@ -94,8 +94,6 @@ append_release linux amd64 tar.gz 'Cineko'
 
 readonly payload="$temporary_root/client-release-set.json"
 "$release_contract" set client "${release_paths[@]}" >"$payload"
-readonly response="$temporary_root/publish-response.json"
-scripts/post-release-registry.sh client "$payload" "$response"
-"$release_contract" verify-response client "$response"
+"$release_contract" publish client "$CINEKO_CENTRAL_URL" "$payload"
 
 printf 'registered Client v%s for all supported platforms\n' "$version"

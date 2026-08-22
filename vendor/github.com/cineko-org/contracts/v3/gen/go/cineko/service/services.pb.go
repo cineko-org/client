@@ -4342,48 +4342,48 @@ var File_cineko_service_services_proto protoreflect.FileDescriptor
 
 const file_cineko_service_services_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcineko/service/services.proto\x12\x0ecineko.service\x1a\x1bbuf/validate/validate.proto\x1a\x1ccineko/catalog/catalog.proto\x1a\x1acineko/client/client.proto\x1a\x1acineko/common/common.proto\x1a cineko/execution/execution.proto\x1a$cineko/observation/observation.proto\x1a\x18cineko/probe/probe.proto\x1a\x1ccineko/release/release.proto\x1a\x1ccineko/seatmap/seatmap.proto\"]\n" +
-	"\x1eSubmitAssignmentResultResponse\x12;\n" +
-	"\areceipt\x18\x01 \x01(\v2!.cineko.observation.ResultReceiptR\areceipt\"\x13\n" +
+	"\x1dcineko/service/services.proto\x12\x0ecineko.service\x1a\x1bbuf/validate/validate.proto\x1a\x1ccineko/catalog/catalog.proto\x1a\x1acineko/client/client.proto\x1a\x1acineko/common/common.proto\x1a cineko/execution/execution.proto\x1a$cineko/observation/observation.proto\x1a\x18cineko/probe/probe.proto\x1a\x1ccineko/release/release.proto\x1a\x1ccineko/seatmap/seatmap.proto\"e\n" +
+	"\x1eSubmitAssignmentResultResponse\x12C\n" +
+	"\areceipt\x18\x01 \x01(\v2!.cineko.observation.ResultReceiptB\x06\xbaH\x03\xc8\x01\x01R\areceipt\"\x13\n" +
 	"\x11DisconnectRequest\"\x14\n" +
 	"\x12DisconnectResponse\"Y\n" +
 	"\x12ExchangePinRequest\x12C\n" +
-	"\arequest\x18\x01 \x01(\v2!.cineko.client.PinExchangeRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"d\n" +
-	"\x13ExchangePinResponse\x12M\n" +
-	"\x0eauthentication\x18\x01 \x01(\v2%.cineko.client.AuthenticationResponseR\x0eauthentication\"]\n" +
+	"\arequest\x18\x01 \x01(\v2!.cineko.client.PinExchangeRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"l\n" +
+	"\x13ExchangePinResponse\x12U\n" +
+	"\x0eauthentication\x18\x01 \x01(\v2%.cineko.client.AuthenticationResponseB\x06\xbaH\x03\xc8\x01\x01R\x0eauthentication\"]\n" +
 	"\x14ExchangeTokenRequest\x12E\n" +
-	"\arequest\x18\x01 \x01(\v2#.cineko.client.TokenExchangeRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"f\n" +
-	"\x15ExchangeTokenResponse\x12M\n" +
-	"\x0eauthentication\x18\x01 \x01(\v2%.cineko.client.AuthenticationResponseR\x0eauthentication\"[\n" +
+	"\arequest\x18\x01 \x01(\v2#.cineko.client.TokenExchangeRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"n\n" +
+	"\x15ExchangeTokenResponse\x12U\n" +
+	"\x0eauthentication\x18\x01 \x01(\v2%.cineko.client.AuthenticationResponseB\x06\xbaH\x03\xc8\x01\x01R\x0eauthentication\"[\n" +
 	"\x13RefreshTokenRequest\x12D\n" +
-	"\arequest\x18\x01 \x01(\v2\".cineko.client.TokenRefreshRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"e\n" +
-	"\x14RefreshTokenResponse\x12M\n" +
-	"\x0eauthentication\x18\x01 \x01(\v2%.cineko.client.AuthenticationResponseR\x0eauthentication\"a\n" +
+	"\arequest\x18\x01 \x01(\v2\".cineko.client.TokenRefreshRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"m\n" +
+	"\x14RefreshTokenResponse\x12U\n" +
+	"\x0eauthentication\x18\x01 \x01(\v2%.cineko.client.AuthenticationResponseB\x06\xbaH\x03\xc8\x01\x01R\x0eauthentication\"a\n" +
 	"\x19CreateLaunchTicketRequest\x12D\n" +
-	"\arequest\x18\x01 \x01(\v2\".cineko.client.LaunchTicketRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"]\n" +
-	"\x1aCreateLaunchTicketResponse\x12?\n" +
-	"\bresponse\x18\x01 \x01(\v2#.cineko.client.LaunchTicketResponseR\bresponse\"a\n" +
+	"\arequest\x18\x01 \x01(\v2\".cineko.client.LaunchTicketRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"e\n" +
+	"\x1aCreateLaunchTicketResponse\x12G\n" +
+	"\bresponse\x18\x01 \x01(\v2#.cineko.client.LaunchTicketResponseB\x06\xbaH\x03\xc8\x01\x01R\bresponse\"a\n" +
 	"\x16ExchangeSessionRequest\x12G\n" +
-	"\arequest\x18\x01 \x01(\v2%.cineko.client.SessionExchangeRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"h\n" +
-	"\x17ExchangeSessionResponse\x12M\n" +
-	"\x0eauthentication\x18\x01 \x01(\v2%.cineko.client.AuthenticationResponseR\x0eauthentication\"\x0f\n" +
+	"\arequest\x18\x01 \x01(\v2%.cineko.client.SessionExchangeRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"p\n" +
+	"\x17ExchangeSessionResponse\x12U\n" +
+	"\x0eauthentication\x18\x01 \x01(\v2%.cineko.client.AuthenticationResponseB\x06\xbaH\x03\xc8\x01\x01R\x0eauthentication\"\x0f\n" +
 	"\rLogoutRequest\"\x10\n" +
 	"\x0eLogoutResponse\"q\n" +
 	"!CreateProbeBootstrapTicketRequest\x12L\n" +
-	"\arequest\x18\x01 \x01(\v2*.cineko.client.ProbeBootstrapTicketRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"m\n" +
-	"\"CreateProbeBootstrapTicketResponse\x12G\n" +
-	"\bresponse\x18\x01 \x01(\v2+.cineko.client.ProbeBootstrapTicketResponseR\bresponse\"G\n" +
+	"\arequest\x18\x01 \x01(\v2*.cineko.client.ProbeBootstrapTicketRequestB\x06\xbaH\x03\xc8\x01\x01R\arequest\"u\n" +
+	"\"CreateProbeBootstrapTicketResponse\x12O\n" +
+	"\bresponse\x18\x01 \x01(\v2+.cineko.client.ProbeBootstrapTicketResponseB\x06\xbaH\x03\xc8\x01\x01R\bresponse\"G\n" +
 	"\x10BootstrapRequest\x123\n" +
 	"\x0finstallation_id\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x0einstallationId\"K\n" +
-	"\x11BootstrapResponse\x126\n" +
-	"\tbootstrap\x18\x01 \x01(\v2\x18.cineko.client.BootstrapR\tbootstrap\"i\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x0einstallationId\"S\n" +
+	"\x11BootstrapResponse\x12>\n" +
+	"\tbootstrap\x18\x01 \x01(\v2\x18.cineko.client.BootstrapB\x06\xbaH\x03\xc8\x01\x01R\tbootstrap\"i\n" +
 	"\x12GetResourceRequest\x127\n" +
 	"\x04kind\x18\x01 \x01(\v2\x1b.cineko.client.ResourceKindB\x06\xbaH\x03\xc8\x01\x01R\x04kind\x12\x1a\n" +
 	"\x02id\x18\x02 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x02id\"J\n" +
-	"\x13GetResourceResponse\x123\n" +
-	"\bresource\x18\x01 \x01(\v2\x17.cineko.client.ResourceR\bresource\"\x7f\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x02id\"R\n" +
+	"\x13GetResourceResponse\x12;\n" +
+	"\bresource\x18\x01 \x01(\v2\x17.cineko.client.ResourceB\x06\xbaH\x03\xc8\x01\x01R\bresource\"\x7f\n" +
 	"\x14ListResourcesRequest\x127\n" +
 	"\x04kind\x18\x01 \x01(\v2\x1b.cineko.client.ResourceKindB\x06\xbaH\x03\xc8\x01\x01R\x04kind\x12.\n" +
 	"\x04page\x18\x02 \x01(\v2\x1a.cineko.common.PageRequestR\x04page\"\x7f\n" +
@@ -4392,9 +4392,9 @@ const file_cineko_service_services_proto_rawDesc = "" +
 	"\x04page\x18\x02 \x01(\v2\x1b.cineko.common.PageResponseR\x04page\"\x96\x01\n" +
 	"\x12PutResourceRequest\x12C\n" +
 	"\bmutation\x18\x01 \x01(\v2\x1f.cineko.common.MutationIdentityB\x06\xbaH\x03\xc8\x01\x01R\bmutation\x12;\n" +
-	"\bresource\x18\x02 \x01(\v2\x17.cineko.client.ResourceB\x06\xbaH\x03\xc8\x01\x01R\bresource\"J\n" +
-	"\x13PutResourceResponse\x123\n" +
-	"\bresource\x18\x01 \x01(\v2\x17.cineko.client.ResourceR\bresource\"\xb1\x01\n" +
+	"\bresource\x18\x02 \x01(\v2\x17.cineko.client.ResourceB\x06\xbaH\x03\xc8\x01\x01R\bresource\"R\n" +
+	"\x13PutResourceResponse\x12;\n" +
+	"\bresource\x18\x01 \x01(\v2\x17.cineko.client.ResourceB\x06\xbaH\x03\xc8\x01\x01R\bresource\"\xb1\x01\n" +
 	"\x15DeleteResourceRequest\x12C\n" +
 	"\bmutation\x18\x01 \x01(\v2\x1f.cineko.common.MutationIdentityB\x06\xbaH\x03\xc8\x01\x01R\bmutation\x127\n" +
 	"\x04kind\x18\x02 \x01(\v2\x1b.cineko.client.ResourceKindB\x06\xbaH\x03\xc8\x01\x01R\x04kind\x12\x1a\n" +
@@ -4402,9 +4402,9 @@ const file_cineko_service_services_proto_rawDesc = "" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x02id\"\x18\n" +
 	"\x16DeleteResourceResponse\"L\n" +
 	"\x13UpsertDeviceRequest\x125\n" +
-	"\x06device\x18\x01 \x01(\v2\x15.cineko.client.DeviceB\x06\xbaH\x03\xc8\x01\x01R\x06device\"E\n" +
-	"\x14UpsertDeviceResponse\x12-\n" +
-	"\x06device\x18\x01 \x01(\v2\x15.cineko.client.DeviceR\x06device\"H\n" +
+	"\x06device\x18\x01 \x01(\v2\x15.cineko.client.DeviceB\x06\xbaH\x03\xc8\x01\x01R\x06device\"M\n" +
+	"\x14UpsertDeviceResponse\x125\n" +
+	"\x06device\x18\x01 \x01(\v2\x15.cineko.client.DeviceB\x06\xbaH\x03\xc8\x01\x01R\x06device\"H\n" +
 	"\x13StreamEventsRequest\x121\n" +
 	"\x0eafter_sequence\x18\x01 \x01(\x03B\n" +
 	"\xbaH\a\xc8\x01\x01\"\x02(\x00R\rafterSequence\"\x92\x01\n" +
@@ -4412,9 +4412,9 @@ const file_cineko_service_services_proto_rawDesc = "" +
 	"\x04data\x18\x01 \x01(\v2\x1a.cineko.client.ClientEventH\x00R\x04data\x128\n" +
 	"\acontrol\x18\x02 \x01(\v2\x1c.cineko.client.StreamControlH\x00R\acontrolB\x0e\n" +
 	"\x05event\x12\x05\xbaH\x02\b\x01\"\x13\n" +
-	"\x11GetCatalogRequest\"L\n" +
-	"\x12GetCatalogResponse\x126\n" +
-	"\acatalog\x18\x01 \x01(\v2\x1c.cineko.catalog.CatalogIndexR\acatalog\"B\n" +
+	"\x11GetCatalogRequest\"T\n" +
+	"\x12GetCatalogResponse\x12>\n" +
+	"\acatalog\x18\x01 \x01(\v2\x1c.cineko.catalog.CatalogIndexB\x06\xbaH\x03\xc8\x01\x01R\acatalog\"B\n" +
 	"\x15GetAuditoriumsRequest\x12)\n" +
 	"\n" +
 	"theater_id\x18\x01 \x01(\tB\n" +
@@ -4436,10 +4436,11 @@ const file_cineko_service_services_proto_rawDesc = "" +
 	"resolution\x18\x01 \x01(\v2\x1a.cineko.seatmap.ResolutionB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"resolution\"c\n" +
 	"\x1cSubmitCatalogSnapshotRequest\x12C\n" +
-	"\bsnapshot\x18\x01 \x01(\v2\x1f.cineko.catalog.CatalogSnapshotB\x06\xbaH\x03\xc8\x01\x01R\bsnapshot\"H\n" +
-	"\x1dSubmitCatalogSnapshotResponse\x12'\n" +
+	"\bsnapshot\x18\x01 \x01(\v2\x1f.cineko.catalog.CatalogSnapshotB\x06\xbaH\x03\xc8\x01\x01R\bsnapshot\"K\n" +
+	"\x1dSubmitCatalogSnapshotResponse\x12*\n" +
 	"\n" +
-	"generation\x18\x01 \x01(\x03B\a\xbaH\x04\"\x02(\x00R\n" +
+	"generation\x18\x01 \x01(\x03B\n" +
+	"\xbaH\a\xc8\x01\x01\"\x02 \x00R\n" +
 	"generation\"\xb6\x01\n" +
 	" SubmitLiveSeatObservationRequest\x12C\n" +
 	"\bmutation\x18\x01 \x01(\v2\x1f.cineko.common.MutationIdentityB\x06\xbaH\x03\xc8\x01\x01R\bmutation\x12M\n" +
@@ -4448,40 +4449,46 @@ const file_cineko_service_services_proto_rawDesc = "" +
 	"\bsnapshot\x18\x01 \x01(\v2\x18.cineko.seatmap.SnapshotB\x06\xbaH\x03\xc8\x01\x01R\bsnapshot\"R\n" +
 	"\x0fCompleteRequest\x12?\n" +
 	"\x06result\x18\x01 \x01(\v2\x1f.cineko.execution.ResultRequestB\x06\xbaH\x03\xc8\x01\x01R\x06result\"\x12\n" +
-	"\x10CompleteResponse\"t\n" +
-	"\x18GetRuntimeReleaseRequest\x12\x18\n" +
-	"\achannel\x18\x01 \x01(\tR\achannel\x12\x1a\n" +
-	"\bplatform\x18\x02 \x01(\tR\bplatform\x12\"\n" +
-	"\farchitecture\x18\x03 \x01(\tR\farchitecture\"U\n" +
-	"\x19GetRuntimeReleaseResponse\x128\n" +
-	"\arelease\x18\x01 \x01(\v2\x1e.cineko.release.RuntimeReleaseR\arelease\"u\n" +
-	"\x19GetLauncherReleaseRequest\x12\x18\n" +
-	"\achannel\x18\x01 \x01(\tR\achannel\x12\x1a\n" +
-	"\bplatform\x18\x02 \x01(\tR\bplatform\x12\"\n" +
-	"\farchitecture\x18\x03 \x01(\tR\farchitecture\"W\n" +
-	"\x1aGetLauncherReleaseResponse\x129\n" +
-	"\arelease\x18\x01 \x01(\v2\x1f.cineko.release.LauncherReleaseR\arelease\"\x1b\n" +
-	"\x19GetReleaseRegistryRequest\"R\n" +
-	"\x1aGetReleaseRegistryResponse\x124\n" +
-	"\bregistry\x18\x01 \x01(\v2\x18.cineko.release.RegistryR\bregistry\"Y\n" +
-	"\x14PublishClientRequest\x12A\n" +
-	"\vrelease_set\x18\x01 \x01(\v2 .cineko.release.ClientReleaseSetR\n" +
+	"\x10CompleteResponse\"\x98\x01\n" +
+	"\x18GetRuntimeReleaseRequest\x12$\n" +
+	"\achannel\x18\x01 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\achannel\x12&\n" +
+	"\bplatform\x18\x02 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\bplatform\x12.\n" +
+	"\farchitecture\x18\x03 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\farchitecture\"]\n" +
+	"\x19GetRuntimeReleaseResponse\x12@\n" +
+	"\arelease\x18\x01 \x01(\v2\x1e.cineko.release.RuntimeReleaseB\x06\xbaH\x03\xc8\x01\x01R\arelease\"\x99\x01\n" +
+	"\x19GetLauncherReleaseRequest\x12$\n" +
+	"\achannel\x18\x01 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\achannel\x12&\n" +
+	"\bplatform\x18\x02 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\bplatform\x12.\n" +
+	"\farchitecture\x18\x03 \x01(\tB\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\farchitecture\"_\n" +
+	"\x1aGetLauncherReleaseResponse\x12A\n" +
+	"\arelease\x18\x01 \x01(\v2\x1f.cineko.release.LauncherReleaseB\x06\xbaH\x03\xc8\x01\x01R\arelease\"\x1b\n" +
+	"\x19GetReleaseRegistryRequest\"Z\n" +
+	"\x1aGetReleaseRegistryResponse\x12<\n" +
+	"\bregistry\x18\x01 \x01(\v2\x18.cineko.release.RegistryB\x06\xbaH\x03\xc8\x01\x01R\bregistry\"a\n" +
+	"\x14PublishClientRequest\x12I\n" +
+	"\vrelease_set\x18\x01 \x01(\v2 .cineko.release.ClientReleaseSetB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"releaseSet\"\x17\n" +
-	"\x15PublishClientResponse\"[\n" +
-	"\x15PublishBrowserRequest\x12B\n" +
-	"\vrelease_set\x18\x01 \x01(\v2!.cineko.release.BrowserReleaseSetR\n" +
+	"\x15PublishClientResponse\"c\n" +
+	"\x15PublishBrowserRequest\x12J\n" +
+	"\vrelease_set\x18\x01 \x01(\v2!.cineko.release.BrowserReleaseSetB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"releaseSet\"\x18\n" +
-	"\x16PublishBrowserResponse\"a\n" +
-	"\x18PublishPlaywrightRequest\x12E\n" +
-	"\vrelease_set\x18\x01 \x01(\v2$.cineko.release.PlaywrightReleaseSetR\n" +
+	"\x16PublishBrowserResponse\"i\n" +
+	"\x18PublishPlaywrightRequest\x12M\n" +
+	"\vrelease_set\x18\x01 \x01(\v2$.cineko.release.PlaywrightReleaseSetB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"releaseSet\"\x1b\n" +
-	"\x19PublishPlaywrightResponse\"]\n" +
-	"\x16PublishLauncherRequest\x12C\n" +
-	"\vrelease_set\x18\x01 \x01(\v2\".cineko.release.LauncherReleaseSetR\n" +
+	"\x19PublishPlaywrightResponse\"e\n" +
+	"\x16PublishLauncherRequest\x12K\n" +
+	"\vrelease_set\x18\x01 \x01(\v2\".cineko.release.LauncherReleaseSetB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"releaseSet\"\x19\n" +
-	"\x17PublishLauncherResponse\"W\n" +
-	"\x13PublishProbeRequest\x12@\n" +
-	"\vrelease_set\x18\x01 \x01(\v2\x1f.cineko.release.ProbeReleaseSetR\n" +
+	"\x17PublishLauncherResponse\"_\n" +
+	"\x13PublishProbeRequest\x12H\n" +
+	"\vrelease_set\x18\x01 \x01(\v2\x1f.cineko.release.ProbeReleaseSetB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"releaseSet\"\x16\n" +
 	"\x14PublishProbeResponse2\xbf\x04\n" +
 	"\fProbeService\x12I\n" +
