@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.1](https://github.com/cineko-org/client/compare/v2.7.0...v2.7.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **release:** classify registry retry failures ([#27](https://github.com/cineko-org/client/issues/27)) ([9d3d3f4](https://github.com/cineko-org/client/commit/9d3d3f4a2b0ed653bda8b3e0b8594b7209fb439a))
+
 ## [2.7.0](https://github.com/cineko-org/client/compare/v2.6.0...v2.7.0) (2026-08-22)
 
 
