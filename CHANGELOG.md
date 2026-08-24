@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.1](https://github.com/cineko-org/client/compare/v2.8.0...v2.8.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **release:** publish runtime artifacts on routed paths ([#37](https://github.com/cineko-org/client/issues/37)) ([c1645ba](https://github.com/cineko-org/client/commit/c1645ba9b91feae854bd47d47a97a0184f02c7ac))
+
 ## [2.8.0](https://github.com/cineko-org/client/compare/v2.7.4...v2.8.0) (2026-08-24)
 
 
