@@ -6,11 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"time"
-
-	"github.com/cineko-org/client/internal/domain"
 )
-
-type CaptchaPrompt func() error
 
 func (adapter *Adapter) AuthenticateManuallyUntil(ctx context.Context, timeout time.Duration) error {
 	adapter.mu.Lock()
@@ -94,116 +90,6 @@ func (adapter *Adapter) waitForVisibleBrowser(ctx context.Context, timeout time.
 	}
 }
 
-func (adapter *Adapter) AuthenticateManually(ctx context.Context, prompt CaptchaPrompt) error {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if prompt == nil {
-		return errors.New("manual login prompt is required")
-	}
-	if err := adapter.navigate(loginURL); err != nil {
-		return fmt.Errorf("open CGV login: %w", err)
-	}
-	if err := prompt(); err != nil {
-		return err
-	}
-	if err := adapter.verifyAuthenticatedUnlocked(); err != nil {
-		return err
-	}
-	return adapter.saveSessionState()
-}
-
-func (adapter *Adapter) Authenticate(
-	ctx context.Context,
-	credentials domain.AccountCredentials,
-	prompt CaptchaPrompt,
-) error {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := adapter.navigate(loginURL); err != nil {
-		return fmt.Errorf("open CGV login: %w", err)
-	}
-	if err := adapter.fillLoginForm(credentials); err != nil {
-		return err
-	}
-	if err := adapter.resolveCaptcha(prompt); err != nil {
-		return err
-	}
-	if err := adapter.submitLogin(); err != nil {
-		return err
-	}
-	if err := adapter.verifyAuthenticatedUnlocked(); err != nil {
-		return err
-	}
-	return adapter.saveSessionState()
-}
-
-// AuthenticateSavedUntil prefills credentials from the operating system vault
-// and waits for the user to complete CAPTCHA and submit the visible login form.
-func (adapter *Adapter) AuthenticateSavedUntil(
-	ctx context.Context,
-	credentials domain.AccountCredentials,
-	timeout time.Duration,
-) error {
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if timeout <= 0 {
-		return errors.New("saved login timeout must be positive")
-	}
-	if err := credentials.Validate(); err != nil {
-		return err
-	}
-	if err := adapter.navigate(loginURL); err != nil {
-		return fmt.Errorf("open CGV login: %w", err)
-	}
-	if err := adapter.fillLoginForm(credentials); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(timeout)
-	if err := adapter.waitForAuthenticatedState(ctx, deadline); err != nil {
-		return err
-	}
-	return adapter.saveSessionState()
-}
-
-func (adapter *Adapter) fillLoginForm(credentials domain.AccountCredentials) error {
-	if credentials.ID != "" {
-		if err := adapter.page.Locator(`input[placeholder^="CJ ONE 통합 아이디"]`).Fill(credentials.ID); err != nil {
-			return fmt.Errorf("fill CGV id: %w", err)
-		}
-	}
-	if credentials.Password != "" {
-		if err := adapter.page.Locator(`input[type="password"]`).Fill(credentials.Password); err != nil {
-			return fmt.Errorf("fill CGV password: %w", err)
-		}
-	}
-	return nil
-}
-
-func (adapter *Adapter) resolveCaptcha(prompt CaptchaPrompt) error {
-	captchaVisible, err := adapter.captchaVisible()
-	if err != nil {
-		return err
-	}
-	if captchaVisible {
-		if prompt == nil {
-			return ErrCaptchaRequired
-		}
-		if err := prompt(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (adapter *Adapter) captchaVisible() (bool, error) {
 	var visible bool
 	if err := adapter.evaluate(`(() => {
@@ -214,43 +100,6 @@ func (adapter *Adapter) captchaVisible() (bool, error) {
 		return false, err
 	}
 	return visible, nil
-}
-
-func (adapter *Adapter) waitForAuthenticatedState(ctx context.Context, deadline time.Time) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if time.Now().After(deadline) {
-			return errors.New("timed out waiting for CGV login")
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			authenticated, err := adapter.authenticatedState()
-			if err != nil {
-				return err
-			}
-			if authenticated {
-				return nil
-			}
-		}
-	}
-}
-
-func (adapter *Adapter) submitLogin() error {
-	currentURL := adapter.page.URL()
-	if currentURL != loginURL && !containsPath(currentURL, "/mem/login") {
-		return nil
-	}
-	clicked, err := adapter.clickButtonExact("로그인")
-	if err != nil {
-		return err
-	}
-	if !clicked {
-		return fmt.Errorf("%w: login submit button not found", ErrUIContractChanged)
-	}
-	return adapter.wait(time.Second)
 }
 
 func (adapter *Adapter) IsAuthenticated(ctx context.Context) (bool, error) {
@@ -270,20 +119,6 @@ func (adapter *Adapter) IsAuthenticated(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-func (adapter *Adapter) verifyAuthenticatedUnlocked() error {
-	if err := adapter.navigate(homeURL); err != nil {
-		return err
-	}
-	authenticated, err := adapter.authenticatedState()
-	if err != nil {
-		return err
-	}
-	if !authenticated {
-		return ErrAuthenticationRequired
-	}
-	return nil
 }
 
 func (adapter *Adapter) authenticatedState() (bool, error) {

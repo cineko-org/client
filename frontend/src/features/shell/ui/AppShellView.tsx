@@ -7,6 +7,7 @@ import {
   IconHome,
   IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarRightCollapse,
+	IconActivityHeartbeat,
   IconRadar,
   IconSettings,
 } from '@tabler/icons-react';
@@ -40,14 +41,15 @@ export interface AppShellViewProps {
   onRetryConnection: () => void;
 }
 
-export type MainSection = 'home' | 'monitors' | 'presets';
+export type MainSection = 'home' | 'monitors' | 'presets' | 'operations';
 
 const feedbackColor = { info: 'blue', success: 'green', warning: 'yellow', error: 'red' } as const;
 
 const navigation = [
   { section: 'home', label: '홈', icon: IconHome },
-  { section: 'monitors', label: '예매 모니터', icon: IconRadar },
-  { section: 'presets', label: '프리셋', icon: IconBookmark },
+  { section: 'monitors', label: '예매 찾기', icon: IconRadar },
+  { section: 'presets', label: '좌석 프리셋', icon: IconBookmark },
+	{ section: 'operations', label: '관제', icon: IconActivityHeartbeat },
 ] as const;
 
 interface ShellNavigationProps {
@@ -104,10 +106,10 @@ function ShellNavigation({ activeSection, collapsed, onNavigate }: ShellNavigati
   );
 }
 
-/** Keeps the three primary destinations reachable with one thumb on phones. */
+/** Keeps the primary destinations reachable with one thumb on phones. */
 function MobileNavigation({ activeSection, onNavigate }: Omit<ShellNavigationProps, 'collapsed'>) {
   return (
-    <SimpleGrid cols={3} h="100%" spacing={0} aria-label="주요 화면">
+    <SimpleGrid cols={4} h="100%" spacing={0} aria-label="주요 화면">
       {navigation.map(({ section, label, icon: Icon }) => {
         const active = activeSection === section;
         return (
@@ -204,7 +206,7 @@ export function AppShellView(props: AppShellViewProps) {
               {connection.status === 'unavailable' || connection.status === 'stale' ? (
                 <Alert
                   color={connection.status === 'unavailable' ? 'red' : 'yellow'}
-                  title={connection.status === 'unavailable' ? 'Central에 연결할 수 없습니다.' : 'Central 연결이 끊어져 이전 정보를 표시합니다.'}
+                  title={connection.status === 'unavailable' ? '로컬 서비스에 연결할 수 없습니다.' : '로컬 데이터 갱신이 지연되어 이전 정보를 표시합니다.'}
                   role="alert"
                 >
                   <Group justify="space-between" align="flex-end" wrap="wrap">

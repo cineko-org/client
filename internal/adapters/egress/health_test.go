@@ -84,3 +84,9 @@ func TestProbeProxy(t *testing.T) {
 		t.Fatal("probeProxy(connection failure) error = nil")
 	}
 }
+
+func TestDefaultProbeURLIsProviderNeutral(t *testing.T) {
+	if defaultProbeURL != "https://api.ipify.org" {
+		t.Fatalf("defaultProbeURL = %q", defaultProbeURL)
+	}
+}

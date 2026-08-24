@@ -9,10 +9,7 @@ fi
 readonly version="${1#v}"
 readonly published_at="$2"
 readonly assets_dir="$3"
-: "${CINEKO_CENTRAL_URL:?required}"
-: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
 : "${CINEKO_CLIENT_RELEASE_BASE:?required}"
-: "${CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON:?required}"
 : "${CINEKO_MINIMUM_LAUNCHER_VERSION:?required}"
 : "${CINEKO_BROWSER_REVISION:?required}"
 : "${CINEKO_PLAYWRIGHT_VERSION:?required}"
@@ -55,9 +52,6 @@ if [[ "$requested_playwright_version" != "$locked_playwright_version" ]]; then
     "$requested_playwright_version" "$locked_playwright_version" >&2
   exit 1
 fi
-jq -e 'type == "object" and length > 0 and all(to_entries[]; (.key | length > 0) and (.value | type == "string" and length > 0))' \
-  <<<"$CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON" >/dev/null
-
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/cineko-client-register.XXXXXX")"
 readonly temporary_root
 trap 'rm -rf "$temporary_root"' EXIT
@@ -85,7 +79,13 @@ append_release() {
   local release_path="$temporary_root/${platform}-${architecture}.json"
   "$release_contract" release client "$version" "$platform/$architecture" "$artifact_path" "$executable" \
     "${public_base}/${filename}" "$published_at" >"$release_path"
-  release_paths+=("$release_path")
+	if [[ -n "${CINEKO_RELEASE_METADATA_DIR:-}" ]]; then
+		mkdir -p "$CINEKO_RELEASE_METADATA_DIR"
+		local published_path="${CINEKO_RELEASE_METADATA_DIR%/}/client-release-${platform}-${architecture}.json"
+		cp "$release_path" "$published_path"
+		release_path="$published_path"
+	fi
+	release_paths+=("$release_path")
 }
 
 append_release darwin arm64 zip 'Cineko.app/Contents/MacOS/Cineko'
@@ -94,6 +94,10 @@ append_release linux amd64 tar.gz 'Cineko'
 
 readonly payload="$temporary_root/client-release-set.json"
 "$release_contract" set client "${release_paths[@]}" >"$payload"
-"$release_contract" publish client "$CINEKO_CENTRAL_URL" "$payload"
+if [[ -n "${CINEKO_RELEASE_PAYLOAD_OUT:-}" ]]; then
+  cp "$payload" "$CINEKO_RELEASE_PAYLOAD_OUT"
+else
+  cat "$payload"
+fi
 
-printf 'registered Client v%s for all supported platforms\n' "$version"
+printf 'generated Client v%s release metadata for all supported platforms\n' "$version" >&2

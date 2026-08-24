@@ -121,6 +121,18 @@ func TestParseSeatSnapshotPreservesLayoutSemantics(t *testing.T) {
 	}
 }
 
+func TestParseSeatSnapshotDoesNotTreatBookingCapacityAsPhysicalSeatCount(t *testing.T) {
+	t.Parallel()
+	body := strings.Replace(seatSnapshotFixture, `"stcnt":3`, `"stcnt":2`, 1)
+	snapshot, err := parseSeatSnapshot([]byte(body), "auditorium-1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Seats) != 3 {
+		t.Fatalf("physical seat count = %d", len(snapshot.Seats))
+	}
+}
+
 func TestIntersectAvailabilityRequiresSnapshotAndEnabledButton(t *testing.T) {
 	t.Parallel()
 

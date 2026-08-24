@@ -11,6 +11,7 @@ import (
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -18,12 +19,13 @@ import (
 
 type webPaymentAutomation struct {
 	*webProbeAutomation
-	closed *atomic.Int32
+	closed   *atomic.Int32
+	retained *atomic.Int32
 }
 
 func (*webPaymentAutomation) OpenSeatSelection(
 	context.Context,
-	*catalogpb.Showtime,
+	*observationpb.SeatAvailabilityTask,
 	int,
 ) (*seatmappb.LiveSeatObservation, error) {
 	snapshot := seatMapSnapshot(domain.SeatMap{AuditoriumID: "auditorium", Seats: []domain.Seat{{
@@ -73,6 +75,13 @@ func (*webPaymentAutomation) PreparePayment(
 
 func (automation *webPaymentAutomation) Close() { automation.closed.Add(1) }
 
+func (automation *webPaymentAutomation) RetainPayment() error {
+	if automation.retained != nil {
+		automation.retained.Add(1)
+	}
+	return nil
+}
+
 func TestPreparedPaymentKeepsBrowserAndReusesMonitorOnRetry(t *testing.T) {
 	ctx, cancelRoot := context.WithCancel(t.Context())
 	defer cancelRoot()
@@ -102,10 +111,11 @@ func TestPreparedPaymentKeepsBrowserAndReusesMonitorOnRetry(t *testing.T) {
 		}
 	}
 	var closed atomic.Int32
+	var retained atomic.Int32
 	var factoryCalls atomic.Int32
 	var factoryDone <-chan struct{}
 	automation := &webPaymentAutomation{
-		webProbeAutomation: &webProbeAutomation{probes: &atomic.Int32{}}, closed: &closed,
+		webProbeAutomation: &webProbeAutomation{probes: &atomic.Int32{}}, closed: &closed, retained: &retained,
 	}
 	server := &Server{
 		repository: store, rootContext: ctx, ids: &webAtomicIDs{}, clock: webTestClock{now},
@@ -120,7 +130,7 @@ func TestPreparedPaymentKeepsBrowserAndReusesMonitorOnRetry(t *testing.T) {
 		ID: "showtime", ProviderID: "cgv", SourceKey: "0056/2026-08-20/0007/0003",
 		MovieID: "movie_1", Movie: "영화", TheaterID: theater.ID, AuditoriumID: auditorium.ID,
 		Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00", AvailableSeats: 1, Capacity: 100,
-	})); err != nil {
+	}), true); err != nil {
 		t.Fatal(err)
 	}
 	cancelTask()
@@ -129,10 +139,10 @@ func TestPreparedPaymentKeepsBrowserAndReusesMonitorOnRetry(t *testing.T) {
 		t.Fatal("payment browser inherited execution cancellation")
 	default:
 	}
-	if !server.hasPaymentSession(monitor.GetId()) || closed.Load() != 0 {
-		t.Fatalf("retained/closed = %t/%d", server.hasPaymentSession(monitor.GetId()), closed.Load())
+	if !server.hasPaymentSession(monitor.GetId()) || retained.Load() != 1 || closed.Load() != 0 {
+		t.Fatalf("active/retained/closed = %t/%d/%d", server.hasPaymentSession(monitor.GetId()), retained.Load(), closed.Load())
 	}
-	if err := server.ExecuteAvailability(ctx, monitor.GetId(), showtimeProtoForTest(domain.Showtime{})); err != nil || factoryCalls.Load() != 1 {
+	if err := server.ExecuteAvailability(ctx, monitor.GetId(), showtimeProtoForTest(domain.Showtime{}), true); err != nil || factoryCalls.Load() != 1 {
 		t.Fatalf("duplicate execution error/calls = %v/%d", err, factoryCalls.Load())
 	}
 	retainedMonitor, err := store.GetMonitor(ctx, monitor.GetId())
@@ -190,7 +200,7 @@ func TestPaymentSessionExpirationClosesBrowserAndReactivatesMonitor(t *testing.T
 		updatedMonitor.GetMonitor().GetReservationId() != reservation.GetId() {
 		t.Fatalf("expired state = %+v / %+v", updatedMonitor, updatedReservation)
 	}
-	if err := server.ExecuteAvailability(ctx, monitor.GetId(), showtimeProtoForTest(domain.Showtime{})); err != nil {
+	if err := server.ExecuteAvailability(ctx, monitor.GetId(), showtimeProtoForTest(domain.Showtime{}), true); err != nil {
 		t.Fatalf("unknown payment accepted a duplicate execution: %v", err)
 	}
 	events, err := store.ListAppEvents(ctx, monitor.GetUserId(), 10)

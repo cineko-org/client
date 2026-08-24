@@ -31,7 +31,7 @@ const (
 )
 
 // Factory owns three isolated browser-task slots, the lazy Playwright runtime,
-// and egress leases. Authenticated work is serialized and each Central user is
+// and egress leases. Authenticated work is serialized and each local user is
 // assigned one persistent account profile so cookies are never shared between
 // users.
 type Factory struct {

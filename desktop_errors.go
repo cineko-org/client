@@ -21,7 +21,7 @@ func userFacingDesktopError(err error) string {
 		return "외부 알림 설정을 확인하세요."
 	case strings.Contains(message, "credential"), strings.Contains(message, "authenticate"), strings.Contains(message, "login"):
 		return "CGV 로그인에 실패했습니다. 로그인 정보를 확인하고 다시 시도하세요."
-	case strings.Contains(message, "central"), strings.Contains(message, "connect"), strings.Contains(message, "dial"), strings.Contains(message, "network"):
+	case strings.Contains(message, "connect"), strings.Contains(message, "dial"), strings.Contains(message, "network"):
 		return "Cineko 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요."
 	default:
 		return "요청을 처리하지 못했습니다. 잠시 후 다시 시도하세요."

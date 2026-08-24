@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { api, errorMessage, isRevisionConflict } from '../../api/client';
+import { api, createRequestID, errorMessage, isRevisionConflict } from '../../api/client';
 import { ResourceSchema, WebUIResourceMutationSchema, type WebUIState } from '../../api/proto';
 import { monitorResources, resourceRevision } from '../../api/resources';
 import type { Notify } from '../../components/core/feedback';
@@ -14,26 +14,26 @@ export function useMonitorEditor(
 ) {
   const [form, setForm] = useState<MonitorForm>(initialMonitorForm);
   const [submitting, setSubmitting] = useState(false);
-	const createCommandId = useRef(crypto.randomUUID());
+	const createCommandId = useRef(createRequestID());
 
   const save = useCallback(async () => {
     setSubmitting(true);
 	let saved = false;
 	try {
-		const mutation = monitorSaveRequest(form, userId, form.id ? '' : createCommandId.current);
+		const mutation = monitorSaveRequest(form, userId, form.id ? createRequestID() : createCommandId.current);
 		await api('/api/monitors', ResourceSchema, {
 			method: form.id ? 'PUT' : 'POST',
 		}, WebUIResourceMutationSchema, mutation);
 		saved = true;
       await reload();
-		notify(form.id ? '모니터를 수정했습니다.' : '모니터를 등록했습니다.', { important: true });
+		notify(form.id ? '예매 찾기를 수정했습니다.' : '예매 찾기를 시작했습니다.', { important: true });
 		onSaved();
-		if (!form.id) createCommandId.current = crypto.randomUUID();
+		if (!form.id) createCommandId.current = createRequestID();
 	} catch (error) {
 		if (saved) await reload().catch(() => undefined);
 		if (isRevisionConflict(error)) {
 			await reload();
-			notify('다른 기기에서 이 모니터를 변경했습니다. 최신 내용을 불러왔습니다.', { tone: 'warning', important: true });
+			notify('다른 기기에서 이 예매 찾기를 변경했습니다. 최신 내용을 불러왔습니다.', { tone: 'warning', important: true });
 		} else notify(errorMessage(error), { tone: 'error', important: true });
     } finally {
       setSubmitting(false);
@@ -58,7 +58,7 @@ export function useMonitorEditor(
 	}, [state]);
 
 	const newMonitor = useCallback(() => {
-		createCommandId.current = crypto.randomUUID();
+		createCommandId.current = createRequestID();
 		setForm(initialMonitorForm);
 	}, []);
 

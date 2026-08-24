@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
+	"strings"
 
 	"github.com/cineko-org/client/internal/adapters/browserfactory"
 	"github.com/cineko-org/client/internal/adapters/cgv"
-	"github.com/cineko-org/client/internal/adapters/credentialvault"
 	"github.com/cineko-org/client/internal/adapters/egress"
 	"github.com/cineko-org/client/internal/adapters/eventhook"
-	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
+	localstore "github.com/cineko-org/client/internal/adapters/storage/local"
 	"github.com/cineko-org/client/internal/booking"
 	"github.com/cineko-org/client/internal/interfaces/webui"
+	"github.com/cineko-org/client/internal/logging"
 	"github.com/cineko-org/client/internal/platform"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 
@@ -51,6 +51,15 @@ func runDesktop() (runErr error) {
 	if err != nil {
 		return err
 	}
+	if err := configureDesktopRuntimePaths(dataDir); err != nil {
+		return err
+	}
+	closeLog, err := logging.OpenPersistent(dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { runErr = errors.Join(runErr, closeLog()) }()
+	logging.Info(context.Background(), "Client startup", "event", "client.startup", "data_dir", dataDir, "version", desktopVersion)
 	store, launchContext, startupReadyNonce, err := openDesktopStore(context.Background(), dataDir, os.Stdin)
 	if err != nil {
 		return err
@@ -64,33 +73,32 @@ func runDesktop() (runErr error) {
 		return err
 	}
 	defer browsers.Close()
-	credentials := credentialvault.New()
 	warmPool, err := newWarmBookingPool(context.Background(), browsers, store.UserID())
 	if err != nil {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, warmPool.Close()) }()
-	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, launchContext)
+	scheduleChanged := make(chan struct{}, 1)
+	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, scheduleChanged)
 	if err != nil {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, embeddedProbe.Close()) }()
+	bookingHost := newBookingAutomationHost(warmPool, embeddedProbe)
+	defer bookingHost.Close()
 	hooks := eventhook.New(nil)
 	defer hooks.Close()
 
 	server, err := webui.New(webui.Dependencies{
 		Repository: store,
-		Factory:    newAutomationFactory(browsers, warmPool, embeddedProbe, store.UserID()),
+		Factory:    newAutomationFactory(browsers, bookingHost, embeddedProbe, store.UserID()),
 		IDs:        platform.IDGenerator{}, Clock: platform.Clock{}, Waiter: platform.Waiter{}, Events: hooks,
-		Credentials: credentials, UserID: store.UserID(),
+		UserID: store.UserID(), PosterCacheDir: filepath.Join(dataDir, "posters"),
+		LogPath: filepath.Join(dataDir, "client.log"),
 		BookingDemandChanged: func(active bool) {
-			if active {
-				warmPool.SetDesired(booking.DefaultWarmBrowserCapacity)
-				return
-			}
-			warmPool.SetDesired(0)
+			bookingHost.SetDemand(active)
 		},
-		BookingCapacityAvailable: func() bool { return warmPool.Stats().Ready > 0 },
+		BookingCapacityAvailable: bookingHost.CanAccept,
 	})
 	if err != nil {
 		return err
@@ -104,9 +112,7 @@ func runDesktop() (runErr error) {
 	})
 	app := newDesktopApp(server, store, browsers, hooks)
 	app.setUserID(store.UserID())
-	app.execution = &desktopExecutionWorker{
-		store: store, server: server, installationID: launchContext.GetInstallationId(), userID: store.UserID(),
-	}
+	app.monitor = &desktopMonitorWorker{store: store, server: server, scheduleChanged: scheduleChanged}
 	err = runDesktopWindow(app, server, store, embeddedProbe, dataDir, startupReadyNonce)
 	if app.updateNeeded.Load() {
 		return errors.Join(err, errUpdateRequired)
@@ -114,48 +120,19 @@ func runDesktop() (runErr error) {
 	return err
 }
 
-type centralEventWatcher interface {
-	WatchEvents(context.Context) error
-}
-
-func superviseCentralEvents(ctx context.Context, watcher centralEventWatcher, onFailure func(error)) {
-	err := watcher.WatchEvents(ctx)
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-		return
-	}
-	onFailure(err)
-}
-
 func prepareDesktopState(
 	ctx context.Context,
-	store *centralstore.Store,
+	store *localstore.Store,
 	launchContext *clientpb.LaunchContext,
 	dataDir string,
 ) error {
-	if launchContext == nil {
+	if launchContext == nil || launchContext.GetInstallationId() == "" {
 		return errors.New("desktop launch context is required")
 	}
-	platformName := goruntime.GOOS
-	architecture := goruntime.GOARCH
-	installationID := launchContext.GetInstallationId()
-	deviceID := launchContext.GetDeviceId()
-	clientVersion := launchContext.GetClientVersion()
-	device := clientpb.Device_builder{
-		InstallationId: &installationID,
-		DeviceId:       &deviceID,
-		Platform:       &platformName,
-		Architecture:   &architecture,
-		AppVersion:     &clientVersion,
-	}.Build()
-	if _, err := store.RegisterDevice(ctx, device); err != nil {
-		return fmt.Errorf("register desktop with Central: %w", err)
-	}
-	select {
-	case <-store.UpdateRequired():
-		return errUpdateRequired
-	default:
-	}
-	return discardLegacyLocalDomainState(dataDir)
+	_ = ctx
+	_ = store
+	_ = dataDir
+	return nil
 }
 
 func browserTaskForUser(userID string, background bool, purpose webui.AutomationPurpose) browserfactory.Task {
@@ -179,19 +156,21 @@ func newWarmBookingPool(
 		ctx,
 		browserfactory.Task{Purpose: egress.PurposeSession, SessionKey: userID},
 		func(ctx context.Context, adapter *cgv.Adapter) error {
-			// A member session is useful when present, but CGV's supported
-			// non-member booking path is also valid warm capacity. Keep the
-			// browser ready in either case; execution reports a distinct
-			// authentication-required result only if the provider demands it.
-			_, err := adapter.IsAuthenticated(ctx)
-			return err
+			authenticated, err := adapter.IsAuthenticated(ctx)
+			if err != nil {
+				return err
+			}
+			if !authenticated {
+				return errors.Join(booking.ErrPermanent, cgv.ErrAuthenticationRequired)
+			}
+			return nil
 		},
 	)
 }
 
 func newAutomationFactory(
 	factory *browserfactory.Factory,
-	warmPool *booking.Pool,
+	bookingHost *bookingAutomationHost,
 	probe *embeddedProbe,
 	userID string,
 ) webui.AutomationFactory {
@@ -205,35 +184,54 @@ func newAutomationFactory(
 		if purpose != webui.AutomationSession || sessionKey == "account" {
 			return open()
 		}
-		lease, err := warmPool.Acquire(ctx)
-		if err != nil {
-			return nil, err
-		}
-		automation, err := browserfactory.WarmAutomationFromLease(lease)
-		if err != nil {
-			lease.Release()
-			return nil, err
-		}
-		return probe.OpenBooking(func() (webui.Automation, error) { return automation, nil })
+		return bookingHost.Open(ctx)
 	}
-}
-
-func discardLegacyLocalDomainState(dataDir string) error {
-	for _, name := range []string{"cineko.sqlite", "cineko.sqlite-wal", "cineko.sqlite-shm", "settings.json", "settings.json.migrating"} {
-		if err := os.Remove(filepath.Join(dataDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove obsolete local domain state %s: %w", name, err)
-		}
-	}
-	return nil
 }
 
 func desktopDataDir() (string, error) {
-	if value := os.Getenv("CINEKO_DATA_DIR"); value != "" {
-		return value, nil
+	return resolveDesktopDataDir(os.Getenv("CINEKO_DATA_DIR"), os.UserHomeDir)
+}
+
+func resolveDesktopDataDir(configured string, homeDir func() (string, error)) (string, error) {
+	if value := strings.TrimSpace(configured); value != "" {
+		if !filepath.IsAbs(value) {
+			return "", errors.New("CINEKO_DATA_DIR must be an absolute path")
+		}
+		return filepath.Clean(value), nil
 	}
-	root, err := os.UserConfigDir()
+	root, err := homeDir()
 	if err != nil {
-		return "", fmt.Errorf("find application support directory: %w", err)
+		return "", fmt.Errorf("find Cineko home directory: %w", err)
 	}
-	return filepath.Join(root, "Cineko"), nil
+	return filepath.Join(root, "cineko"), nil
+}
+
+func configureDesktopRuntimePaths(dataDir string) error {
+	paths := []string{
+		filepath.Join(dataDir, "runtime", "playwright", "driver"),
+		filepath.Join(dataDir, "runtime", "playwright", "browsers"),
+		filepath.Join(dataDir, "tmp"),
+	}
+	for _, path := range paths {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("create Cineko runtime directory %s: %w", path, err)
+		}
+	}
+	if strings.TrimSpace(os.Getenv("CINEKO_PLAYWRIGHT_DRIVER_PATH")) == "" &&
+		strings.TrimSpace(os.Getenv("PLAYWRIGHT_DRIVER_PATH")) == "" {
+		if err := os.Setenv("PLAYWRIGHT_DRIVER_PATH", paths[0]); err != nil {
+			return fmt.Errorf("configure Playwright driver directory: %w", err)
+		}
+	}
+	if strings.TrimSpace(os.Getenv("PLAYWRIGHT_BROWSERS_PATH")) == "" {
+		if err := os.Setenv("PLAYWRIGHT_BROWSERS_PATH", paths[1]); err != nil {
+			return fmt.Errorf("configure Playwright browser directory: %w", err)
+		}
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		if err := os.Setenv(name, paths[2]); err != nil {
+			return fmt.Errorf("configure Cineko temporary directory: %w", err)
+		}
+	}
+	return nil
 }

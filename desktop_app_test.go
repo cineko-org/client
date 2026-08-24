@@ -182,7 +182,7 @@ func TestDesktopSettingsRetryConflictWithoutLosingConcurrentFields(t *testing.T)
 	}
 	if repository.putCalls != 2 || repository.settings == nil || repository.settings.GetNetwork() == nil ||
 		len(repository.settings.GetWebhooks()) != 1 || repository.settings.GetWebhooks()[0].GetId() != "concurrent" {
-		t.Fatalf("conflict retry lost Central settings: %s after %d writes", repository.settings, repository.putCalls)
+		t.Fatalf("conflict retry lost local settings: %s after %d writes", repository.settings, repository.putCalls)
 	}
 }
 
@@ -298,7 +298,7 @@ func TestDesktopStandardProxyValidationPrecedesPersistence(t *testing.T) {
 		t.Fatalf("SaveNetworkSettings(invalid) error = %v", err)
 	}
 	if settings.settings != nil {
-		t.Fatalf("invalid settings reached Central: %s", settings.settings)
+		t.Fatalf("invalid settings reached local persistence: %s", settings.settings)
 	}
 	app.validateEgress = func(context.Context, egress.Config) error { return nil }
 	state, err := app.saveNetworkSettings(input)

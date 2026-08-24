@@ -1,5 +1,5 @@
 import { Box, Group, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import { SecondaryButton } from '../../../components/core/Actions';
 import { EmptyState } from '../../../components/core/Section';
 import type { Seat, Snapshot } from '../../../api/proto';
@@ -38,6 +38,84 @@ function positiveGaps(values: number[]): number[] {
   return sorted.slice(1).map((value, index) => value - sorted[index]).filter((gap) => gap > 0.0001);
 }
 
+interface AxisLabel {
+  label: string;
+  position: number;
+}
+
+function layoutAxes(seats: Seat[]): { rows: AxisLabel[]; columns: AxisLabel[] } {
+  const rowPositions = new Map<string, number[]>();
+  const columnPositions = new Map<number, number[]>();
+  for (const seat of seats) {
+    rowPositions.set(seat.row, [...(rowPositions.get(seat.row) ?? []), seat.y]);
+    columnPositions.set(seat.number, [...(columnPositions.get(seat.number) ?? []), seat.x]);
+  }
+  const rows = [...rowPositions].map(([label, positions]) => ({
+      label,
+      position: median(positions),
+    }));
+  const columns = [...columnPositions].map(([label, positions]) => ({
+      label: String(label),
+      position: median(positions),
+    }));
+  rows.sort((left, right) => left.position - right.position);
+  columns.sort((left, right) => left.position - right.position);
+  return {
+    rows,
+    columns,
+  };
+}
+
+function ColumnAxis({ labels }: { labels: AxisLabel[] }) {
+  return (
+    <Box pos="relative" h={16} aria-hidden="true">
+      {labels.map((item) => (
+        <Text
+          key={item.label}
+          component="span"
+          c="dimmed"
+          pos="absolute"
+          style={{
+            left: `${item.position * 100}%`,
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+            fontSize: 'clamp(6px, 0.65vw, 9px)',
+            fontVariantNumeric: 'tabular-nums',
+            lineHeight: 1,
+          }}
+        >
+          {item.label}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
+function RowAxis({ labels }: { labels: AxisLabel[] }) {
+  return (
+    <Box pos="relative" h="100%" aria-hidden="true">
+      {labels.map((item) => (
+        <Text
+          key={item.label}
+          component="span"
+          c="dimmed"
+          fw={600}
+          pos="absolute"
+          style={{
+            top: `${item.position * 100}%`,
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            fontSize: 'clamp(8px, 0.8vw, 11px)',
+            lineHeight: 1,
+          }}
+        >
+          {item.label}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
 function layoutMetrics(seats: Seat[], requestedAspectRatio?: number, requestedSeatSizeRatio?: number) {
   const rows = new Map<string, Seat[]>();
   for (const seat of seats) rows.set(seat.row, [...(rows.get(seat.row) ?? []), seat]);
@@ -60,16 +138,24 @@ function seatBackground(seat: Seat, selected: boolean): string {
 
 const emptySeats: Seat[] = [];
 
+interface DragSelection {
+  select: boolean;
+  selected: Set<string>;
+  visited: Set<string>;
+}
+
 export function SeatMapView({
   seatMap, pickedSeats, onToggleSeat, onClear, auditoriumName, reportedCapacity, layoutAspectRatio,
   seatSizeRatio, emptyMessage = '상영관을 선택하면 좌석 배치를 불러옵니다.',
 }: SeatMapViewProps) {
   const picked = new Set(pickedSeats);
+  const dragSelection = useRef<DragSelection | null>(null);
   const seats = seatMap?.layout?.seats ?? emptySeats;
   const metrics = useMemo(
     () => layoutMetrics(seats, layoutAspectRatio, seatSizeRatio),
     [layoutAspectRatio, seatSizeRatio, seats],
   );
+  const axes = useMemo(() => layoutAxes(seats), [seats]);
   const visibleTypes = useMemo(
     () => [...new Set(seats.map((seat) => seat.type))],
     [seats],
@@ -77,6 +163,48 @@ export function SeatMapView({
   const capacityDiffers = Boolean(
     seatMap && reportedCapacity && reportedCapacity !== seats.length,
   );
+  useEffect(() => {
+    const endSelection = () => {
+      dragSelection.current = null;
+    };
+    window.addEventListener('pointerup', endSelection);
+    window.addEventListener('pointercancel', endSelection);
+    window.addEventListener('blur', endSelection);
+    return () => {
+      window.removeEventListener('pointerup', endSelection);
+      window.removeEventListener('pointercancel', endSelection);
+      window.removeEventListener('blur', endSelection);
+    };
+  }, []);
+
+  const applyDragSelection = (label: string) => {
+    const selection = dragSelection.current;
+    if (!selection || selection.visited.has(label)) return;
+    selection.visited.add(label);
+    const selected = selection.selected.has(label);
+    if (selected === selection.select) return;
+    onToggleSeat(label);
+    if (selection.select) selection.selected.add(label);
+    else selection.selected.delete(label);
+  };
+
+  const startDragSelection = (event: ReactPointerEvent<HTMLButtonElement>, label: string) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const selected = new Set(pickedSeats);
+    dragSelection.current = {
+      select: !selected.has(label),
+      selected,
+      visited: new Set<string>(),
+    };
+    applyDragSelection(label);
+  };
+
+  const continueDragSelection = (event: ReactPointerEvent<HTMLButtonElement>, label: string) => {
+    if ((event.buttons & 1) === 0) return;
+    applyDragSelection(label);
+  };
+
   return (
     <Stack gap="md">
       <Group justify="space-between" align="flex-end" wrap="wrap">
@@ -104,32 +232,64 @@ export function SeatMapView({
             <Box w="72%" h={16} style={{ borderTop: '2px solid var(--mantine-color-orange-8)', borderRadius: '50% 50% 0 0' }} />
           </Stack>
           {!seatMap ? <EmptyState>{emptyMessage}</EmptyState> : (
-            <Box pos="relative" w="100%" style={{ aspectRatio: metrics.aspectRatio }}>
-              {seats.map((seat) => {
-                const title = `${seat.label} · ${seat.zoneName || '존 미지정'} · ${seat.saleFormName || seat.type}`;
-                return (
-                  <Tooltip key={seat.id} label={title} openDelay={250}>
-                    <UnstyledButton
-                      aria-label={title}
-                      onClick={() => onToggleSeat(seat.label)}
-                      pos="absolute"
-                      style={{
-                        left: `${seat.x * 100}%`,
-                        top: `${seat.y * 100}%`,
-                        width: metrics.seatWidth,
-                        aspectRatio: '1',
-                        transform: 'translate(-50%, -50%)',
-                        background: seatBackground(seat, picked.has(seat.label)),
-                        boxShadow: 'inset 0 0 0 1px var(--mantine-color-dark-9)',
-                        color: 'var(--mantine-color-white)',
-                        fontSize: metrics.showLabels ? 'clamp(7px, 0.65vw, 10px)' : 0,
-                        lineHeight: 1,
-                        overflow: 'hidden',
-                      }}
-                    >{metrics.showLabels ? seat.label : null}</UnstyledButton>
-                  </Tooltip>
-                );
-              })}
+            <Box
+              w="100%"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '18px minmax(0, 1fr) 18px',
+                gridTemplateRows: '16px auto 16px',
+                columnGap: 4,
+                rowGap: 4,
+              }}
+            >
+              <Box style={{ gridColumn: 2, gridRow: 1 }}><ColumnAxis labels={axes.columns} /></Box>
+              <Box style={{ gridColumn: 1, gridRow: 2 }}><RowAxis labels={axes.rows} /></Box>
+              <Box
+                pos="relative"
+                w="100%"
+                style={{
+                  gridColumn: 2,
+                  gridRow: 2,
+                  aspectRatio: metrics.aspectRatio,
+                  touchAction: 'none',
+                  userSelect: 'none',
+                }}
+              >
+                {seats.map((seat) => {
+                  const title = `${seat.label} · ${seat.zoneName || '존 미지정'} · ${seat.saleFormName || seat.type}`;
+                  return (
+                    <Tooltip key={seat.id} label={title} openDelay={250}>
+                      <UnstyledButton
+                        aria-label={title}
+                        aria-pressed={picked.has(seat.label)}
+                        data-seat-label={seat.label}
+                        onClick={(event) => {
+                          if (event.detail === 0) onToggleSeat(seat.label);
+                        }}
+                        onPointerDown={(event) => startDragSelection(event, seat.label)}
+                        onPointerEnter={(event) => continueDragSelection(event, seat.label)}
+                        pos="absolute"
+                        style={{
+                          left: `${seat.x * 100}%`,
+                          top: `${seat.y * 100}%`,
+                          width: metrics.seatWidth,
+                          aspectRatio: '1',
+                          transform: 'translate(-50%, -50%)',
+                          background: seatBackground(seat, picked.has(seat.label)),
+                          boxShadow: 'inset 0 0 0 1px var(--mantine-color-dark-9)',
+                          color: 'var(--mantine-color-white)',
+                          fontSize: metrics.showLabels ? 'clamp(7px, 0.65vw, 10px)' : 0,
+                          lineHeight: 1,
+                          overflow: 'hidden',
+                          cursor: 'crosshair',
+                        }}
+                      >{metrics.showLabels ? seat.label : null}</UnstyledButton>
+                    </Tooltip>
+                  );
+                })}
+              </Box>
+              <Box style={{ gridColumn: 3, gridRow: 2 }}><RowAxis labels={axes.rows} /></Box>
+              <Box style={{ gridColumn: 2, gridRow: 3 }}><ColumnAxis labels={axes.columns} /></Box>
             </Box>
           )}
         </Stack>
@@ -138,7 +298,7 @@ export function SeatMapView({
         <Stack gap="xs" style={{ flex: 1 }}>
           <Group gap="xs"><Text size="sm" fw={600}>선택 좌석</Text><Text size="xs" c="dimmed">{pickedSeats.length ? `${pickedSeats.length}석 · 선택 순서대로 우선` : '선택하지 않으면 전체 좌석에서 자동 선택'}</Text></Group>
           <Group gap={6}>
-            {pickedSeats.length === 0 ? <Text size="sm" c="dimmed">특정 좌석을 우선하고 싶을 때만 선택하세요.</Text> : pickedSeats.map((label, index) => (
+            {pickedSeats.length === 0 ? <Text size="sm" c="dimmed">클릭하거나 누른 채로 좌석을 훑어 후보를 선택하세요.</Text> : pickedSeats.map((label, index) => (
               <SecondaryButton key={label} size="compact-xs" onClick={() => onToggleSeat(label)}>{index + 1}. {label}</SecondaryButton>
             ))}
           </Group>

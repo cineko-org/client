@@ -75,9 +75,6 @@ done <"$publish_plan"
 
 if [[ -n "${CINEKO_RELEASE_PAYLOAD_OUT:-}" ]]; then
   cp "$batch_payload" "$CINEKO_RELEASE_PAYLOAD_OUT"
-  exit 0
+else
+  cat "$batch_payload"
 fi
-
-: "${CINEKO_CENTRAL_URL:?required}"
-: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
-"$release_contract" publish "$component" "$CINEKO_CENTRAL_URL" "$batch_payload"

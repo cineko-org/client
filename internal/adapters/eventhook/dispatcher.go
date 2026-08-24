@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cineko-org/client/internal/logging"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -478,7 +479,11 @@ func eventTone(event *clientpb.AppEvent) string {
 }
 
 func send(client *http.Client, request *http.Request) error {
-	response, err := client.Do(request)
+	// Keep the adapter usable in isolation while ensuring every webhook
+	// delivery shares the same request-ID and structured HTTP logging boundary.
+	observedClient := *client
+	observedClient.Transport = logging.RoundTripper(client.Transport)
+	response, err := observedClient.Do(request)
 	if err != nil {
 		// url.Error includes the complete webhook URL. Discord, Slack, and
 		// custom webhook paths frequently contain credentials.

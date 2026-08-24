@@ -76,8 +76,6 @@ readonly payload="$work_dir/payload.json"
 "$release_contract" set browser "${release_paths[@]}" >"$payload"
 if [[ -n "${CINEKO_BROWSER_RELEASE_PAYLOAD_OUT:-}" ]]; then
   cp "$payload" "$CINEKO_BROWSER_RELEASE_PAYLOAD_OUT"
-  exit 0
+else
+  cat "$payload"
 fi
-: "${CINEKO_CENTRAL_URL:?required}"
-: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
-"$release_contract" publish browser "$CINEKO_CENTRAL_URL" "$payload"

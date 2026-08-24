@@ -28,8 +28,38 @@ func (service *MonitorService) Update(ctx context.Context, mutation *clientpb.We
 		return nil, ErrConflict
 	}
 	if monitorIsActive(job) {
-		return nil, fmt.Errorf("%w: active monitor cannot be edited", ErrConflict)
+		return service.updateActiveMonitor(ctx, job, request, revision)
 	}
+	return service.updateInactiveMonitor(ctx, job, request, revision)
+}
+
+func (service *MonitorService) updateActiveMonitor(
+	ctx context.Context,
+	current, request *clientpb.Monitor,
+	revision int64,
+) (*clientpb.Resource, error) {
+	currentWithoutToggle := cloneMonitor(current)
+	requestWithoutToggle := cloneMonitor(request)
+	currentWithoutToggle.SetWatchCancellationSeats(false)
+	requestWithoutToggle.SetWatchCancellationSeats(false)
+	if !proto.Equal(currentWithoutToggle, requestWithoutToggle) {
+		return nil, fmt.Errorf("%w: only cancellation-seat watching can change on an active monitor", ErrConflict)
+	}
+	updated := cloneMonitor(current)
+	updated.SetWatchCancellationSeats(request.GetWatchCancellationSeats())
+	updated.SetUpdatedAt(timestamppb.New(service.clock.Now()))
+	updatedResource := resourceForMonitor(updated, revision)
+	if err := service.monitors.PutMonitor(ctx, updatedResource); err != nil {
+		return nil, err
+	}
+	return updatedResource, nil
+}
+
+func (service *MonitorService) updateInactiveMonitor(
+	ctx context.Context,
+	current, request *clientpb.Monitor,
+	revision int64,
+) (*clientpb.Resource, error) {
 	presetResource, err := service.presets.GetPreset(ctx, request.GetPresetId())
 	if err != nil {
 		return nil, ErrNotFound
@@ -39,13 +69,13 @@ func (service *MonitorService) Update(ctx context.Context, mutation *clientpb.We
 		return nil, ErrNotFound
 	}
 	updated := service.newMonitor(request)
-	updated.SetId(job.GetId())
-	updated.SetCreatedAt(job.GetCreatedAt())
+	updated.SetId(current.GetId())
+	updated.SetCreatedAt(current.GetCreatedAt())
 	if err := validateMonitorMessage(updated); err != nil {
 		return nil, err
 	}
-	if monitorIsExpired(updated, service.clock.Now()) {
-		return nil, ErrMonitorExpired
+	if err := validateMonitorPreset(updated, preset); err != nil {
+		return nil, err
 	}
 	updatedResource := resourceForMonitor(updated, revision)
 	if err := service.monitors.PutMonitor(ctx, updatedResource); err != nil {
@@ -90,8 +120,8 @@ func (service *MonitorService) Create(
 	if err := validateMonitorMessage(job); err != nil {
 		return nil, err
 	}
-	if monitorIsExpired(job, service.clock.Now()) {
-		return nil, ErrMonitorExpired
+	if err := validateMonitorPreset(job, preset); err != nil {
+		return nil, err
 	}
 	resource := resourceForMonitor(job, 0)
 	if err := service.monitors.PutMonitor(ctx, resource); err != nil {
@@ -142,8 +172,8 @@ func (service *MonitorService) CreateIdempotent(
 	if err := validateMonitorMessage(job); err != nil {
 		return nil, err
 	}
-	if monitorIsExpired(job, service.clock.Now()) {
-		return nil, ErrMonitorExpired
+	if err := validateMonitorPreset(job, preset); err != nil {
+		return nil, err
 	}
 	resource := resourceForMonitor(job, 0)
 	if err := service.monitors.PutMonitor(ctx, resource); err != nil {
@@ -154,6 +184,53 @@ func (service *MonitorService) CreateIdempotent(
 
 func (service *MonitorService) List(ctx context.Context, userID string) ([]*clientpb.Resource, error) {
 	return service.monitors.ListMonitorsByUser(ctx, userID)
+}
+
+// SetEnabled is the explicit user control for local monitoring.
+// Disabling preserves the monitor as a manageable stopped resource; enabling
+// resumes discovery without directly executing an old showtime command.
+func (service *MonitorService) SetEnabled(
+	ctx context.Context,
+	userID string,
+	monitorID string,
+	enabled bool,
+) (*clientpb.Resource, error) {
+	resource, err := service.monitors.GetMonitor(ctx, monitorID)
+	if err != nil {
+		return nil, err
+	}
+	monitor, revision, err := monitorMessage(resource)
+	if err != nil || monitor.GetUserId() != userID {
+		return nil, ErrNotFound
+	}
+	state := monitorStateName(monitor)
+	if enabled {
+		if state == "pending" || state == "running" {
+			return resource, nil
+		}
+		if state != "stopped" {
+			return nil, fmt.Errorf("%w: monitor cannot be enabled in %s state", ErrConflict, state)
+		}
+	} else {
+		if state == "stopped" {
+			return resource, nil
+		}
+		if state != "pending" && state != "running" {
+			return nil, fmt.Errorf("%w: monitor cannot be disabled in %s state", ErrConflict, state)
+		}
+	}
+	updated := cloneMonitor(monitor)
+	if enabled {
+		setMonitorState(updated, "pending", "")
+	} else {
+		setMonitorState(updated, "stopped", "user_disabled")
+	}
+	updated.SetUpdatedAt(timestamppb.New(service.clock.Now()))
+	updatedResource := resourceForMonitor(updated, revision)
+	if err := service.monitors.PutMonitor(ctx, updatedResource); err != nil {
+		return nil, err
+	}
+	return updatedResource, nil
 }
 
 func (service *MonitorService) Delete(ctx context.Context, userID, monitorID string, expectedRevision ...int64) error {
@@ -187,6 +264,14 @@ func (service *MonitorService) newMonitor(request *clientpb.Monitor) *clientpb.M
 	monitor.SetUpdatedAt(timestamppb.New(now))
 	applyMonitorDefaults(monitor)
 	return monitor
+}
+
+func validateMonitorPreset(monitor *clientpb.Monitor, preset *clientpb.Preset) error {
+	candidates := preset.GetSeatPreference().GetExplicitSeats()
+	if len(candidates) > 0 && len(candidates) < int(monitor.GetSeatCount()) {
+		return errors.New("preset candidate seats must cover the requested seat count")
+	}
+	return nil
 }
 
 func monitorIsActive(value *clientpb.Monitor) bool {

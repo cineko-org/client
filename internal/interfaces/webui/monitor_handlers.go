@@ -18,6 +18,23 @@ func (server *Server) retryMonitor(writer http.ResponseWriter, request *http.Req
 	server.runOwnedTask(writer, request, input, func() error { return server.startMonitorRetry(input) })
 }
 
+func (server *Server) stopMonitor(writer http.ResponseWriter, request *http.Request) {
+	input := &clientpb.WebUIMonitorRetryRequest{}
+	if !decodeProtoJSON(server, writer, request, input) {
+		return
+	}
+	monitor := input.GetMonitor()
+	_, err := application.NewMonitorService(
+		server.repository, server.repository, server.ids, server.clock,
+	).SetEnabled(request.Context(), monitor.GetUserId(), monitor.GetId(), false)
+	if err != nil {
+		server.writeError(writer, err)
+		return
+	}
+	server.refreshBookingDemand(request.Context())
+	writeProtoJSON(writer, http.StatusOK, actionStatus(false))
+}
+
 func (server *Server) startMonitorRetry(input *clientpb.WebUIMonitorRetryRequest) error {
 	monitor := input.GetMonitor()
 	ctx := server.lifetimeContext()
@@ -42,9 +59,8 @@ func (server *Server) startMonitorRetry(input *clientpb.WebUIMonitorRetryRequest
 		server.finishTask(taskID, err)
 		return err
 	}
-	// The durable monitor mutation is the wake-up. Central emits the
-	// execution-ready SSE and the desktop supervisor claims it when a warm
-	// browser is available; no Client-side discovery loop is started here.
+	// The durable monitor mutation is the wake-up. The local supervisor starts
+	// it when a warm browser is available.
 	server.finishTask(taskID, nil)
 	server.refreshBookingDemand(ctx)
 	return nil

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cineko-org/client/internal/domain"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
@@ -93,45 +94,11 @@ func TestStateProtoPresetValidationCoversEveryInvariant(t *testing.T) {
 		func(value *clientpb.Preset) { value.SetName(" ") },
 		func(value *clientpb.Preset) { value.SetTheaterId("") },
 		func(value *clientpb.Preset) { value.SetAuditoriumId("") },
-		func(value *clientpb.Preset) { value.SetSeatCount(0) },
-		func(value *clientpb.Preset) { value.SetSeatCount(9) },
-		func(value *clientpb.Preset) { value.SetSeatPreference(nil) },
 		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(false)}.Build())
+			value.SetSeatPreference(clientpb.SeatPreference_builder{ExplicitSeats: []string{" "}}.Build())
 		},
 		func(value *clientpb.Preset) {
-			value.SetSeatCount(2)
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), ExplicitSeats: []string{"A1"}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), ExplicitSeats: []string{" "}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), ExplicitSeats: []string{"A1", "A1"}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), PreferredZones: []*clientpb.SeatZone{nil}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), PreferredZones: []*clientpb.SeatZone{stateSeatZoneForTest(" ", 0, 1, 0, 1)}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), PreferredZones: []*clientpb.SeatZone{stateSeatZoneForTest("bad", -1, 1, 0, 1)}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), PreferredZones: []*clientpb.SeatZone{stateSeatZoneForTest("bad", 0, 2, 0, 1)}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), PreferredZones: []*clientpb.SeatZone{stateSeatZoneForTest("bad", 0, 1, -1, 1)}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), PreferredZones: []*clientpb.SeatZone{stateSeatZoneForTest("bad", 0, 1, 0, 2)}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), PreferredZones: []*clientpb.SeatZone{stateSeatZoneForTest("bad", 1, 0, 0, 1)}}.Build())
-		},
-		func(value *clientpb.Preset) {
-			value.SetSeatPreference(clientpb.SeatPreference_builder{Together: boolPointer(true), PreferredZones: []*clientpb.SeatZone{stateSeatZoneForTest("bad", 0, 1, 1, 0)}}.Build())
+			value.SetSeatPreference(clientpb.SeatPreference_builder{ExplicitSeats: []string{"A1", "A1"}}.Build())
 		},
 	}
 	for index, mutate := range invalid {
@@ -158,35 +125,19 @@ func TestStateProtoMonitorValidationAndDefaults(t *testing.T) {
 		func(value *clientpb.Monitor) { value.SetUserId("") },
 		func(value *clientpb.Monitor) { value.SetPresetId("") },
 		func(value *clientpb.Monitor) { value.SetMovieId("") },
-		func(value *clientpb.Monitor) { value.SetTargetDates(nil) },
-		func(value *clientpb.Monitor) { value.SetTargetDates([]*commonpb.LocalDate{nil}) },
+		func(value *clientpb.Monitor) { value.SetSeatCount(0) },
+		func(value *clientpb.Monitor) { value.SetSeatCount(9) },
+		func(value *clientpb.Monitor) { value.SetSeatType("") },
+		func(value *clientpb.Monitor) { value.SetSeatType("balcony") },
+		func(value *clientpb.Monitor) { value.SetTargetWeekdays(nil) },
 		func(value *clientpb.Monitor) {
-			value.SetTargetDates([]*commonpb.LocalDate{stateDateForTest(2, 30)})
-		},
-		func(value *clientpb.Monitor) {
-			value.SetTargetDates([]*commonpb.LocalDate{stateDateForTest(8, 10), stateDateForTest(8, 10)})
-		},
-		func(value *clientpb.Monitor) {
-			value.SetTargetDates(nil)
 			value.SetTargetWeekdays([]int32{-1})
 		},
 		func(value *clientpb.Monitor) {
-			value.SetTargetDates(nil)
 			value.SetTargetWeekdays([]int32{7})
 		},
 		func(value *clientpb.Monitor) {
-			value.SetTargetDates(nil)
 			value.SetTargetWeekdays([]int32{1, 1})
-		},
-		func(value *clientpb.Monitor) {
-			value.SetTargetDates(nil)
-			value.SetTargetWeekdays([]int32{1})
-			value.SetSearchHorizonDays(0)
-		},
-		func(value *clientpb.Monitor) {
-			value.SetTargetDates(nil)
-			value.SetTargetWeekdays([]int32{1})
-			value.SetSearchHorizonDays(15)
 		},
 		func(value *clientpb.Monitor) { value.SetEarliestTime(stateTimeForTest(24, 0)) },
 		func(value *clientpb.Monitor) { value.SetEarliestTime(stateTimeForTest(-1, 0)) },
@@ -206,44 +157,19 @@ func TestStateProtoMonitorValidationAndDefaults(t *testing.T) {
 	if err := validateLocalTime(stateTimeForTest(12, 30)); err != nil {
 		t.Fatalf("valid local time rejected: %v", err)
 	}
-	horizonAtMaximum := validStateMonitorForTest()
-	horizonAtMaximum.SetTargetDates(nil)
-	horizonAtMaximum.SetTargetWeekdays([]int32{1})
-	horizonAtMaximum.SetSearchHorizonDays(maxSearchHorizonDays)
-	if err := validateMonitorMessage(horizonAtMaximum); err != nil {
-		t.Fatalf("maximum weekday search horizon rejected: %v", err)
-	}
-	horizonTooLarge := cloneMonitor(horizonAtMaximum)
-	horizonTooLarge.SetSearchHorizonDays(maxSearchHorizonDays + 1)
-	if err := validateMonitorMessage(horizonTooLarge); err == nil || err.Error() != "weekday search horizon must be between 1 and 14 days" {
-		t.Fatalf("oversized weekday search horizon error = %v", err)
-	}
-
 	defaults := clientpb.Monitor_builder{TargetWeekdays: []int32{1}}.Build()
 	applyMonitorDefaults(defaults)
-	if defaults.GetSearchHorizonDays() != defaultSearchHorizonDays ||
+	if defaults.GetSeatCount() != 1 || defaults.GetSeatType() != "standard" ||
 		defaults.GetState().GetPending() == nil {
 		t.Fatalf("monitor defaults = %+v", defaults)
 	}
 	applyMonitorDefaults(defaults)
 }
 
-func TestStateProtoMonitorLifecycleDatesAndRankingAdapters(t *testing.T) {
+func TestStateProtoMonitorLifecycleAndRankingAdapters(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
-	if monitorIsExpired(nil, now) || monitorIsExpired(clientpb.Monitor_builder{TargetWeekdays: []int32{1}}.Build(), now) || monitorIsExpired(&clientpb.Monitor{}, now) {
-		t.Fatal("non-expiring monitor reported expired")
-	}
-	withNilAndFuture := clientpb.Monitor_builder{TargetDates: []*commonpb.LocalDate{nil, stateDateForTest(8, 11)}}.Build()
-	if monitorIsExpired(withNilAndFuture, now) {
-		t.Fatal("future monitor reported expired")
-	}
-	expired := clientpb.Monitor_builder{TargetDates: []*commonpb.LocalDate{stateDateForTest(8, 8)}}.Build()
-	if !monitorIsExpired(expired, now) {
-		t.Fatal("past monitor did not expire")
-	}
-
 	setMonitorState(nil, "running", "")
 	states := []string{"running", "triggered", "booked", "payment_unknown", "failed", "stopped", "pending"}
 	for _, state := range states {
@@ -278,30 +204,20 @@ func TestStateProtoMonitorLifecycleDatesAndRankingAdapters(t *testing.T) {
 		t.Fatal("recorded check changed terminal state or timestamp")
 	}
 
-	if monitorResolveTargetDates(nil, now) != nil {
-		t.Fatal("nil monitor resolved target dates")
-	}
-	resolved := monitorResolveTargetDates(clientpb.Monitor_builder{
-		TargetDates:       []*commonpb.LocalDate{nil, stateDateForTest(8, 8), stateDateForTest(8, 11)},
-		TargetWeekdays:    []int32{int32(time.Monday)},
-		SearchHorizonDays: int32PointerForStateTest(8),
-	}.Build(), now)
-	if !reflect.DeepEqual(resolved, []string{"2026-08-10", "2026-08-11", "2026-08-17"}) {
-		t.Fatalf("resolved target dates = %v", resolved)
-	}
 	if !reflect.DeepEqual(int32Values([]int32{1, 2}), []int{1, 2}) || len(int32Values(nil)) != 0 {
 		t.Fatal("int32 slice conversion failed")
 	}
 
-	if got := seatPreferenceForRanking(nil); len(got.CandidateSeats) != 0 {
+	if got := seatPreferenceForRanking(nil, "standard"); len(got.CandidateSeats) != 0 || len(got.PreferredTypes) != 1 || got.Adjacency != domain.SeatAdjacencyRequired {
 		t.Fatal("nil Proto preference produced ranking rules")
 	}
 	preference := seatPreferenceForRanking(clientpb.SeatPreference_builder{
 		ExplicitSeats: []string{"A1"}, PreferredRows: []string{"A"}, PreferredTypes: []string{"standard"},
 		PreferredZones: []*clientpb.SeatZone{nil, stateSeatZoneForTest("center", 0, 1, 0, 1)},
 		Together:       boolPointer(true), AvoidEdges: boolPointer(true),
-	}.Build())
-	if len(preference.PreferredZones) != 1 || !preference.AvoidEdges || preference.Adjacency == "" {
+	}.Build(), "recliner")
+	if len(preference.CandidateSeats) != 1 || len(preference.PreferredRows) != 0 || len(preference.PreferredZones) != 0 || preference.AvoidEdges ||
+		preference.Adjacency != domain.SeatAdjacencyRequired || !reflect.DeepEqual(preference.PreferredTypes, []domain.SeatType{domain.SeatTypeRecliner}) {
 		t.Fatalf("ranking preference = %+v", preference)
 	}
 
@@ -320,18 +236,20 @@ func TestStateProtoMonitorLifecycleDatesAndRankingAdapters(t *testing.T) {
 
 func validStatePresetForTest() *clientpb.Preset {
 	id, userID, name, theaterID, auditoriumID := "preset", "user", "center", "theater", "auditorium"
-	seatCount, together := int32(1), true
+	together := true
 	return clientpb.Preset_builder{
-		Id: &id, UserId: &userID, Name: &name, TheaterId: &theaterID, AuditoriumId: &auditoriumID, SeatCount: &seatCount,
+		Id: &id, UserId: &userID, Name: &name, TheaterId: &theaterID, AuditoriumId: &auditoriumID,
 		SeatPreference: clientpb.SeatPreference_builder{Together: &together, ExplicitSeats: []string{"A1"}, PreferredZones: []*clientpb.SeatZone{stateSeatZoneForTest("center", 0, 1, 0, 1)}}.Build(),
 	}.Build()
 }
 
 func validStateMonitorForTest() *clientpb.Monitor {
 	id, userID, presetID, movieID := "monitor", "user", "preset", "movie"
+	seatCount, seatType := int32(1), "standard"
 	return clientpb.Monitor_builder{
 		Id: &id, UserId: &userID, PresetId: &presetID, MovieId: &movieID,
-		TargetDates: []*commonpb.LocalDate{stateDateForTest(8, 10)},
+		SeatCount: &seatCount, SeatType: &seatType,
+		TargetWeekdays: []int32{int32(time.Monday)},
 	}.Build()
 }
 
@@ -340,16 +258,9 @@ func stateSeatZoneForTest(name string, minX, maxX, minY, maxY float64) *clientpb
 	return clientpb.SeatZone_builder{Name: &name, MinX: &minX, MaxX: &maxX, MinY: &minY, MaxY: &maxY, Weight: &weight}.Build()
 }
 
-func stateDateForTest(month, day int32) *commonpb.LocalDate {
-	year := int32(2026)
-	return commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()
-}
-
 func stateTimeForTest(hour, minute int32) *commonpb.LocalTime {
 	return commonpb.LocalTime_builder{Hour: &hour, Minute: &minute}.Build()
 }
-
-func int32PointerForStateTest(value int32) *int32 { return &value }
 
 func fullStateSeatForTest() *seatmappb.Seat {
 	id, auditoriumID, label, row, seatType := "seat", "auditorium", "A1", "A", "standard"

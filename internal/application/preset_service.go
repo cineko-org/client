@@ -98,7 +98,6 @@ func applyPreset(preset, request *clientpb.Preset, updatedAt time.Time) {
 	preset.SetName(strings.TrimSpace(request.GetName()))
 	preset.SetTheaterId(request.GetTheaterId())
 	preset.SetAuditoriumId(request.GetAuditoriumId())
-	preset.SetSeatCount(request.GetSeatCount())
 	preset.SetSeatPreference(request.GetSeatPreference())
 	preset.SetUpdatedAt(timestamppb.New(updatedAt))
 }

@@ -5,8 +5,6 @@ if [[ $# -ne 1 ]]; then
   printf 'usage: %s PAYLOAD_JSON\n' "$0" >&2
   exit 2
 fi
-: "${CINEKO_CENTRAL_URL:?required}"
-: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
 readonly payload="$1"
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/cineko-browser-register.XXXXXX")"
 readonly temporary_root
@@ -15,6 +13,4 @@ readonly release_contract="$temporary_root/releasecontract"
 GOWORK=off go build -mod=vendor -o "$release_contract" ./cmd/releasecontract
 "$release_contract" verify-set browser "$payload"
 
-"$release_contract" publish browser "$CINEKO_CENTRAL_URL" "$payload"
-
-printf 'registered browser release set\n'
+cat "$payload"

@@ -8,7 +8,7 @@ export default meta;
 type Story = StoryObj;
 
 function Backdrop() {
-  return <Box bg="dark.9" mih="100dvh" p={48}><Stack><Text fw={700} fz="xl">예매 모니터</Text><Group><Button>새 모니터</Button></Group></Stack></Box>;
+  return <Box bg="dark.9" mih="100dvh" p={48}><Stack><Text fw={700} fz="xl">예매 찾기</Text><Group><Button>예매 찾기 시작</Button></Group></Stack></Box>;
 }
 
 export const Notifications: Story = {

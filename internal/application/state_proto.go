@@ -3,7 +3,6 @@ package application
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -13,11 +12,6 @@ import (
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
-)
-
-const (
-	defaultSearchHorizonDays int32 = 14
-	maxSearchHorizonDays     int32 = 14
 )
 
 func resourceIdentity(id string, revision int64) *commonpb.ResourceIdentity {
@@ -135,20 +129,11 @@ func validatePresetMessage(value *clientpb.Preset) error {
 	if strings.TrimSpace(value.GetTheaterId()) == "" || strings.TrimSpace(value.GetAuditoriumId()) == "" {
 		return errors.New("preset theater and auditorium are required")
 	}
-	if value.GetSeatCount() < 1 || value.GetSeatCount() > 8 {
-		return errors.New("preset seat count must be between 1 and 8")
-	}
 	preference := value.GetSeatPreference()
-	if preference == nil || !preference.GetTogether() {
-		return errors.New("unknown seat adjacency policy")
+	if preference == nil {
+		return nil
 	}
-	if len(preference.GetExplicitSeats()) > 0 && len(preference.GetExplicitSeats()) < int(value.GetSeatCount()) {
-		return errors.New("preset candidate seats must cover the requested seat count")
-	}
-	if err := validateCandidateSeats(preference.GetExplicitSeats()); err != nil {
-		return err
-	}
-	return validatePreferredZones(preference.GetPreferredZones())
+	return validateCandidateSeats(preference.GetExplicitSeats())
 }
 
 func validateCandidateSeats(labels []string) error {
@@ -165,36 +150,18 @@ func validateCandidateSeats(labels []string) error {
 	return nil
 }
 
-func validatePreferredZones(zones []*clientpb.SeatZone) error {
-	for _, zone := range zones {
-		if zone == nil || strings.TrimSpace(zone.GetName()) == "" {
-			return errors.New("seat preference zone name is required")
-		}
-		if !seatZoneBoundsAreValid(zone) {
-			return fmt.Errorf("seat preference zone %s bounds must be ordered within 0..1", zone.GetName())
-		}
-	}
-	return nil
-}
-
-func seatZoneBoundsAreValid(zone *clientpb.SeatZone) bool {
-	return zone.GetMinX() >= 0 && zone.GetMaxX() <= 1 &&
-		zone.GetMinY() >= 0 && zone.GetMaxY() <= 1 &&
-		zone.GetMinX() <= zone.GetMaxX() && zone.GetMinY() <= zone.GetMaxY()
-}
-
 func validateMonitorMessage(value *clientpb.Monitor) error {
 	if err := validateMonitorIdentity(value); err != nil {
 		return err
 	}
-	if err := validateTargetDates(value.GetTargetDates()); err != nil {
-		return err
+	if value.GetSeatCount() < 1 || value.GetSeatCount() > 8 {
+		return errors.New("monitor seat count must be between 1 and 8")
+	}
+	if !domain.SeatType(value.GetSeatType()).Valid() {
+		return fmt.Errorf("unknown monitor seat type %q", value.GetSeatType())
 	}
 	if err := validateTargetWeekdays(value.GetTargetWeekdays()); err != nil {
 		return err
-	}
-	if len(value.GetTargetWeekdays()) > 0 && (value.GetSearchHorizonDays() < 1 || value.GetSearchHorizonDays() > maxSearchHorizonDays) {
-		return errors.New("weekday search horizon must be between 1 and 14 days")
 	}
 	if err := validateLocalTime(value.GetEarliestTime()); err != nil {
 		return err
@@ -206,27 +173,8 @@ func validateMonitorIdentity(value *clientpb.Monitor) error {
 	if value == nil || strings.TrimSpace(value.GetId()) == "" || strings.TrimSpace(value.GetUserId()) == "" || strings.TrimSpace(value.GetPresetId()) == "" {
 		return errors.New("monitor id, user id, and preset id are required")
 	}
-	if strings.TrimSpace(value.GetMovieId()) == "" || len(value.GetTargetDates())+len(value.GetTargetWeekdays()) == 0 {
-		return errors.New("monitor movie id and at least one target date or weekday are required")
-	}
-	return nil
-}
-
-func validateTargetDates(dates []*commonpb.LocalDate) error {
-	seen := make(map[string]struct{}, len(dates))
-	for _, date := range dates {
-		if date == nil {
-			return errors.New("invalid target date")
-		}
-		parsed := time.Date(int(date.GetYear()), time.Month(date.GetMonth()), int(date.GetDay()), 0, 0, 0, 0, time.UTC)
-		if parsed.Year() != int(date.GetYear()) || parsed.Month() != time.Month(date.GetMonth()) || parsed.Day() != int(date.GetDay()) {
-			return fmt.Errorf("invalid target date %04d-%02d-%02d", date.GetYear(), date.GetMonth(), date.GetDay())
-		}
-		key := fmt.Sprintf("%04d-%02d-%02d", date.GetYear(), date.GetMonth(), date.GetDay())
-		if _, exists := seen[key]; exists {
-			return fmt.Errorf("duplicate target date %s", key)
-		}
-		seen[key] = struct{}{}
+	if strings.TrimSpace(value.GetMovieId()) == "" || len(value.GetTargetWeekdays()) == 0 {
+		return errors.New("monitor movie id and at least one target weekday are required")
 	}
 	return nil
 }
@@ -256,30 +204,15 @@ func validateLocalTime(value *commonpb.LocalTime) error {
 }
 
 func applyMonitorDefaults(value *clientpb.Monitor) {
-	if len(value.GetTargetWeekdays()) > 0 && value.GetSearchHorizonDays() == 0 {
-		value.SetSearchHorizonDays(defaultSearchHorizonDays)
+	if value.GetSeatCount() == 0 {
+		value.SetSeatCount(1)
+	}
+	if strings.TrimSpace(value.GetSeatType()) == "" {
+		value.SetSeatType(string(domain.SeatTypeStandard))
 	}
 	if value.GetState() == nil {
 		value.SetState(clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build())
 	}
-}
-
-func monitorIsExpired(value *clientpb.Monitor, now time.Time) bool {
-	if value == nil || len(value.GetTargetWeekdays()) > 0 || len(value.GetTargetDates()) == 0 {
-		return false
-	}
-	localNow := now.In(time.FixedZone("Asia/Seoul", 9*60*60))
-	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, localNow.Location())
-	for _, date := range value.GetTargetDates() {
-		if date == nil {
-			continue
-		}
-		candidate := time.Date(int(date.GetYear()), time.Month(date.GetMonth()), int(date.GetDay()), 0, 0, 0, 0, today.Location())
-		if !candidate.Before(today) {
-			return false
-		}
-	}
-	return true
 }
 
 func setMonitorState(value *clientpb.Monitor, state string, reason string) {
@@ -299,7 +232,7 @@ func setMonitorState(value *clientpb.Monitor, state string, reason string) {
 	case "failed":
 		stateValue.Failed = clientpb.MonitorFailed_builder{Reason: &reason}.Build()
 	case "stopped":
-		stateValue.Stopped = clientpb.MonitorStopped_builder{}.Build()
+		stateValue.Stopped = clientpb.MonitorStopped_builder{Reason: &reason}.Build()
 	default:
 		stateValue.Pending = clientpb.MonitorPending_builder{}.Build()
 	}
@@ -345,40 +278,6 @@ func monitorRecordCheck(value *clientpb.Monitor, now time.Time) {
 	value.SetUpdatedAt(timestamppb.New(now))
 }
 
-func monitorResolveTargetDates(value *clientpb.Monitor, now time.Time) []string {
-	if value == nil {
-		return nil
-	}
-	location := time.FixedZone("Asia/Seoul", 9*60*60)
-	localNow := now.In(location)
-	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
-	seen := make(map[string]struct{}, len(value.GetTargetDates())+int(value.GetSearchHorizonDays()))
-	for _, date := range value.GetTargetDates() {
-		if date == nil {
-			continue
-		}
-		candidate := time.Date(int(date.GetYear()), time.Month(date.GetMonth()), int(date.GetDay()), 0, 0, 0, 0, location)
-		if !candidate.Before(today) {
-			seen[fmt.Sprintf("%04d-%02d-%02d", date.GetYear(), date.GetMonth(), date.GetDay())] = struct{}{}
-		}
-	}
-	for offset := int32(0); offset < value.GetSearchHorizonDays(); offset++ {
-		candidate := today.AddDate(0, 0, int(offset))
-		for _, weekday := range value.GetTargetWeekdays() {
-			if int(candidate.Weekday()) == int(weekday) {
-				seen[candidate.Format(time.DateOnly)] = struct{}{}
-				break
-			}
-		}
-	}
-	result := make([]string, 0, len(seen))
-	for date := range seen {
-		result = append(result, date)
-	}
-	sort.Strings(result)
-	return result
-}
-
 func int32Values(values []int32) []int {
 	result := make([]int, len(values))
 	for index, value := range values {
@@ -387,29 +286,15 @@ func int32Values(values []int32) []int {
 	return result
 }
 
-func seatPreferenceForRanking(value *clientpb.SeatPreference) domain.SeatPreference {
-	if value == nil {
-		return domain.SeatPreference{}
-	}
+func seatPreferenceForRanking(value *clientpb.SeatPreference, seatType string) domain.SeatPreference {
 	preference := domain.SeatPreference{
-		CandidateSeats: append([]string(nil), value.GetExplicitSeats()...),
-		PreferredRows:  append([]string(nil), value.GetPreferredRows()...),
-		AvoidEdges:     value.GetAvoidEdges(),
+		Adjacency: domain.SeatAdjacencyRequired,
 	}
-	if value.GetTogether() {
-		preference.Adjacency = domain.SeatAdjacencyRequired
+	if value != nil {
+		preference.CandidateSeats = append([]string(nil), value.GetExplicitSeats()...)
 	}
-	for _, seatType := range value.GetPreferredTypes() {
-		preference.PreferredTypes = append(preference.PreferredTypes, domain.SeatType(seatType))
-	}
-	for _, zone := range value.GetPreferredZones() {
-		if zone == nil {
-			continue
-		}
-		preference.PreferredZones = append(preference.PreferredZones, domain.SeatZone{
-			Name: zone.GetName(), MinX: zone.GetMinX(), MaxX: zone.GetMaxX(),
-			MinY: zone.GetMinY(), MaxY: zone.GetMaxY(), Weight: int(zone.GetWeight()),
-		})
+	if selectedType := domain.SeatType(seatType); selectedType.Valid() {
+		preference.PreferredTypes = []domain.SeatType{selectedType}
 	}
 	return preference
 }

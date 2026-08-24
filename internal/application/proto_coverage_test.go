@@ -36,11 +36,11 @@ func TestPresetServiceValidatesGeneratedProto(t *testing.T) {
 	repository := newPresetRepositoryFake()
 	repository.values["preset"] = presetResourceFixture(presetFixtureForTest("preset", "other", "theater", "auditorium", []string{"A1"}), 1)
 	service := NewPresetService(repository, &sequenceIDs{}, fixedClock{now})
-	mutation := presetMutationForTest(1, "preset", "user", "center", "theater", "auditorium", 1, clientpb.SeatPreference_builder{Together: boolPointer(true)}.Build())
+	mutation := presetMutationForTest(1, "preset", "user", "center", "theater", "auditorium", clientpb.SeatPreference_builder{Together: boolPointer(true)}.Build())
 	if _, err := service.Update(ctx, mutation); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Update() ownership error = %v, want %v", err, ErrNotFound)
 	}
-	invalid := presetMutationForTest(0, "", "user", "", "theater", "auditorium", 1, clientpb.SeatPreference_builder{Together: boolPointer(true)}.Build())
+	invalid := presetMutationForTest(0, "", "user", "", "theater", "auditorium", clientpb.SeatPreference_builder{Together: boolPointer(true)}.Build())
 	if _, err := service.Create(ctx, invalid); err == nil {
 		t.Fatal("Create() accepted a Proto mutation with an empty preset name")
 	}
@@ -49,14 +49,12 @@ func TestPresetServiceValidatesGeneratedProto(t *testing.T) {
 func TestGeneratedProtoStateHelpers(t *testing.T) {
 	t.Parallel()
 	id, userID, presetID, movieID, title := "monitor", "user", "preset", "movie", "Movie"
-	horizon := int32(14)
-	year, month, day := int32(2026), int32(8), int32(10)
 	hour, minute := int32(18), int32(30)
 	message := clientpb.Monitor_builder{
 		Id: &id, UserId: &userID, PresetId: &presetID,
 		MovieId: &movieID, MovieTitle: &title,
-		TargetDates:       []*commonpb.LocalDate{commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()},
-		SearchHorizonDays: &horizon, EarliestTime: commonpb.LocalTime_builder{Hour: &hour, Minute: &minute}.Build(),
+		TargetWeekdays: []int32{int32(time.Monday)},
+		EarliestTime:   commonpb.LocalTime_builder{Hour: &hour, Minute: &minute}.Build(),
 	}.Build()
 	revision := int64(2)
 	mutation := clientpb.WebUIResourceMutation_builder{

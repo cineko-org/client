@@ -16,10 +16,10 @@ type Story = StoryObj;
 const Canvas = ({ children }: { children: React.ReactNode }) => <Box bg="dark.9" mih="100dvh" p={48}>{children}</Box>;
 
 export const EmptyHome: Story = { render: () => <Canvas><HomePage monitors={0} runningMonitors={0} presets={0} reservations={0} onMonitors={noop} onNewMonitor={noop} /></Canvas> };
-export const EmptyMonitors: Story = { render: () => <Canvas><MonitorListView monitors={[]} deleteId={null} mutationId={null} onRetry={noop} onDeleteRequest={noop} onDelete={noop} onOpen={noop} onEdit={noop} /></Canvas> };
-export const MonitorDeleteConfirmation: Story = { render: () => <Canvas><MonitorListView monitors={monitors} deleteId={monitors[0].id} mutationId={null} onRetry={noop} onDeleteRequest={noop} onDelete={noop} onOpen={noop} onEdit={noop} /></Canvas> };
-export const MissingMonitor: Story = { render: () => <Canvas><MonitorDetailPageView mutating={false} onBack={noop} onEdit={noop} onRetry={noop} /></Canvas> };
-export const FailedMonitor: Story = { render: () => <Canvas><MonitorDetailPageView monitor={monitors[3]} mutating={false} onBack={noop} onEdit={noop} onRetry={noop} /></Canvas> };
+export const EmptyMonitors: Story = { render: () => <Canvas><MonitorListView monitors={[]} deleteId={null} mutationId={null} onRetry={noop} onStop={noop} onDeleteRequest={noop} onDelete={noop} onOpen={noop} onEdit={noop} /></Canvas> };
+export const MonitorDeleteConfirmation: Story = { render: () => <Canvas><MonitorListView monitors={monitors} deleteId={monitors[0].id} mutationId={null} onRetry={noop} onStop={noop} onDeleteRequest={noop} onDelete={noop} onOpen={noop} onEdit={noop} /></Canvas> };
+export const MissingMonitor: Story = { render: () => <Canvas><MonitorDetailPageView mutating={false} onBack={noop} onEdit={noop} onRetry={noop} onStop={noop} /></Canvas> };
+export const FailedMonitor: Story = { render: () => <Canvas><MonitorDetailPageView monitor={monitors[3]} mutating={false} onBack={noop} onEdit={noop} onRetry={noop} onStop={noop} /></Canvas> };
 export const TriggeredRetryConfirmation: Story = { render: () => <Canvas><MonitorRetryDialog monitor={monitors[1]} acknowledged={false} submitting={false} onAcknowledgedChange={noop} onClose={noop} onConfirm={noop} /></Canvas> };
 export const UnknownPaymentRetryConfirmation: Story = { render: () => <Canvas><MonitorRetryDialog monitor={monitors[2]} acknowledged submitting={false} onAcknowledgedChange={noop} onClose={noop} onConfirm={noop} /></Canvas> };
 export const EmptyPresets: Story = { render: () => <Canvas><PresetListView presets={[]} deleteId={null} onNew={noop} onEdit={noop} onDeleteRequest={noop} onDelete={noop} /></Canvas> };

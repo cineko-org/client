@@ -1,6 +1,6 @@
 // Package booking owns the Client's local booking-browser capacity.
 //
-// It contains no CGV, Central, or UI code. Adapters provide one process that
+// It contains no CGV, network-control-plane, or UI code. Adapters provide one process that
 // satisfies Process; this package owns demand, leases, payment retention,
 // crash replacement, and bounded process reaping.
 package booking
@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	// DefaultWarmBrowserCapacity is the normal number of ready booking slots.
-	DefaultWarmBrowserCapacity = 2
+	// DefaultWarmBrowserCapacity is one shared authenticated browser; exact
+	// showtimes scale as tabs inside this process.
+	DefaultWarmBrowserCapacity = 1
 	// MaximumWarmBrowserCapacity is the hard local process safety cap.
 	MaximumWarmBrowserCapacity = 3
 )

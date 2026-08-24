@@ -123,13 +123,25 @@ func TestValidateShowtimeIdentityRequiresCanonicalTupleAndDisplay(t *testing.T) 
 }
 
 func scheduleButtonDisplayMatches(buttonText, rowText string, showtime domain.Showtime) bool {
-	buttonText = normalize(buttonText)
+	_ = normalize(buttonText)
 	rowText = normalize(rowText)
 	for _, expected := range []string{showtime.Movie, showtime.AuditoriumName, showtime.StartsAt, showtime.EndsAt} {
 		if !strings.Contains(rowText, normalize(expected)) {
 			return false
 		}
 	}
-	seatTotals := scheduleSeatTotals(showtime)
-	return seatTotals != "" && strings.Contains(strings.Join(strings.Fields(buttonText), ""), strings.Join(strings.Fields(seatTotals), ""))
+	return true
+}
+
+func TestScheduleButtonDisplayProjectionIgnoresVolatileAvailability(t *testing.T) {
+	showtime := domain.Showtime{
+		ProviderID: providerCGV, SourceKey: "0056/2026-08-20/0007/0003", MovieID: "movie",
+		Movie: "표시 영화명", AuditoriumName: "IMAX관", Date: "2026-08-20",
+		StartsAt: "21:30", EndsAt: "23:50", AvailableSeats: 2, Capacity: 624,
+	}
+	button := "21:30 - 23:50 0 / 624석 IMAX관"
+	row := "표시 영화명 " + button
+	if !scheduleButtonDisplayMatches(button, row, showtime) {
+		t.Fatal("stable showtime identity was rejected after availability changed")
+	}
 }

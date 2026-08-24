@@ -530,6 +530,32 @@ func TestBrowserPoolUsesOnePageAndRestartsPerTask(t *testing.T) {
 	}
 }
 
+func TestOpenTabSharesAuthenticatedContextAndClosesOnlyItsPage(t *testing.T) {
+	config := localBrowserTestConfig(t)
+	adapter, err := NewAdapter(t.Context(), config)
+	if err != nil {
+		t.Fatalf("NewAdapter() error = %v", err)
+	}
+	defer adapter.Close()
+	tab, err := adapter.OpenTab(t.Context())
+	if err != nil {
+		t.Fatalf("OpenTab() error = %v", err)
+	}
+	if tab.browserContext != adapter.browserContext {
+		t.Fatal("watcher tab did not share the authenticated browser context")
+	}
+	if pages := adapter.ProcessPageCount(); pages != 2 {
+		t.Fatalf("page count after OpenTab = %d, want 2", pages)
+	}
+	tab.Close()
+	if pages := adapter.ProcessPageCount(); pages != 1 {
+		t.Fatalf("page count after tab close = %d, want 1", pages)
+	}
+	if adapter.closing.Load() {
+		t.Fatal("closing a watcher tab closed the shared browser")
+	}
+}
+
 func TestRandomizedScanIdentityStaysFixedForBrowserProcess(t *testing.T) {
 	config := localBrowserTestConfig(t)
 	config.UserAgentMode = UserAgentRandomizedScan

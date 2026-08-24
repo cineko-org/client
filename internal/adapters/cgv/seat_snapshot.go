@@ -140,7 +140,6 @@ func appendSeatDataItem(
 	for _, saleForm := range item.SaleForms {
 		saleForms[saleForm.Code] = saleForm.Name
 	}
-	itemSeatStart := len(snapshot.Seats)
 	for _, source := range item.Seats {
 		number, parseErr := strconv.Atoi(source.Number)
 		if parseErr != nil {
@@ -184,10 +183,6 @@ func appendSeatDataItem(
 			MinX: board.x(source.XStart), MaxX: board.x(source.XEnd),
 			MinY: board.y(source.YStart), MaxY: board.y(source.YEnd),
 		})
-	}
-	itemSeatCount := len(snapshot.Seats) - itemSeatStart
-	if item.Board.Count > 0 && item.Board.Count != itemSeatCount {
-		return fmt.Errorf("CGV board count %d differs from %d seats", item.Board.Count, itemSeatCount)
 	}
 	return nil
 }

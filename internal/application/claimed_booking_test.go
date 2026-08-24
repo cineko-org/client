@@ -9,8 +9,9 @@ import (
 	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type centralFenceRepository struct {
@@ -56,13 +57,13 @@ type refreshingShowtimeGateway struct {
 
 func (gateway *refreshingShowtimeGateway) RefreshSeatSelection(
 	_ context.Context,
-	showtime *catalogpb.Showtime,
+	task *observationpb.SeatAvailabilityTask,
 ) (*seatmappb.LiveSeatObservation, error) {
 	gateway.refreshCalls++
 	if gateway.onRefresh != nil {
 		gateway.onRefresh(gateway.refreshCalls)
 	}
-	gateway.opened = showtime
+	gateway.opened = task.GetShowtime()
 	if gateway.refreshErr != nil {
 		return nil, gateway.refreshErr
 	}
@@ -74,11 +75,11 @@ func (gateway *refreshingShowtimeGateway) RefreshSeatSelection(
 
 func (gateway *exactShowtimeGateway) OpenSeatSelection(
 	_ context.Context,
-	showtime *catalogpb.Showtime,
+	task *observationpb.SeatAvailabilityTask,
 	_ int,
 ) (*seatmappb.LiveSeatObservation, error) {
 	gateway.openCalls++
-	gateway.opened = showtime
+	gateway.opened = task.GetShowtime()
 	if gateway.openErr != nil {
 		return nil, gateway.openErr
 	}
@@ -131,77 +132,8 @@ func TestRunClaimedShowtimeUsesCentralFenceAndExactPayload(t *testing.T) {
 		t.Fatalf("live observation requests = %d", len(observations.requests))
 	}
 	report := observations.requests[0]
-	if report.GetMutation().GetExpectedRevision() != 0 || report.GetMutation().GetCommandId() == "" ||
-		report.GetObservation().GetAvailability().GetShowtimeId() == "" {
+	if report.GetAvailability().GetShowtimeId() == "" {
 		t.Fatalf("live observation request = %s", report)
-	}
-}
-
-func TestRunClaimedShowtimeRefreshesTheSameSeatPage(t *testing.T) {
-	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
-	base := claimedSeatWatchRepository()
-	seatMap := gatewaySeatMap()
-	gateway := &refreshingShowtimeGateway{
-		exactShowtimeGateway: &exactShowtimeGateway{workerGateway: &workerGateway{
-			live: []domain.LiveSeat{{Label: "H10", Available: false}},
-		}},
-		selections: []domain.SeatSelection{
-			{SeatMap: seatMap, LiveSeats: []domain.LiveSeat{{Label: "H10", Available: false}}},
-			{SeatMap: seatMap, LiveSeats: []domain.LiveSeat{{Label: "H10", Available: true}}},
-		},
-	}
-	observations := &liveObservationRepositoryFake{}
-	gateway.onRefresh = func(call int) {
-		if len(observations.requests) != 0 {
-			t.Errorf("live observation reported during hot refresh %d", call)
-		}
-	}
-	worker := claimedSeatWatchWorker(base, gateway, now, observations)
-	reservation, err := runClaimedShowtime(t.Context(), worker, base, claimedSeatWatchShowtime())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gateway.openCalls != 1 || gateway.refreshCalls != 2 {
-		t.Fatalf("seat-page open/refresh calls = %d/%d, want 1/2", gateway.openCalls, gateway.refreshCalls)
-	}
-	if reservation.GetReservation().GetPrepared() == nil {
-		t.Fatalf("reservation = %+v", reservation)
-	}
-	if len(observations.requests) != 1 || len(observations.requests[0].GetObservation().GetAvailability().GetAvailableSeats()) != 1 {
-		t.Fatalf("successful live observation requests = %v", observations.requests)
-	}
-}
-
-func TestRunClaimedShowtimeReportsOnlyLatestSoldOutObservationAfterWatchExhaustion(t *testing.T) {
-	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
-	base := claimedSeatWatchRepository()
-	observations := &liveObservationRepositoryFake{}
-	gateway := &refreshingShowtimeGateway{
-		exactShowtimeGateway: &exactShowtimeGateway{workerGateway: &workerGateway{
-			live: []domain.LiveSeat{{Label: "H10", Available: false}},
-		}},
-		selections: []domain.SeatSelection{{
-			SeatMap: gatewaySeatMap(), LiveSeats: []domain.LiveSeat{{Label: "H10", Available: false}},
-		}},
-	}
-	gateway.onRefresh = func(call int) {
-		if len(observations.requests) != 0 {
-			t.Errorf("sold-out observation reported during hot refresh %d", call)
-		}
-	}
-	worker := claimedSeatWatchWorker(base, gateway, now, observations)
-	_, err := runClaimedShowtime(t.Context(), worker, base, claimedSeatWatchShowtime())
-	if !errors.Is(err, ErrSeatUnavailable) {
-		t.Fatalf("watch exhaustion error = %v", err)
-	}
-	if gateway.refreshCalls != 3 {
-		t.Fatalf("refresh calls = %d, want 3", gateway.refreshCalls)
-	}
-	if len(observations.requests) != 1 {
-		t.Fatalf("sold-out observation requests = %d, want 1", len(observations.requests))
-	}
-	if got := len(observations.requests[0].GetObservation().GetAvailability().GetAvailableSeats()); got != 0 {
-		t.Fatalf("terminal available seats = %d, want 0", got)
 	}
 }
 
@@ -226,20 +158,21 @@ func TestRunClaimedShowtimeReportsOneShotSoldOutObservation(t *testing.T) {
 	}
 }
 
-func TestRunClaimedShowtimeStopsOnRefreshError(t *testing.T) {
+func TestRunClaimedShowtimeSurfacesTerminalSoldOutReportFailure(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
 	base := claimedSeatWatchRepository()
-	protectionErr := errors.New("provider protection stopped the refresh")
-	gateway := &refreshingShowtimeGateway{
-		exactShowtimeGateway: &exactShowtimeGateway{workerGateway: &workerGateway{
-			live: []domain.LiveSeat{{Label: "H10", Available: false}},
-		}},
-		refreshErr: protectionErr,
-	}
-	worker := claimedSeatWatchWorker(base, gateway, now)
+	reportErr := errors.New("local store rejected terminal observation")
+	gateway := &exactShowtimeGateway{workerGateway: &workerGateway{
+		live: []domain.LiveSeat{{Label: "H10", Available: false}},
+	}}
+	worker := NewBookingWorker(BookingWorkerDependencies{
+		Monitors: base, Reservations: base, Booking: gateway,
+		Observations: &liveObservationRepositoryFake{err: reportErr}, IDs: &sequenceIDs{},
+		Clock: fixedClock{now: now}, Waiter: noWaiter{},
+	})
 	_, err := runClaimedShowtime(t.Context(), worker, base, claimedSeatWatchShowtime())
-	if !errors.Is(err, protectionErr) || gateway.refreshCalls != 1 {
-		t.Fatalf("refresh error/calls = %v/%d", err, gateway.refreshCalls)
+	if !errors.Is(err, ErrSeatUnavailable) || !errors.Is(err, reportErr) {
+		t.Fatalf("terminal sold-out report error = %v", err)
 	}
 }
 
@@ -324,12 +257,8 @@ func claimedSeatWatchWorker(
 	repository *workerRepository,
 	gateway claimedSeatWatchGateway,
 	now time.Time,
-	observationRepositories ...*liveObservationRepositoryFake,
 ) *BookingWorker {
 	observations := &liveObservationRepositoryFake{}
-	if len(observationRepositories) > 0 {
-		observations = observationRepositories[0]
-	}
 	return NewBookingWorker(BookingWorkerDependencies{
 		Monitors: repository, Reservations: repository,
 		Booking: gateway, Observations: observations, IDs: &sequenceIDs{},
@@ -381,9 +310,12 @@ func TestClaimedBookingValidationBoundaries(t *testing.T) {
 		{"incomplete schedule", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
 			showtime.SetEndsAt(nil)
 		}},
+		{"started showtime", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
+			showtime.SetStartsAt(timestamppb.New(now))
+		}},
 		{"outside schedule", func(_ *clientpb.Monitor, _ *clientpb.Preset, _ *catalogpb.Theater, _ *catalogpb.Auditorium, showtime *catalogpb.Showtime) {
-			year, month, day := int32(2026), int32(8), int32(21)
-			showtime.GetIdentity().GetCgv().SetScheduleDate(commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build())
+			showtime.SetStartsAt(timestamppb.New(time.Date(2026, time.August, 21, 20, 0, 0, 0, time.UTC)))
+			showtime.SetEndsAt(timestamppb.New(time.Date(2026, time.August, 21, 22, 0, 0, 0, time.UTC)))
 		}},
 	}
 	for _, test := range tests {

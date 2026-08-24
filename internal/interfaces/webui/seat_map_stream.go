@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"buf.build/go/protovalidate"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
-	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -19,8 +19,7 @@ type seatMapWatcher interface {
 	WatchSeatMap(context.Context, string, func(*seatmappb.Resolution) error) error
 }
 
-// watchAuditoriumSeatMap forwards Central's generated watch contract to the
-// local UI without exposing Probe scheduling or adding a polling loop.
+// watchAuditoriumSeatMap forwards the local generated watch contract to the UI.
 func (server *Server) watchAuditoriumSeatMap(writer http.ResponseWriter, request *http.Request) {
 	auditoriumID := strings.TrimSpace(request.URL.Query().Get("auditoriumId"))
 	if auditoriumID == "" {
@@ -43,7 +42,7 @@ func (server *Server) watchAuditoriumSeatMap(writer http.ResponseWriter, request
 
 	started := false
 	err := watcher.WatchSeatMap(request.Context(), auditoriumID, func(resolution *seatmappb.Resolution) error {
-		response := servicepb.WatchSeatMapResponse_builder{Resolution: resolution}.Build()
+		response := clientpb.WebUISeatMapResponse_builder{Resolution: resolution}.Build()
 		if err := protovalidate.Validate(response); err != nil {
 			return fmt.Errorf("validate seat-map stream response: %w", err)
 		}

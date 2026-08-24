@@ -7,9 +7,14 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/cineko-org/client/internal/logging"
 )
 
-var defaultProbeURL = "https://cgv.co.kr/cnm/movieBook/movie"
+// Proxy preflight only checks public egress. Provider compatibility is tested
+// by the Soxy-backed browser adapter, so a plain HTTP client must never probe
+// CGV or its CDN directly.
+var defaultProbeURL = "https://api.ipify.org"
 
 // ValidateConfig verifies every configured user-owned proxy before settings
 // become durable.
@@ -48,7 +53,7 @@ func probeProxy(ctx context.Context, proxy Proxy) error {
 		DisableKeepAlives: true,
 	}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	client := &http.Client{Transport: logging.RoundTripper(transport), Timeout: 10 * time.Second}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, defaultProbeURL, nil)
 	if err != nil {
 		return err

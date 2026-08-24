@@ -13,6 +13,7 @@ describe('application routes', () => {
     [{ name: 'presets' }, 'presets'],
     [{ name: 'preset-new' }, 'presets'],
     [{ name: 'preset-edit', presetId: 'preset' }, 'presets'],
+		[{ name: 'operations' }, 'operations'],
     [{ name: 'settings' }, null],
   ])('maps $name to its main section', (route, section) => {
     expect(routeSection(route)).toBe(section);
@@ -22,6 +23,7 @@ describe('application routes', () => {
     expect(sectionRoute('home')).toEqual({ name: 'home' });
     expect(sectionRoute('monitors')).toEqual({ name: 'monitors' });
     expect(sectionRoute('presets')).toEqual({ name: 'presets' });
+		expect(sectionRoute('operations')).toEqual({ name: 'operations' });
   });
 
   it('owns typed route navigation and dedicated settings navigation', () => {

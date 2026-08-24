@@ -25,7 +25,6 @@ test('writes independently publishable component metadata', async () => {
           CINEKO_MINIMUM_LAUNCHER_VERSION: '1.0.0',
           CINEKO_BROWSER_REVISION: '1228',
           CINEKO_PLAYWRIGHT_VERSION: '1.61.1',
-          CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON: '{"2026-08":"public-key"}',
           CINEKO_RELEASE_PUBLISHED_AT: '2026-08-12T09:00:00Z',
         },
       });
@@ -40,7 +39,7 @@ test('writes independently publishable component metadata', async () => {
   }
 });
 
-test('Client metadata rejects a missing or malformed Probe keyring', async () => {
+test('Client metadata rejects the retired Probe bootstrap keyring field', async () => {
   await mkdir('build/release', { recursive: true });
   const artifact = 'build/release/cineko-client-v2.3.4-linux-amd64.tar.gz';
   await writeFile(artifact, 'client-fixture');
@@ -52,11 +51,14 @@ test('Client metadata rejects a missing or malformed Probe keyring', async () =>
     CINEKO_RELEASE_PUBLISHED_AT: '2026-08-12T09:00:00Z',
   };
   try {
-    for (const keyring of ['', '{', '{}', '{"primary":""}']) {
-      assert.throws(() => execFileSync('node', [
-        'scripts/write-release-metadata.mjs', 'client', '2.3.4', 'linux/amd64', artifact, 'Cineko',
-      ], { env: { ...baseEnvironment, CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON: keyring }, stdio: 'pipe' }));
-    }
+    execFileSync('node', [
+      'scripts/write-release-metadata.mjs', 'client', '2.3.4', 'linux/amd64', artifact, 'Cineko',
+    ], { env: baseEnvironment });
+    const metadataPath = 'build/release/client-release-linux-amd64.json';
+    const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
+    metadata.probeBootstrapPublicKeys = { primary: 'retired' };
+    await writeFile(metadataPath, JSON.stringify(metadata));
+    assert.throws(() => execFileSync('node', ['scripts/verify-release-metadata.mjs', metadataPath], { stdio: 'pipe' }));
   } finally {
     await rm(artifact, { force: true });
     await rm('build/release/client-release-linux-amd64.json', { force: true });
@@ -80,7 +82,6 @@ test('Unix packagers emit executable independent artifacts', async () => {
     CINEKO_MINIMUM_LAUNCHER_VERSION: '1.0.0',
     CINEKO_BROWSER_REVISION: '1228',
     CINEKO_PLAYWRIGHT_VERSION: '1.61.1',
-    CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON: '{"2026-08":"public-key"}',
     CINEKO_RELEASE_PUBLISHED_AT: '2026-08-12T09:00:00Z',
   };
   try {
@@ -160,7 +161,6 @@ cp "$FAKE_BROWSER_FIXTURES/chrome-$platform.zip" "$output"
       env: {
         ...env,
         CINEKO_BROWSER_RELEASE_PAYLOAD_OUT: manifest,
-        CINEKO_CENTRAL_URL: '',
         CINEKO_RELEASE_PUBLISH_TOKEN: '',
       },
     });
@@ -178,7 +178,6 @@ cp "$FAKE_BROWSER_FIXTURES/chrome-$platform.zip" "$output"
       env: {
         ...env,
         CINEKO_BROWSER_RELEASE_PAYLOAD_OUT: repeatedManifest,
-        CINEKO_CENTRAL_URL: '',
         CINEKO_RELEASE_PUBLISH_TOKEN: '',
       },
     });
@@ -237,7 +236,7 @@ test('publisher verifies S3 checksums without downloading release artifacts', as
         env: {
           ...process.env,
           CINEKO_MINIMUM_LAUNCHER_VERSION: '1.0.0', CINEKO_BROWSER_REVISION: '1228',
-          CINEKO_PLAYWRIGHT_VERSION: '1.61.1', CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON: '{"2026-08":"public-key"}',
+          CINEKO_PLAYWRIGHT_VERSION: '1.61.1',
           CINEKO_RELEASE_PUBLISHED_AT: '2026-08-12T09:00:00Z',
         },
       });
@@ -288,7 +287,7 @@ exit 2
         env: {
           ...process.env,
           CINEKO_MINIMUM_LAUNCHER_VERSION: '1.0.0', CINEKO_BROWSER_REVISION: '1228',
-          CINEKO_PLAYWRIGHT_VERSION: '1.61.1', CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS_JSON: '{"2026-08":"public-key"}',
+          CINEKO_PLAYWRIGHT_VERSION: '1.61.1',
           CINEKO_RELEASE_PUBLISHED_AT: '2026-08-12T09:00:00Z',
         },
       });

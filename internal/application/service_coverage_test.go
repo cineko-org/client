@@ -9,6 +9,7 @@ import (
 	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -113,8 +114,7 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 	request := monitorMutationForTest(0, "", "", "user", "preset", "movie_1", " Movie ", nil, []int{1}, 0, "", "")
 	createdResource, err := service.Create(ctx, request)
 	created := createdResource.GetMonitor()
-	if err != nil || created == nil || created.GetSearchHorizonDays() != defaultSearchHorizonDays ||
-		created.GetState().GetPending() == nil {
+	if err != nil || created == nil || created.GetState().GetPending() == nil {
 		t.Fatalf("Create() = %+v, %v", createdResource, err)
 	}
 	monitors.revision = 1
@@ -181,10 +181,6 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 		t.Fatalf("Update preset error = %v", err)
 	}
 	presets.getErr = nil
-	expiredUpdate := monitorMutationForTest(1, "", created.GetId(), "user", "preset", "movie_1", "Movie", []string{"2026-08-08"}, nil, 0, "", "")
-	if _, err := service.Update(ctx, expiredUpdate); !errors.Is(err, ErrMonitorExpired) {
-		t.Fatalf("Update expired error = %v", err)
-	}
 	monitors.putErr = errInjected
 	if _, err := service.Update(ctx, update); !errors.Is(err, errInjected) {
 		t.Fatalf("Update put error = %v", err)
@@ -208,10 +204,6 @@ func TestMonitorServiceCoversDefaultsOwnershipAndRepositoryErrors(t *testing.T) 
 	invalid.GetMonitor().SetMovieId("")
 	if _, err := service.Create(ctx, invalid); err == nil {
 		t.Fatal("Create() accepted invalid monitor")
-	}
-	expired := monitorMutationForTest(0, "", "", "user", "preset", "movie_1", "Movie", []string{"2026-08-08"}, nil, 9, "", "")
-	if _, err := service.Create(ctx, expired); !errors.Is(err, ErrMonitorExpired) {
-		t.Fatalf("Create() expiration error = %v", err)
 	}
 	monitors.putErr = errInjected
 	if _, err := service.Create(ctx, explicit); !errors.Is(err, errInjected) {
@@ -322,11 +314,6 @@ func TestMonitorServiceCreateIdempotentPaths(t *testing.T) {
 	invalid.GetMonitor().SetMovieId("")
 	if _, err := service.CreateIdempotent(ctx, invalid); err == nil {
 		t.Fatal("CreateIdempotent accepted an invalid request")
-	}
-	expired := cloneMonitorMutationForTest(request)
-	expired.GetMonitor().SetTargetDates(localDatesForTest([]string{"2026-08-08"}))
-	if _, err := service.CreateIdempotent(ctx, expired); !errors.Is(err, ErrMonitorExpired) {
-		t.Fatalf("CreateIdempotent(expired) = %v", err)
 	}
 	monitors.putErr = errInjected
 	if _, err := service.CreateIdempotent(ctx, request); !errors.Is(err, errInjected) {
@@ -517,7 +504,7 @@ func assertPresetCreateError(
 }
 
 func validPresetRequest() *clientpb.WebUIResourceMutation {
-	return presetMutationForTest(0, "", "user", " center ", "theater", "auditorium", 1, clientpb.SeatPreference_builder{
+	return presetMutationForTest(0, "", "user", " center ", "theater", "auditorium", clientpb.SeatPreference_builder{
 		ExplicitSeats: []string{"A1"}, PreferredTypes: []string{string(domain.SeatTypeStandard)}, Together: boolPointer(true),
 	}.Build())
 }
@@ -698,7 +685,7 @@ type bookingGatewayFake struct {
 
 func (*bookingGatewayFake) OpenSeatSelection(
 	context.Context,
-	*catalogpb.Showtime,
+	*observationpb.SeatAvailabilityTask,
 	int,
 ) (*seatmappb.LiveSeatObservation, error) {
 	return nil, nil

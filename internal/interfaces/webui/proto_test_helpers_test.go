@@ -59,11 +59,9 @@ func presetProtoFixture(theaterID, auditoriumID string, candidates []string) *cl
 	id := "preset"
 	userID := "user"
 	name := "seat"
-	seatCount := int32(1)
 	together := true
 	return clientpb.Preset_builder{
 		Id: &id, UserId: &userID, Name: &name, TheaterId: &theaterID, AuditoriumId: &auditoriumID,
-		SeatCount: &seatCount,
 		SeatPreference: clientpb.SeatPreference_builder{
 			ExplicitSeats: append([]string(nil), candidates...), Together: &together,
 		}.Build(),
@@ -78,11 +76,31 @@ func monitorProtoFixture(
 ) *clientpb.Monitor {
 	id := "monitor"
 	userID := "user"
+	seatCount, seatType := int32(1), "standard"
 	return clientpb.Monitor_builder{
 		Id: &id, UserId: &userID, PresetId: &presetID,
-		MovieId: &movieID, MovieTitle: &movieTitle, TargetDates: localDates(targetDates),
+		MovieId: &movieID, MovieTitle: &movieTitle, TargetWeekdays: weekdaysForWebTestDates(targetDates),
+		SeatCount: &seatCount, SeatType: &seatType,
 		State: state, ReservationId: &reservationID,
 	}.Build()
+}
+
+func weekdaysForWebTestDates(values []string) []int32 {
+	seen := make(map[int32]struct{})
+	weekdays := make([]int32, 0, len(values))
+	for _, value := range values {
+		date, err := time.Parse(time.DateOnly, value)
+		if err != nil {
+			continue
+		}
+		weekday := mustInt32(int(date.Weekday()))
+		if _, exists := seen[weekday]; exists {
+			continue
+		}
+		seen[weekday] = struct{}{}
+		weekdays = append(weekdays, weekday)
+	}
+	return weekdays
 }
 
 func reservationProtoFixture(id, userID, monitorID string) *clientpb.Reservation {
@@ -226,16 +244,6 @@ func localDate(value string) *commonpb.LocalDate {
 	}
 	year, month, day := mustInt32(parsed.Year()), mustInt32(int(parsed.Month())), mustInt32(parsed.Day())
 	return commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()
-}
-
-func localDates(values []string) []*commonpb.LocalDate {
-	result := make([]*commonpb.LocalDate, 0, len(values))
-	for _, value := range values {
-		if parsed := localDate(value); parsed != nil {
-			result = append(result, parsed)
-		}
-	}
-	return result
 }
 
 func mustInt32(value int) int32 {

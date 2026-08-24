@@ -3,13 +3,10 @@ package application
 import (
 	"context"
 	cryptorand "crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
-	"slices"
 	"strings"
 	"time"
 
@@ -17,10 +14,8 @@ import (
 	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
-	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
-	"google.golang.org/protobuf/proto"
 )
 
 type BookingWorker struct {
@@ -73,10 +68,7 @@ func NewBookingWorker(dependencies BookingWorkerDependencies) *BookingWorker {
 	}
 }
 
-// RunClaimedShowtime prepares the exact showtime carried by a Central
-// execution command. The Central command lease is the sole execution fence;
-// taking an additional in-process monitor lease here would not prevent another
-// Client installation from executing and could incorrectly imply otherwise.
+// RunClaimedShowtime prepares one exact locally selected showtime.
 func (worker *BookingWorker) RunClaimedShowtime(
 	ctx context.Context,
 	monitorResource *clientpb.Resource,
@@ -100,15 +92,16 @@ func (worker *BookingWorker) RunClaimedShowtime(
 	if revision, err = worker.putMonitor(ctx, job, revision); err != nil {
 		return nil, err
 	}
-	reservation, attemptErr := worker.attemptClaimedShowtime(ctx, job, preset, showtimeMessage)
+	reservation, attemptErr := worker.attemptClaimedShowtime(
+		ctx, job, preset, theaterMessage, auditoriumMessage, showtimeMessage,
+	)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	now := worker.clock.Now()
 	monitorRecordCheck(job, now)
 	if attemptErr != nil {
-		// Central owns retry/exhaustion for execution commands. Keep the monitor
-		// eligible while Central decides whether this failed lease is retried.
+		// Keep the monitor eligible so the local supervisor can retry the target.
 		if _, err := worker.putMonitor(ctx, job, revision); err != nil {
 			return nil, errors.Join(attemptErr, err)
 		}
@@ -119,6 +112,52 @@ func (worker *BookingWorker) RunClaimedShowtime(
 		return nil, completeErr
 	}
 	return result, nil
+}
+
+// WatchClaimedShowtime keeps one exact authenticated seat page alive without
+// letting parallel watcher tabs race the monitor revision. Only the tab that
+// actually prepares a provider hold performs the durable monitor transition.
+func (worker *BookingWorker) WatchClaimedShowtime(
+	ctx context.Context,
+	monitorResource *clientpb.Resource,
+	presetResource *clientpb.Resource,
+	theaterMessage *catalogpb.Theater,
+	auditoriumMessage *catalogpb.Auditorium,
+	showtimeMessage *catalogpb.Showtime,
+) (*clientpb.Resource, error) {
+	job, _, err := monitorMessage(monitorResource)
+	if err != nil {
+		return nil, err
+	}
+	preset, _, err := presetMessage(presetResource)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateClaimedBooking(job, preset, theaterMessage, auditoriumMessage, showtimeMessage, worker.clock.Now()); err != nil {
+		return nil, err
+	}
+	reservation, err := worker.attemptClaimedShowtime(
+		ctx, job, preset, theaterMessage, auditoriumMessage, showtimeMessage,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	latest, err := worker.monitors.GetMonitor(ctx, job.GetId())
+	if err != nil {
+		return nil, err
+	}
+	latestJob, revision, err := monitorMessage(latest)
+	if err != nil {
+		return nil, err
+	}
+	state := monitorStateName(latestJob)
+	if state != "pending" && state != "running" {
+		return nil, ErrConflict
+	}
+	return worker.complete(ctx, latestJob, reservation, worker.clock.Now(), revision)
 }
 
 func validateClaimedBooking(job *clientpb.Monitor, preset *clientpb.Preset, theater *catalogpb.Theater, auditorium *catalogpb.Auditorium, showtime *catalogpb.Showtime, now time.Time) error {
@@ -152,7 +191,7 @@ func validateClaimedShowtimeContext(job *clientpb.Monitor, theater *catalogpb.Th
 	}
 	// Catalog availability is only a discovery hint. Zero seats and a sold-out
 	// flag must still reach the authenticated browser because cancellation seats
-	// can appear after Central issued the command. Impossible counts still fail
+	// can appear after the local monitor selected the showtime. Impossible counts still fail
 	// closed before any provider interaction.
 	if showtime.GetAvailableSeats() < 0 || showtime.GetCapacity() < showtime.GetAvailableSeats() {
 		return ErrBookingNotOpen
@@ -185,13 +224,15 @@ func validateClaimedSchedule(job *clientpb.Monitor, showtime *catalogpb.Showtime
 	if showtime == nil || showtime.GetStartsAt() == nil || showtime.GetEndsAt() == nil {
 		return errors.New("claimed showtime schedule is incomplete")
 	}
+	if !showtime.GetStartsAt().AsTime().After(now) {
+		return ErrBookingNotOpen
+	}
 	internalShowtime := showtimeDomainFromProto(showtime)
-	if internalShowtime.Date == "" || !slices.Contains(monitorResolveTargetDates(job, now), internalShowtime.Date) ||
-		!(domain.ScheduleWindow{
-			Weekdays: int32Values(job.GetTargetWeekdays()),
-			Earliest: localTimeValue(job.GetEarliestTime()),
-			Latest:   localTimeValue(job.GetLatestTime()),
-		}.MatchesShowtime(internalShowtime)) {
+	if internalShowtime.Date == "" || !(domain.ScheduleWindow{
+		Weekdays: int32Values(job.GetTargetWeekdays()),
+		Earliest: localTimeValue(job.GetEarliestTime()),
+		Latest:   localTimeValue(job.GetLatestTime()),
+	}.MatchesShowtime(internalShowtime)) {
 		return errors.New("claimed showtime is outside the monitor schedule")
 	}
 	return nil
@@ -223,9 +264,12 @@ func (worker *BookingWorker) openAndPrepareShowtime(
 	ctx context.Context,
 	job *clientpb.Monitor,
 	preset *clientpb.Preset,
+	theater *catalogpb.Theater,
+	auditorium *catalogpb.Auditorium,
 	showtime *catalogpb.Showtime,
 ) (*clientpb.Resource, *seatmappb.LiveSeatObservation, error) {
-	observation, err := worker.booking.OpenSeatSelection(ctx, showtime, int(preset.GetSeatCount()))
+	task := bookingSeatTask(theater, auditorium, showtime)
+	observation, err := worker.booking.OpenSeatSelection(ctx, task, int(job.GetSeatCount()))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -237,35 +281,31 @@ func (worker *BookingWorker) attemptClaimedShowtime(
 	ctx context.Context,
 	job *clientpb.Monitor,
 	preset *clientpb.Preset,
+	theater *catalogpb.Theater,
+	auditorium *catalogpb.Auditorium,
 	showtime *catalogpb.Showtime,
 ) (*clientpb.Resource, error) {
-	reservation, latestUnavailable, err := worker.openAndPrepareShowtime(ctx, job, preset, showtime)
+	reservation, latestUnavailable, err := worker.openAndPrepareShowtime(
+		ctx, job, preset, theater, auditorium, showtime,
+	)
 	if !errors.Is(err, ErrSeatUnavailable) {
 		return reservation, err
 	}
-	refresher, ok := worker.booking.(LiveSeatSelectionRefresher)
-	policy := worker.claimedWatch
-	if !ok || policy.Window <= 0 {
-		_ = worker.submitLiveSeatObservation(ctx, latestUnavailable)
+	if reportErr := worker.submitLiveSeatObservation(ctx, latestUnavailable); reportErr != nil {
+		return nil, errors.Join(ErrSeatUnavailable, fmt.Errorf("report live no-seat observation: %w", reportErr))
+	}
+	refresher, supported := worker.booking.(LiveSeatSelectionRefresher)
+	if !supported || worker.claimedWatch == (ClaimedSeatWatchPolicy{}) {
 		return nil, ErrSeatUnavailable
 	}
-
+	task := bookingSeatTask(theater, auditorium, showtime)
 	startedAt := worker.clock.Now()
-	deadline := startedAt.Add(policy.Window)
-	for refresh := 0; refresh < policy.RefreshLimit; refresh++ {
-		now := worker.clock.Now()
-		if !now.Before(deadline) {
-			break
+	for attempt := 1; worker.claimedSeatWatchContinues(attempt, startedAt, showtime); attempt++ {
+		delay := worker.jitter(worker.claimedWatch.MaxInterval - worker.claimedWatch.MinInterval)
+		if err := worker.waiter.Wait(ctx, worker.claimedWatch.MinInterval+delay); err != nil {
+			return nil, err
 		}
-		delay := policy.MinInterval + worker.jitter(policy.MaxInterval-policy.MinInterval)
-		remaining := deadline.Sub(now)
-		if delay > remaining {
-			delay = remaining
-		}
-		if waitErr := worker.waiter.Wait(ctx, delay); waitErr != nil {
-			return nil, waitErr
-		}
-		observation, refreshErr := refresher.RefreshSeatSelection(ctx, showtime)
+		observation, refreshErr := refresher.RefreshSeatSelection(ctx, task)
 		if refreshErr != nil {
 			return nil, refreshErr
 		}
@@ -273,12 +313,37 @@ func (worker *BookingWorker) attemptClaimedShowtime(
 		if !errors.Is(refreshErr, ErrSeatUnavailable) {
 			return reservation, refreshErr
 		}
-		latestUnavailable = observation
+		if reportErr := worker.submitLiveSeatObservation(ctx, observation); reportErr != nil {
+			return nil, errors.Join(ErrSeatUnavailable, fmt.Errorf("report refreshed no-seat observation: %w", reportErr))
+		}
 	}
-	// Do not report inside the cancellation-seat hot loop. Persist only the
-	// latest valid sold-out observation once the bounded watch is exhausted.
-	_ = worker.submitLiveSeatObservation(ctx, latestUnavailable)
 	return nil, ErrSeatUnavailable
+}
+
+func (worker *BookingWorker) claimedSeatWatchContinues(
+	attempt int,
+	startedAt time.Time,
+	showtime *catalogpb.Showtime,
+) bool {
+	if worker.claimedWatch.UntilShowtime {
+		return showtime != nil && showtime.GetStartsAt() != nil && worker.clock.Now().Before(showtime.GetStartsAt().AsTime())
+	}
+	if attempt > worker.claimedWatch.RefreshLimit {
+		return false
+	}
+	return worker.clock.Now().Before(startedAt.Add(worker.claimedWatch.Window))
+}
+
+func bookingSeatTask(
+	theater *catalogpb.Theater,
+	auditorium *catalogpb.Auditorium,
+	showtime *catalogpb.Showtime,
+) *observationpb.SeatAvailabilityTask {
+	locale, timeZone := "ko-KR", "Asia/Seoul"
+	return observationpb.SeatAvailabilityTask_builder{
+		Theater: theater, Auditorium: auditorium, Showtime: showtime,
+		Locale: &locale, TimeZone: &timeZone,
+	}.Build()
 }
 
 func (worker *BookingWorker) prepareSeatSelection(
@@ -293,9 +358,9 @@ func (worker *BookingWorker) prepareSeatSelection(
 	}
 	snapshot, available := seatsFromLiveObservation(observation)
 	selection := seatSelectionForRanking(snapshot, available)
-	preference := seatPreferenceForRanking(preset.GetSeatPreference())
+	preference := seatPreferenceForRanking(preset.GetSeatPreference(), job.GetSeatType())
 	ranked, err := worker.ranker.Rank(
-		selection.SeatMap, selection.LiveSeats, int(preset.GetSeatCount()), preference,
+		selection.SeatMap, selection.LiveSeats, int(job.GetSeatCount()), preference,
 	)
 	if err != nil || len(ranked) == 0 {
 		return nil, ErrSeatUnavailable
@@ -303,6 +368,9 @@ func (worker *BookingWorker) prepareSeatSelection(
 	labels := seatLabels(ranked[0].Seats)
 	draft, err := worker.booking.PreparePayment(ctx, showtime, labels)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no longer selectable") {
+			return nil, ErrSeatUnavailable
+		}
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -320,57 +388,20 @@ func (worker *BookingWorker) prepareSeatSelection(
 	}
 	// The provider seat hold is the latency-critical boundary. Report its exact
 	// observation only after payment preparation and durable local handoff; a
-	// bounded Central failure must never discard the successful hold.
+	// observation write failure must never discard the successful hold.
 	_ = worker.submitLiveSeatObservation(ctx, observation)
 	return resource, nil
 }
 
-// submitLiveSeatObservation makes the live provider read durable after the
-// seat hold. The content-addressed command ID makes an exact retry idempotent.
+// submitLiveSeatObservation makes the live provider read durable under the
+// active execution lease after the seat hold has been handed off locally.
 func (worker *BookingWorker) submitLiveSeatObservation(
 	ctx context.Context,
 	observation *seatmappb.LiveSeatObservation,
 ) error {
-	if worker.observations == nil {
-		return errors.New("live seat observation repository is required")
-	}
-	commandID, err := liveSeatObservationCommandID(observation)
-	if err != nil {
-		return err
-	}
-	expectedRevision := int64(0)
-	request := servicepb.SubmitLiveSeatObservationRequest_builder{
-		Mutation: commonpb.MutationIdentity_builder{
-			CommandId: &commandID, ExpectedRevision: &expectedRevision,
-		}.Build(),
-		Observation: observation,
-	}.Build()
 	reportContext, cancel := context.WithTimeout(ctx, worker.reportTimeout)
 	defer cancel()
-	response, err := worker.observations.SubmitLiveSeatObservation(reportContext, request)
-	if err != nil {
-		return err
-	}
-	if err := protovalidate.Validate(response); err != nil {
-		return fmt.Errorf("validate live seat observation response: %w", err)
-	}
-	snapshot := response.GetSnapshot()
-	availability := observation.GetAvailability()
-	if snapshot == nil || availability == nil ||
-		snapshot.GetAuditoriumId() != availability.GetAuditoriumId() ||
-		snapshot.GetLayoutHash() != availability.GetLayoutHash() {
-		return errors.New("central returned a mismatched live seat snapshot")
-	}
-	return nil
-}
-
-func liveSeatObservationCommandID(observation *seatmappb.LiveSeatObservation) (string, error) {
-	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(observation)
-	if err != nil {
-		return "", fmt.Errorf("marshal live seat observation identity: %w", err)
-	}
-	digest := sha256.Sum256(encoded)
-	return "client-live-seat-" + hex.EncodeToString(digest[:]), nil
+	return SubmitLiveSeatObservation(reportContext, worker.observations, observation)
 }
 
 // seatsFromLiveObservation keeps the provider layout and availability in one
