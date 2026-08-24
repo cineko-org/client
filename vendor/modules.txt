@@ -28,29 +28,22 @@ github.com/cenkalti/backoff/v5
 # github.com/cespare/xxhash/v2 v2.3.0
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
-# github.com/cineko-org/contracts/v3 v3.6.1
-## explicit; go 1.26
+# github.com/cineko-org/contracts/v3 v3.7.0
+## explicit; go 1.27
 github.com/cineko-org/contracts/v3/gen/go/cineko/catalog
 github.com/cineko-org/contracts/v3/gen/go/cineko/client
 github.com/cineko-org/contracts/v3/gen/go/cineko/collection
 github.com/cineko-org/contracts/v3/gen/go/cineko/common
-github.com/cineko-org/contracts/v3/gen/go/cineko/execution
 github.com/cineko-org/contracts/v3/gen/go/cineko/observation
-github.com/cineko-org/contracts/v3/gen/go/cineko/probe
 github.com/cineko-org/contracts/v3/gen/go/cineko/release
 github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap
-github.com/cineko-org/contracts/v3/gen/go/cineko/service
-# github.com/cineko-org/probe/v2 v2.7.0
-## explicit; go 1.26
-github.com/cineko-org/probe/v2/internal/bootstrap
+# github.com/cineko-org/probe/v2 v2.8.0
+## explicit; go 1.27
 github.com/cineko-org/probe/v2/internal/egress
 github.com/cineko-org/probe/v2/internal/provider/cgv
 github.com/cineko-org/probe/v2/internal/provider/cgv/browser
 github.com/cineko-org/probe/v2/internal/telemetry
 github.com/cineko-org/probe/v2/probe
-# github.com/danieljoos/wincred v1.2.3
-## explicit; go 1.18
-github.com/danieljoos/wincred
 # github.com/deckarep/golang-set/v2 v2.9.0
 ## explicit; go 1.18
 github.com/deckarep/golang-set/v2
@@ -160,8 +153,6 @@ github.com/samber/lo/internal/constraints
 github.com/samber/lo/internal/xrand
 github.com/samber/lo/internal/xtime
 github.com/samber/lo/mutable
-# github.com/stretchr/objx v0.5.3
-## explicit; go 1.20
 # github.com/tkrajina/go-reflector v0.5.8
 ## explicit; go 1.17
 github.com/tkrajina/go-reflector/reflector
@@ -227,11 +218,6 @@ github.com/wailsapp/wails/v2/pkg/options/linux
 github.com/wailsapp/wails/v2/pkg/options/mac
 github.com/wailsapp/wails/v2/pkg/options/windows
 github.com/wailsapp/wails/v2/pkg/runtime
-# github.com/zalando/go-keyring v0.2.8
-## explicit; go 1.18
-github.com/zalando/go-keyring
-github.com/zalando/go-keyring/internal/shellescape
-github.com/zalando/go-keyring/secret_service
 # go.mongodb.org/mongo-driver v1.17.9
 ## explicit; go 1.18
 go.mongodb.org/mongo-driver/bson
@@ -337,9 +323,6 @@ golang.org/x/net/internal/httpcommon
 golang.org/x/net/internal/httpsfv
 golang.org/x/net/internal/timeseries
 golang.org/x/net/trace
-# golang.org/x/sync v0.22.0
-## explicit; go 1.25.0
-golang.org/x/sync/errgroup
 # golang.org/x/sys v0.47.0
 ## explicit; go 1.25.0
 golang.org/x/sys/unix

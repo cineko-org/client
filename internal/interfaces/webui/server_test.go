@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +17,7 @@ import (
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
 	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -32,7 +32,7 @@ func TestListenLoopbackRejectsPublicBinding(t *testing.T) {
 	}
 }
 
-func TestClientAPIExcludesCentralOperations(t *testing.T) {
+func TestClientAPIExcludesAdministrativeOperations(t *testing.T) {
 	t.Parallel()
 	server := &Server{
 		repository: memoryrepo.New(),
@@ -47,7 +47,7 @@ func TestClientAPIExcludesCentralOperations(t *testing.T) {
 	}
 	for _, adminField := range []string{"openingInsights", "collections", "scheduleIntelligence"} {
 		if strings.Contains(stateResponse.Body.String(), `"`+adminField+`"`) {
-			t.Fatalf("Client state exposes Central field %q: %s", adminField, stateResponse.Body.String())
+			t.Fatalf("Client state exposes administrative field %q: %s", adminField, stateResponse.Body.String())
 		}
 	}
 	collectionRequest := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/collections", nil)
@@ -80,12 +80,7 @@ func TestAccountCheckUsesStableAccountSession(t *testing.T) {
 	}
 }
 
-type webCredentialVault struct {
-	mu          sync.Mutex
-	credentials domain.AccountCredentials
-}
-
-func TestRefreshBookingDemandSupportsNonMemberActiveMonitor(t *testing.T) {
+func TestRefreshBookingDemandRequiresAuthenticatedActiveMonitor(t *testing.T) {
 	ctx := t.Context()
 	store := memoryrepo.New()
 	demands := make(chan bool, 4)
@@ -105,124 +100,13 @@ func TestRefreshBookingDemandSupportsNonMemberActiveMonitor(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.refreshBookingDemand(ctx)
+	if active := <-demands; active {
+		t.Fatal("unauthenticated active monitor created warm booking demand")
+	}
+	server.account = accountStateMessage("authenticated", "", time.Now())
+	server.refreshBookingDemand(ctx)
 	if active := <-demands; !active {
-		t.Fatal("active monitor did not create warm demand for a nonmember")
-	}
-}
-
-func TestAccountCheckDoesNotStartStoredLogin(t *testing.T) {
-	t.Parallel()
-	savedLogin := make(chan domain.AccountCredentials, 1)
-	authenticated := false
-	server := &Server{
-		rootContext: t.Context(), clock: webTestClock{time.Date(2026, 8, 21, 7, 0, 0, 0, time.UTC)},
-		credentials: &webCredentialVault{credentials: domain.AccountCredentials{ID: "member", Password: "secret"}},
-		userID:      "user", tasks: make(map[string]*clientpb.WebUITaskState), taskCancels: make(map[string]context.CancelFunc),
-		factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
-			return &webProbeAutomation{probes: &atomic.Int32{}, authenticated: &authenticated, savedLogin: savedLogin}, nil
-		},
-	}
-
-	server.checkAuthentication()
-	select {
-	case <-savedLogin:
-		t.Fatal("account check started stored login without user action")
-	default:
-	}
-	if server.account.GetUnauthenticated() == nil {
-		t.Fatalf("account state = %+v", server.account)
-	}
-}
-
-func (vault *webCredentialVault) Load(context.Context, string) (domain.AccountCredentials, error) {
-	vault.mu.Lock()
-	defer vault.mu.Unlock()
-	if vault.credentials.ID == "" {
-		return domain.AccountCredentials{}, domain.ErrAccountCredentialsNotFound
-	}
-	return vault.credentials, nil
-}
-
-func (vault *webCredentialVault) Save(_ context.Context, _ string, credentials domain.AccountCredentials) error {
-	vault.mu.Lock()
-	defer vault.mu.Unlock()
-	vault.credentials = credentials
-	return nil
-}
-
-func (vault *webCredentialVault) Delete(context.Context, string) error {
-	vault.mu.Lock()
-	defer vault.mu.Unlock()
-	vault.credentials = domain.AccountCredentials{}
-	return nil
-}
-
-func TestSavedAccountCredentialsRestoreSessionWithoutReturningPassword(t *testing.T) {
-	t.Parallel()
-	vault := &webCredentialVault{}
-	savedLogin := make(chan domain.AccountCredentials, 1)
-	authenticated := false
-	server := &Server{
-		rootContext: t.Context(), clock: webTestClock{time.Date(2026, 8, 19, 7, 0, 0, 0, time.UTC)},
-		credentials: vault, userID: "user", tasks: make(map[string]*clientpb.WebUITaskState),
-		taskCancels: make(map[string]context.CancelFunc),
-		factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
-			return &webProbeAutomation{probes: &atomic.Int32{}, authenticated: &authenticated, savedLogin: savedLogin}, nil
-		},
-	}
-
-	request := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/account/credentials",
-		strings.NewReader(`{"id":"member","password":"top-secret"}`))
-	response := httptest.NewRecorder()
-	server.apiRoutes().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || strings.Contains(response.Body.String(), "top-secret") {
-		t.Fatalf("save credentials response = %d, %s", response.Code, response.Body.String())
-	}
-	select {
-	case credentials := <-savedLogin:
-		if credentials.ID != "member" || credentials.Password != "top-secret" {
-			t.Fatalf("saved login credentials = %+v", credentials)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("saved credentials did not start session restoration")
-	}
-
-	deadline := time.Now().Add(time.Second)
-	for {
-		server.accountMu.RLock()
-		state := server.account
-		server.accountMu.RUnlock()
-		if state.GetAuthenticated() != nil && state.GetCredentialsSaved() && state.GetAccountId() == "member" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("account state = %+v", state)
-		}
-		time.Sleep(time.Millisecond)
-	}
-
-	deleteRequest := httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/api/account/credentials", nil)
-	deleteResponse := httptest.NewRecorder()
-	server.apiRoutes().ServeHTTP(deleteResponse, deleteRequest)
-	if deleteResponse.Code != http.StatusOK {
-		t.Fatalf("delete credentials response = %d, %s", deleteResponse.Code, deleteResponse.Body.String())
-	}
-	if _, err := vault.Load(t.Context(), "user"); !errors.Is(err, domain.ErrAccountCredentialsNotFound) {
-		t.Fatalf("credentials remain after delete: %v", err)
-	}
-}
-
-func TestRestoreAuthenticationExplainsMissingSavedCredentials(t *testing.T) {
-	t.Parallel()
-	server := &Server{
-		rootContext: t.Context(), credentials: &webCredentialVault{}, userID: "user",
-		tasks: make(map[string]*clientpb.WebUITaskState), taskCancels: make(map[string]context.CancelFunc),
-	}
-	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/auth/restore", nil)
-	response := httptest.NewRecorder()
-	server.apiRoutes().ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "saved CGV credentials were not found") {
-		t.Fatalf("restore without saved credentials = %d, %s", response.Code, response.Body.String())
+		t.Fatal("authenticated active monitor did not create warm booking demand")
 	}
 }
 
@@ -327,7 +211,7 @@ func TestSeatMapWatchForwardsGeneratedStream(t *testing.T) {
 func TestSeatMapWatchReturnsErrorBeforeStartingStream(t *testing.T) {
 	t.Parallel()
 	server := &Server{repository: &webSeatMapStreamRepository{
-		Repository: memoryrepo.New(), err: errors.New("central unavailable"),
+		Repository: memoryrepo.New(), err: errors.New("local repository unavailable"),
 	}}
 	request := httptest.NewRequestWithContext(
 		t.Context(), http.MethodGet, "/api/catalog/seat-map:watch?auditoriumId=auditorium", nil,
@@ -335,7 +219,7 @@ func TestSeatMapWatchReturnsErrorBeforeStartingStream(t *testing.T) {
 	response := httptest.NewRecorder()
 	server.apiRoutes().ServeHTTP(response, request)
 	if response.Code != http.StatusInternalServerError || response.Header().Get("Content-Type") != "application/json; charset=utf-8" ||
-		strings.Contains(response.Body.String(), "central unavailable") {
+		strings.Contains(response.Body.String(), "local repository unavailable") {
 		t.Fatalf("seat-map stream error = %d, %q, %s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
 	}
 }
@@ -388,7 +272,6 @@ func (publisher *webEventPublisher) Publish(_ context.Context, event *clientpb.A
 type webProbeAutomation struct {
 	probes        *atomic.Int32
 	authenticated *bool
-	savedLogin    chan domain.AccountCredentials
 }
 
 func (*webProbeAutomation) CaptureSchedules(context.Context, domain.Theater, []string) ([]domain.ScheduleCapture, error) {
@@ -396,7 +279,7 @@ func (*webProbeAutomation) CaptureSchedules(context.Context, domain.Theater, []s
 }
 func (*webProbeAutomation) OpenSeatSelection(
 	context.Context,
-	*catalogpb.Showtime,
+	*observationpb.SeatAvailabilityTask,
 	int,
 ) (*seatmappb.LiveSeatObservation, error) {
 	return nil, nil
@@ -409,16 +292,6 @@ func (*webProbeAutomation) PrepareCancellation(context.Context, *clientpb.Reserv
 }
 func (*webProbeAutomation) CommitCancellation(context.Context) error { return nil }
 func (*webProbeAutomation) AuthenticateManuallyUntil(context.Context, time.Duration) error {
-	return nil
-}
-func (automation *webProbeAutomation) AuthenticateSavedUntil(
-	_ context.Context,
-	credentials domain.AccountCredentials,
-	_ time.Duration,
-) error {
-	if automation.savedLogin != nil {
-		automation.savedLogin <- credentials
-	}
 	return nil
 }
 func (automation *webProbeAutomation) IsAuthenticated(context.Context) (bool, error) {
@@ -521,7 +394,6 @@ func TestCreateMonitorIsIdempotent(t *testing.T) {
 
 func monitorMutationJSON(t *testing.T, commandID, userID, presetID, movieID, movieTitle string) string {
 	t.Helper()
-	year, month, day := int32(2026), int32(8), int32(20)
 	command := commandID
 	revision := int64(0)
 	user := userID
@@ -532,7 +404,7 @@ func monitorMutationJSON(t *testing.T, commandID, userID, presetID, movieID, mov
 		Mutation: commonpb.MutationIdentity_builder{CommandId: &command, ExpectedRevision: &revision}.Build(),
 		Monitor: clientpb.Monitor_builder{
 			UserId: &user, PresetId: &preset, MovieId: &movie, MovieTitle: &title,
-			TargetDates: []*commonpb.LocalDate{commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build()},
+			TargetWeekdays: []int32{int32(time.Thursday)},
 			State: clientpb.MonitorState_builder{
 				Pending: clientpb.MonitorPending_builder{}.Build(),
 			}.Build(),
@@ -642,7 +514,7 @@ func TestEmbeddedUIContainsMantineApplication(t *testing.T) {
 		}
 	}
 	script, _ := assets.ReadFile("assets/app.js")
-	for _, contract := range []string{"SaveNetworkSettings", "좌석 프리셋", "Pretendard Variable"} {
+	for _, contract := range []string{"SaveNetworkSettings", "예매 찾기", "Pretendard Variable"} {
 		if !strings.Contains(string(script), contract) {
 			t.Fatalf("embedded app bundle is missing %s contract", contract)
 		}

@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf';
 import {
 	MutationIdentitySchema, PresetSchema, SeatPreferenceSchema, WebUIResourceMutationSchema,
-	type Preset, type Seat, type Theater, type WebUIResourceMutation,
+	type Preset, type Theater, type WebUIResourceMutation,
 } from '../../api/proto';
 
 export type SeatType = string;
@@ -53,61 +53,23 @@ export interface PresetForm {
 	revision: number;
 	id: string;
   name: string;
-  seatCount: number;
-  seatType: SeatType;
-  preferredRows: string;
 }
 
 export const initialPresetForm: PresetForm = {
-	id: '', revision: 0, name: '', seatCount: 1, seatType: 'standard', preferredRows: '',
+	id: '', revision: 0, name: '',
 };
-
-export function csv(value: string): string[] {
-  return value.split(',').map((item) => item.trim()).filter(Boolean);
-}
 
 export function formFromPreset(preset: Preset): PresetForm {
 	return {
 		id: preset.id,
 		revision: 0,
     name: preset.name,
-    seatCount: preset.seatCount,
-    seatType: preset.seatPreference?.preferredTypes[0] ?? 'standard',
-    preferredRows: preset.seatPreference?.preferredRows.join(', ') ?? '',
   };
 }
 
 export function presetSummary(preset: Preset): string {
   const candidates = preset.seatPreference?.explicitSeats.slice(0, 8).join(' · ') ?? '';
-  if (!candidates) {
-    return preset.seatCount === 1 ? '실시간 좌석에서 1석 자동 선택' : `실시간 좌석에서 ${preset.seatCount}석 연석 자동 선택`;
-  }
-  return `${preset.seatCount === 1 ? '선택 후보 중 1석' : `${preset.seatCount}석 연석 필수`} · ${candidates}`;
-}
-
-export function candidateSelectionError(
-  seats: Seat[], candidateLabels: string[], count: number,
-): string {
-  if (candidateLabels.length === 0) return '';
-  if (candidateLabels.length < count) return `후보 좌석을 ${count}석 이상 선택하세요.`;
-  if (count === 1) return '';
-  const candidates = new Set(candidateLabels);
-  const rows = new Map<string, Seat[]>();
-  for (const seat of seats) {
-    if (!candidates.has(seat.label)) continue;
-    rows.set(seat.row, [...(rows.get(seat.row) ?? []), seat]);
-  }
-  for (const row of rows.values()) {
-    row.sort((left, right) => left.number - right.number);
-    for (let start = 0; start + count <= row.length; start += 1) {
-      const group = row.slice(start, start + count);
-      const consecutive = group.slice(1).every((seat, index) => (
-        seat.number === group[index].number + 1 && !group[index].rightAisle && !seat.leftAisle
-      ));
-      if (consecutive) return '';
-    }
-  }
-  return `선택한 후보에 ${count}석 연석이 없습니다.`;
+  return candidates ? `선택 좌석 · ${candidates}` : '전체 좌석에서 자동 선택';
 }
 
 export function presetSaveRequest(
@@ -116,16 +78,16 @@ export function presetSaveRequest(
   theaterId: string,
   auditoriumId: string,
   pickedSeats: string[],
+  commandId = '',
 ): WebUIResourceMutation {
 	return create(WebUIResourceMutationSchema, {
-		mutation: create(MutationIdentitySchema, { expectedRevision: BigInt(form.revision) }),
+		mutation: create(MutationIdentitySchema, { commandId, expectedRevision: BigInt(form.revision) }),
 		resource: {
 			case: 'preset',
 			value: create(PresetSchema, {
-				id: form.id, userId, name: form.name.trim(), theaterId, auditoriumId, seatCount: form.seatCount,
+				id: form.id, userId, name: form.name.trim(), theaterId, auditoriumId,
 				seatPreference: create(SeatPreferenceSchema, {
-					explicitSeats: [...pickedSeats], preferredRows: csv(form.preferredRows), preferredTypes: [form.seatType],
-					together: true, avoidEdges: true,
+					explicitSeats: [...pickedSeats],
 				}),
 			}),
 		},

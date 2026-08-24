@@ -7,9 +7,9 @@ import (
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 )
 
-// These message builders are shared by the Central-claimed execution tests.
-// Central owns observation and retry lifecycle coverage; Client tests only
-// exercise the exact execution command path.
+// These message builders are shared by local execution tests. The focused
+// tests exercise the exact execution path while other tests cover observation
+// and retry lifecycles.
 func coverageTheater(value domain.Theater) *catalogpb.Theater {
 	id, providerID, region, name := value.ID, value.ProviderID, value.Region, value.Name
 	return catalogpb.Theater_builder{

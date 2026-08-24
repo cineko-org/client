@@ -76,7 +76,7 @@ func (service *CancellationService) commit(
 	reservation *clientpb.Reservation,
 	draft *clientpb.WebUICancellationResult,
 ) error {
-	// PrepareCancellation can take long enough for another Client or Central
+	// PrepareCancellation can take long enough for another local task
 	// worker to advance the reservation. Refresh immediately before the first
 	// CAS and use the revision returned by that read.
 	current, refreshedRevision, err := service.currentReservation(ctx, reservation.GetId(), reservation.GetUserId())

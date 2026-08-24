@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,12 +10,12 @@ import (
 	"github.com/cineko-org/client/internal/domain"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
-	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestMonitorServiceDefaultsRollingWeekdayHorizon(t *testing.T) {
+func TestMonitorServiceKeepsIndefiniteWeekdayRule(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
@@ -28,21 +27,33 @@ func TestMonitorServiceDefaultsRollingWeekdayHorizon(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 	job := resource.GetMonitor()
-	if job.GetSearchHorizonDays() != defaultSearchHorizonDays {
-		t.Fatalf("SearchHorizonDays = %d, want %d", job.GetSearchHorizonDays(), defaultSearchHorizonDays)
+	if len(job.GetTargetWeekdays()) != 1 || job.GetTargetWeekdays()[0] != int32(time.Saturday) {
+		t.Fatalf("TargetWeekdays = %v, want Saturday", job.GetTargetWeekdays())
 	}
 }
 
-func TestMonitorServiceRejectsExpiredExactDates(t *testing.T) {
+func TestMonitorServiceTurnsMonitoringOffAndBackOn(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	repository := &workerRepository{preset: presetFixtureForTest("preset-1", "user-1", "theater-1", "auditorium-1", []string{"A1"})}
+	now := time.Date(2026, time.August, 23, 12, 0, 0, 0, time.UTC)
+	repository := &workerRepository{job: monitorFixtureForTest("오디세이", []string{"2026-08-24"})}
 	service := NewMonitorService(repository, repository, &sequenceIDs{}, fixedClock{now: now})
 
-	_, err := service.Create(context.Background(), monitorMutationForTest(0, "", "", "user-1", "preset-1", "movie_1", "오디세이", []string{"2026-08-08"}, nil, 0, "", ""))
-	if !errors.Is(err, ErrMonitorExpired) {
-		t.Fatalf("Create() error = %v, want %v", err, ErrMonitorExpired)
+	stoppedResource, err := service.SetEnabled(context.Background(), "user", "monitor", false)
+	if err != nil {
+		t.Fatalf("SetEnabled(false) error = %v", err)
+	}
+	stopped := stoppedResource.GetMonitor().GetState().GetStopped()
+	if stopped == nil || stopped.GetReason() != "user_disabled" {
+		t.Fatalf("SetEnabled(false) state = %v, want stopped(user_disabled)", stoppedResource.GetMonitor().GetState())
+	}
+
+	resumedResource, err := service.SetEnabled(context.Background(), "user", "monitor", true)
+	if err != nil {
+		t.Fatalf("SetEnabled(true) error = %v", err)
+	}
+	if resumedResource.GetMonitor().GetState().GetPending() == nil {
+		t.Fatalf("SetEnabled(true) state = %v, want pending", resumedResource.GetMonitor().GetState())
 	}
 }
 
@@ -138,7 +149,7 @@ type workerGateway struct {
 
 func (gateway *workerGateway) OpenSeatSelection(
 	context.Context,
-	*catalogpb.Showtime,
+	*observationpb.SeatAvailabilityTask,
 	int,
 ) (*seatmappb.LiveSeatObservation, error) {
 	snapshot := gatewaySeatSnapshot()
@@ -178,21 +189,21 @@ type noWaiter struct{}
 func (noWaiter) Wait(context.Context, time.Duration) error { return nil }
 
 type liveObservationRepositoryFake struct {
-	requests            []*servicepb.SubmitLiveSeatObservationRequest
+	requests            []*seatmappb.LiveSeatObservation
 	err                 error
 	snapshot            *seatmappb.Snapshot
-	response            *servicepb.SubmitLiveSeatObservationResponse
-	onSubmit            func(*servicepb.SubmitLiveSeatObservationRequest)
+	response            *seatmappb.Snapshot
+	onSubmit            func(*seatmappb.LiveSeatObservation)
 	waitForCancellation bool
 }
 
 func (repository *liveObservationRepositoryFake) SubmitLiveSeatObservation(
 	ctx context.Context,
-	request *servicepb.SubmitLiveSeatObservationRequest,
-) (*servicepb.SubmitLiveSeatObservationResponse, error) {
-	repository.requests = append(repository.requests, request)
+	observation *seatmappb.LiveSeatObservation,
+) (*seatmappb.Snapshot, error) {
+	repository.requests = append(repository.requests, observation)
 	if repository.onSubmit != nil {
-		repository.onSubmit(request)
+		repository.onSubmit(observation)
 	}
 	if repository.waitForCancellation {
 		<-ctx.Done()
@@ -206,9 +217,9 @@ func (repository *liveObservationRepositoryFake) SubmitLiveSeatObservation(
 	}
 	snapshot := repository.snapshot
 	if snapshot == nil {
-		snapshot = request.GetObservation().GetLayout()
+		snapshot = observation.GetLayout()
 	}
-	return servicepb.SubmitLiveSeatObservationResponse_builder{Snapshot: snapshot}.Build(), nil
+	return snapshot, nil
 }
 
 func gatewaySeatSnapshot() *seatmappb.Snapshot {

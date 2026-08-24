@@ -1,12 +1,15 @@
 package webui
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"buf.build/go/protovalidate"
+	clientlogging "github.com/cineko-org/client/internal/logging"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -18,15 +21,43 @@ const maxRequestBody = 1 << 20
 
 func decodeProtoJSON(server *Server, writer http.ResponseWriter, request *http.Request, output proto.Message) bool {
 	payload, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, maxRequestBody))
-	if err != nil || (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, output) != nil {
+	if err != nil {
+		logRequestContractError(request, "http.server.request.read_failed", payload, err)
+		server.writeAPIError(writer, request, http.StatusBadRequest, "invalid_json", "request body is invalid", false)
+		return false
+	}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, output); err != nil {
+		logRequestContractError(request, "http.server.request.decode_failed", payload, err)
 		server.writeAPIError(writer, request, http.StatusBadRequest, "invalid_json", "request body is invalid", false)
 		return false
 	}
 	if err := protovalidate.Validate(output); err != nil {
+		logRequestContractError(request, "http.server.request.validation_failed", payload, err)
 		server.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", "request body violates the contract", false)
 		return false
 	}
 	return true
+}
+
+func logRequestContractError(request *http.Request, event string, payload []byte, err error) {
+	requestID := ""
+	method := ""
+	route := ""
+	ctx := context.Background()
+	if request != nil {
+		ctx = request.Context()
+		requestID = clientlogging.RequestID(ctx)
+		method = request.Method
+		route = request.URL.Path
+	}
+	clientlogging.Error(ctx, event,
+		"request_id", requestID,
+		"method", method,
+		"route", route,
+		"path", route,
+		"request_body", string(payload),
+		"error", fmt.Sprintf("%+v", err),
+	)
 }
 
 func writeProtoJSON(writer http.ResponseWriter, status int, message proto.Message) {
@@ -82,12 +113,10 @@ func taskStateMessage(id, status, message string, updatedAt time.Time) *clientpb
 	return value.Build()
 }
 
-func accountStateMessage(status string, credentialsSaved bool, accountID, message string, checkedAt time.Time) *clientpb.WebUIAccountState {
+func accountStateMessage(status string, message string, checkedAt time.Time) *clientpb.WebUIAccountState {
 	value := clientpb.WebUIAccountState_builder{
-		CredentialsSaved: &credentialsSaved,
-		AccountId:        &accountID,
-		Message:          &message,
-		CheckedAt:        timestamp(checkedAt),
+		Message:   &message,
+		CheckedAt: timestamp(checkedAt),
 	}
 	switch status {
 	case "authenticated":

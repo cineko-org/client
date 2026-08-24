@@ -6,12 +6,9 @@ import { HookSettingsView } from '../../features/settings/ui/HookSettingsView';
 import type { HookTargetForm } from '../../features/settings/hookModel';
 import type { WebUIAccountState } from '../../api/proto';
 
-interface SettingsPageProps extends ProxySettingsViewProps {
+export interface SettingsPageProps extends ProxySettingsViewProps {
   account: WebUIAccountState;
   onAuthenticate: () => void;
-  onSaveAccountCredentials: (id: string, password: string) => void;
-  onRestoreAuthentication: () => void;
-  onDeleteAccountCredentials: () => void;
   hookAvailable: boolean;
   hookForms: HookTargetForm[];
   hookLoadState: ProxySettingsViewProps['loadState'];
@@ -24,16 +21,13 @@ interface SettingsPageProps extends ProxySettingsViewProps {
 }
 
 export function SettingsPage({
-  account, onAuthenticate, onSaveAccountCredentials, onRestoreAuthentication,
-  onDeleteAccountCredentials, hookAvailable, hookForms, hookLoadState, hookSaving,
+  account, onAuthenticate, hookAvailable, hookForms, hookLoadState, hookSaving,
   onHookAdd, onHookReload, onHookChange, onHookRemove, onHookSave, ...proxy
 }: SettingsPageProps) {
   return (
     <Stack gap="xl">
-      <PageHeader title="설정" description="계정, 네트워크, 외부 알림을 관리합니다." />
-      <AccountSettingsView account={account} onAuthenticate={onAuthenticate}
-        onSave={onSaveAccountCredentials} onRestore={onRestoreAuthentication}
-        onDelete={onDeleteAccountCredentials} />
+      <PageHeader title="설정" description="CGV 로그인, 네트워크, 외부 알림을 관리합니다." />
+      <AccountSettingsView account={account} onAuthenticate={onAuthenticate} />
       <Divider />
       <ProxySettingsView {...proxy} />
       <Divider />

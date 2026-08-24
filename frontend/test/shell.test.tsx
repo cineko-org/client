@@ -48,7 +48,8 @@ describe('application shell', () => {
 		expect(screen.getByRole('navigation')).not.toBeNull();
 		expect(container.querySelector('footer')?.classList.contains('mantine-hidden-from-sm')).toBe(true);
 		expect(screen.getAllByRole('button', { name: '홈' })).toHaveLength(2);
-		expect(screen.getAllByRole('button', { name: '예매 모니터' })).toHaveLength(2);
-		expect(screen.getAllByRole('button', { name: '프리셋' })).toHaveLength(2);
+		expect(screen.getAllByRole('button', { name: '예매 찾기' })).toHaveLength(2);
+		expect(screen.getAllByRole('button', { name: '좌석 프리셋' })).toHaveLength(2);
+		expect(screen.getAllByRole('button', { name: '관제' })).toHaveLength(2);
 	});
 });

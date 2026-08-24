@@ -9,8 +9,6 @@ fi
 readonly version="${1#v}"
 readonly published_at="$2"
 readonly assets_dir="$3"
-: "${CINEKO_CENTRAL_URL:?required}"
-: "${CINEKO_RELEASE_PUBLISH_TOKEN:?required}"
 : "${CINEKO_PLAYWRIGHT_RELEASE_BASE:?required}"
 readonly public_base="${CINEKO_PLAYWRIGHT_RELEASE_BASE%/}"
 
@@ -51,7 +49,13 @@ append_release() {
   local release_path="$temporary_root/${platform}-${architecture}.json"
   "$release_contract" release playwright "$version" "$platform/$architecture" "$artifact_path" "$executable" \
     "${public_base}/${filename}" "$published_at" >"$release_path"
-  release_paths+=("$release_path")
+	if [[ -n "${CINEKO_RELEASE_METADATA_DIR:-}" ]]; then
+		mkdir -p "$CINEKO_RELEASE_METADATA_DIR"
+		local published_path="${CINEKO_RELEASE_METADATA_DIR%/}/playwright-release-${platform}-${architecture}.json"
+		cp "$release_path" "$published_path"
+		release_path="$published_path"
+	fi
+	release_paths+=("$release_path")
 }
 
 append_release darwin arm64 tar.gz node
@@ -60,6 +64,10 @@ append_release linux amd64 tar.gz node
 
 readonly payload="$temporary_root/playwright-release-set.json"
 "$release_contract" set playwright "${release_paths[@]}" >"$payload"
-"$release_contract" publish playwright "$CINEKO_CENTRAL_URL" "$payload"
+if [[ -n "${CINEKO_RELEASE_PAYLOAD_OUT:-}" ]]; then
+  cp "$payload" "$CINEKO_RELEASE_PAYLOAD_OUT"
+else
+  cat "$payload"
+fi
 
-printf 'registered Playwright %s for all supported platforms\n' "$version"
+printf 'generated Playwright %s release metadata for all supported platforms\n' "$version" >&2

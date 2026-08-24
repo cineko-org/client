@@ -14,11 +14,11 @@ export interface HookTargetForm {
 
 export const hookEventGroups = [
   {
-    label: '예매 모니터',
+    label: '예매 찾기',
     events: [
       { kind: 'monitor.completed', label: '원하는 예매 조건을 찾았을 때' },
-      { kind: 'monitor.failed', label: '예매 모니터에 문제가 생겼을 때' },
-      { kind: 'monitor.stopped', label: '예매 모니터가 중지됐을 때' },
+      { kind: 'monitor.failed', label: '예매 찾기에 문제가 생겼을 때' },
+      { kind: 'monitor.stopped', label: '예매 찾기가 중지됐을 때' },
     ],
   },
   {

@@ -117,8 +117,6 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      CINEKO_CENTRAL_URL: ${{ secrets.CINEKO_CENTRAL_URL }}
-      CINEKO_RELEASE_PUBLISH_TOKEN: ${{ secrets.CINEKO_RELEASE_PUBLISH_TOKEN }}
       BROWSER_TAG: ${{ needs.generate.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
@@ -150,5 +148,3 @@ jobs:
               --notes "Official Chrome for Testing runtime metadata used by Cineko Client." \
               --latest=false
           fi
-      - name: Register the stable browser set
-        run: scripts/register-browser-release.sh release-assets/browser-release-set.json

@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf';
 import {
 	AuditoriumIdentitySchema, AuditoriumSchema, CatalogIndexSchema, CgvAuditoriumIdentitySchema,
-	CgvMovieIdentitySchema, CgvTheaterIdentitySchema, LocalDateSchema, LocalTimeSchema, MonitorFailedSchema,
+	CgvMovieIdentitySchema, CgvTheaterIdentitySchema, LocalTimeSchema, MonitorFailedSchema,
 	MonitorPendingSchema, MonitorRunningSchema, MonitorSchema, MonitorStateSchema,
 	MonitorTriggeredSchema, MovieIdentitySchema, MovieSchema, PresetSchema, ProviderSchema,
 	ReservationSchema, SeatPreferenceSchema, TheaterSchema, WebUIAccountAuthenticatedSchema,
@@ -16,7 +16,6 @@ export const noop = () => undefined;
 
 export const authenticatedAccount: WebUIAccountState = create(WebUIAccountStateSchema, {
 	state: { case: 'authenticated', value: create(WebUIAccountAuthenticatedSchema) },
-	accountId: 'cineko-user', credentialsSaved: true,
 });
 export const unauthenticatedAccount: WebUIAccountState = create(WebUIAccountStateSchema, {
 	state: { case: 'unauthenticated', value: {} },
@@ -30,11 +29,6 @@ export const directNetwork: NetworkSettings = create(NetworkSettingsSchema, {
 export const proxyNetwork: NetworkSettings = create(NetworkSettingsSchema, {
 	mode: { case: 'proxy', value: create(ProxyNetworkSchema, { urls: ['socks5://127.0.0.1:1080'] }) },
 });
-
-function localDate(value: string) {
-	const [year, month, day] = value.split('-').map(Number);
-	return create(LocalDateSchema, { year, month, day });
-}
 
 function localTime(value: string | undefined) {
 	if (!value) return undefined;
@@ -56,19 +50,17 @@ const auditoriumIdentity = (siteNo: string, screenNo: string) => create(Auditori
 
 export const presets: Preset[] = [
 	create(PresetSchema, {
-		id: 'preset-imax', userId: 'user', name: '용산 IMAX 중앙 2석', theaterId: 'cgv-yongsan',
-		auditoriumId: imaxSeatMapFixture.seatMap.auditoriumId, seatCount: 2,
+		id: 'preset-imax', userId: 'user', name: '용산 IMAX 중앙 좌석', theaterId: 'cgv-yongsan',
+		auditoriumId: imaxSeatMapFixture.seatMap.auditoriumId,
 		seatPreference: create(SeatPreferenceSchema, {
-			explicitSeats: imaxSeatMapFixture.pickedSeats, preferredRows: ['H', 'I'], preferredZones: [],
-			preferredTypes: ['standard'], together: true, avoidEdges: true,
+			explicitSeats: imaxSeatMapFixture.pickedSeats,
 		}),
 	}),
 	create(PresetSchema, {
 		id: 'preset-fourdx', userId: 'user', name: '여의도 4DX', theaterId: 'cgv-yeouido',
-		auditoriumId: fourDxSeatMapFixture.seatMap.auditoriumId, seatCount: 1,
+		auditoriumId: fourDxSeatMapFixture.seatMap.auditoriumId,
 		seatPreference: create(SeatPreferenceSchema, {
-			explicitSeats: fourDxSeatMapFixture.pickedSeats, preferredRows: ['F'], preferredZones: [],
-			preferredTypes: ['motion'], together: true, avoidEdges: true,
+			explicitSeats: fourDxSeatMapFixture.pickedSeats,
 		}),
 	}),
 ];
@@ -96,7 +88,8 @@ function fixtureMonitor(input: {
 }) {
 	return create(MonitorSchema, {
 		id: input.id, userId: 'user', presetId: 'preset-imax', movieId: input.movieId, movieTitle: input.movieTitle,
-		targetDates: [localDate(input.date)], targetWeekdays: [], searchHorizonDays: 14,
+		seatCount: 2, seatType: 'standard',
+		targetWeekdays: [new Date(`${input.date}T00:00:00+09:00`).getDay()],
 		earliestTime: localTime(input.earliestTime), latestTime: localTime(input.latestTime),
 		state: monitorState(input.status, input.reason),
 	});

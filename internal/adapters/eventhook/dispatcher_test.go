@@ -82,7 +82,7 @@ func TestDispatcherDeliversSignedFilteredWebhook(t *testing.T) {
 		mac := hmac.New(sha256.New, []byte("secret"))
 		_, _ = mac.Write(payload)
 		want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-		if request.Header.Get("X-Cineko-Event") != event.GetKind() || request.Header.Get("X-Cineko-Delivery") != event.GetId() || request.Header.Get("X-Cineko-Signature-256") != want {
+		if request.Header.Get("X-Cineko-Event") != event.GetKind() || request.Header.Get("X-Cineko-Delivery") != event.GetId() || request.Header.Get("X-Cineko-Signature-256") != want || request.Header.Get("X-Request-Id") == "" {
 			t.Fatalf("headers = %+v", request.Header)
 		}
 	case <-time.After(time.Second):

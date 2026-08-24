@@ -23,6 +23,7 @@ done
 
 grep -Fq 'scripts/sign-notarize-macos-client.sh' "$workflow" || fail 'release workflow does not invoke the signer'
 grep -Fq 'NOTARY_TIMEOUT: 10m' "$workflow" || fail 'notarization timeout is not 10 minutes'
+grep -Fq "Print :LSUIElement" "$signer" || fail 'signer does not enforce Launcher-owned Client packaging'
 jq -e '.draft == true and .["force-tag-creation"] == true' "$release_config" >/dev/null || \
   fail 'Release Please must create a tagged draft release'
 
@@ -60,8 +61,8 @@ final_zip_line="$(grep -n "ditto -c -k --sequesterRsrc --keepParent \"\$app_path
 draft_guard_line="$(grep -n 'Require an unpublished draft release' "$workflow" | head -n 1 | cut -d: -f1)"
 upload_line="$(grep -n 'Attach portable Clients' "$workflow" | head -n 1 | cut -d: -f1)"
 publish_line="$(grep -n 'Publish the complete Client release' "$workflow" | head -n 1 | cut -d: -f1)"
-register_line="$(grep -n 'Register the stable Client set' "$workflow" | head -n 1 | cut -d: -f1)"
-[[ -n "$draft_guard_line" && -n "$upload_line" && -n "$publish_line" && -n "$register_line" ]] || \
+channel_line="$(grep -n 'Publish the compatible Client runtime channel' "$workflow" | head -n 1 | cut -d: -f1)"
+[[ -n "$draft_guard_line" && -n "$upload_line" && -n "$publish_line" && -n "$channel_line" ]] || \
   fail 'draft publication order cannot be verified'
-((draft_guard_line < upload_line && upload_line < publish_line && publish_line < register_line)) || \
+((draft_guard_line < channel_line && channel_line < upload_line && upload_line < publish_line)) || \
   fail 'release must remain draft until all Client artifacts are attached'

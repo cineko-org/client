@@ -12,6 +12,7 @@ import (
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 )
 
@@ -24,10 +25,10 @@ type executionAutomation struct {
 
 func (automation *executionAutomation) OpenSeatSelection(
 	ctx context.Context,
-	showtime *catalogpb.Showtime,
+	task *observationpb.SeatAvailabilityTask,
 	_ int,
 ) (*seatmappb.LiveSeatObservation, error) {
-	automation.opened <- showtime
+	automation.opened <- task.GetShowtime()
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -96,7 +97,7 @@ func TestExecuteAvailabilityClosesBrowserWhenCentralFenceIsCancelled(t *testing.
 		AvailableSeats: 10, Capacity: 100,
 	}
 	go func() {
-		done <- server.ExecuteAvailability(executionContext, monitor.GetId(), showtimeProtoForTest(showtime))
+		done <- server.ExecuteAvailability(executionContext, monitor.GetId(), showtimeProtoForTest(showtime), true)
 	}()
 	var opened *catalogpb.Showtime
 	select {
@@ -171,7 +172,7 @@ func TestExecuteAvailabilityCancelsBrowserFactoryWhenFenceIsLost(t *testing.T) {
 			MovieID: "movie_1", Movie: "영화", TheaterID: theater.ID, AuditoriumID: auditorium.ID, AuditoriumName: auditorium.Name,
 			Date: "2026-08-20", StartsAt: "20:00", EndsAt: "22:00",
 			AvailableSeats: 10, Capacity: 100,
-		}))
+		}), true)
 	}()
 	select {
 	case <-factoryStarted:

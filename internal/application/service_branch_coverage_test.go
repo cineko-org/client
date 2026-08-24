@@ -12,8 +12,8 @@ import (
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
-	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -86,7 +86,7 @@ func TestPrepareSeatSelectionFailureBoundaries(t *testing.T) {
 	t.Run("observation failure follows payment preparation", func(t *testing.T) {
 		gateway := &paymentBoundaryGateway{workerGateway: &workerGateway{}}
 		observations := &liveObservationRepositoryFake{err: errInjected}
-		observations.onSubmit = func(*servicepb.SubmitLiveSeatObservationRequest) {
+		observations.onSubmit = func(*seatmappb.LiveSeatObservation) {
 			if !gateway.prepared {
 				t.Error("live observation was submitted before payment preparation")
 			}
@@ -159,7 +159,7 @@ func TestLiveSeatObservationFailureBoundaries(t *testing.T) {
 	}
 
 	worker = NewBookingWorker(BookingWorkerDependencies{Observations: &liveObservationRepositoryFake{
-		response: &servicepb.SubmitLiveSeatObservationResponse{},
+		response: &seatmappb.Snapshot{},
 	}})
 	if err := worker.submitLiveSeatObservation(t.Context(), observation); err == nil {
 		t.Fatal("submitLiveSeatObservation() accepted an invalid response")
@@ -458,7 +458,7 @@ type emptyCancellationGateway struct{}
 
 func (*emptyCancellationGateway) OpenSeatSelection(
 	context.Context,
-	*catalogpb.Showtime,
+	*observationpb.SeatAvailabilityTask,
 	int,
 ) (*seatmappb.LiveSeatObservation, error) {
 	return nil, nil

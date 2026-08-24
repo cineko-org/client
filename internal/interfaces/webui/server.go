@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/application"
-	"github.com/cineko-org/client/internal/domain"
+	"github.com/cineko-org/client/internal/logging"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
@@ -46,15 +46,8 @@ type seatMapResolver interface {
 type Automation interface {
 	application.BookingGateway
 	AuthenticateManuallyUntil(context.Context, time.Duration) error
-	AuthenticateSavedUntil(context.Context, domain.AccountCredentials, time.Duration) error
 	IsAuthenticated(context.Context) (bool, error)
 	Close()
-}
-
-type CredentialVault interface {
-	Load(context.Context, string) (domain.AccountCredentials, error)
-	Save(context.Context, string, domain.AccountCredentials) error
-	Delete(context.Context, string) error
 }
 
 type AutomationPurpose string
@@ -80,6 +73,22 @@ func (automation *lifetimeAutomation) Close() {
 	})
 }
 
+func (automation *lifetimeAutomation) RetainPayment() error {
+	retention, ok := automation.Automation.(paymentRetention)
+	if !ok {
+		return nil
+	}
+	return retention.RetainPayment()
+}
+
+func (automation *lifetimeAutomation) PaymentFailure() <-chan struct{} {
+	notifier, ok := automation.Automation.(paymentFailureNotifier)
+	if !ok {
+		return nil
+	}
+	return notifier.PaymentFailure()
+}
+
 type Dependencies struct {
 	Repository          Repository
 	Factory             AutomationFactory
@@ -88,11 +97,11 @@ type Dependencies struct {
 	Waiter              application.Waiter
 	Events              application.EventPublisher
 	AccountStateChanged func(bool)
-	Credentials         CredentialVault
 	UserID              string
-	// BookingDemandChanged tells the Client runtime whether active monitors
-	// need warm booking capacity. CGV member login is optional for the
-	// supported non-member booking path.
+	PosterCacheDir      string
+	LogPath             string
+	// BookingDemandChanged tells the Client runtime whether authenticated
+	// active monitors need warm booking capacity.
 	BookingDemandChanged func(bool)
 	// BookingCapacityAvailable reports whether a ready booking slot exists.
 	BookingCapacityAvailable func() bool
@@ -106,10 +115,11 @@ type Server struct {
 	waiter                   application.Waiter
 	eventPublisher           application.EventPublisher
 	accountStateChanged      func(bool)
-	credentials              CredentialVault
 	userID                   string
 	bookingDemandChanged     func(bool)
 	bookingCapacityAvailable func() bool
+	posterCache              *posterCache
+	logPath                  string
 	executionReady           chan struct{}
 
 	rootContext     context.Context
@@ -128,16 +138,23 @@ func New(dependencies Dependencies) (*Server, error) {
 		dependencies.IDs == nil || dependencies.Clock == nil || dependencies.Waiter == nil {
 		return nil, errors.New("web UI dependencies are incomplete")
 	}
-	if dependencies.Credentials != nil && strings.TrimSpace(dependencies.UserID) == "" {
-		return nil, errors.New("credential vault requires a Cineko user")
+	var posters *posterCache
+	if source, ok := dependencies.Repository.(application.MoviePosterRepository); ok && strings.TrimSpace(dependencies.PosterCacheDir) != "" {
+		var err error
+		posters, err = newPosterCache(dependencies.PosterCacheDir, source)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Server{
 		repository: dependencies.Repository, factory: dependencies.Factory,
 		ids: dependencies.IDs, clock: dependencies.Clock, waiter: dependencies.Waiter,
 		eventPublisher: dependencies.Events, accountStateChanged: dependencies.AccountStateChanged,
-		credentials: dependencies.Credentials, userID: strings.TrimSpace(dependencies.UserID),
+		userID:                   strings.TrimSpace(dependencies.UserID),
 		bookingDemandChanged:     dependencies.BookingDemandChanged,
 		bookingCapacityAvailable: dependencies.BookingCapacityAvailable,
+		posterCache:              posters,
+		logPath:                  strings.TrimSpace(dependencies.LogPath),
 		executionReady:           make(chan struct{}, 1),
 		tasks:                    make(map[string]*clientpb.WebUITaskState), taskCancels: make(map[string]context.CancelFunc),
 		paymentSessions: make(map[string]*paymentSession),
@@ -190,7 +207,7 @@ func (server *Server) routes() http.Handler {
 	mux := server.apiRoutes()
 	assetFS, _ := fs.Sub(assets, "assets")
 	mux.Handle("GET /", http.FileServer(http.FS(assetFS)))
-	return server.secure(mux)
+	return logging.HTTPMiddleware(server.secure(mux))
 }
 
 func (server *Server) apiRoutes() *http.ServeMux {
@@ -198,14 +215,12 @@ func (server *Server) apiRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /api/state", server.state)
 	mux.HandleFunc("GET /api/status", server.status)
 	mux.HandleFunc("GET /api/account", server.accountStatus)
-	mux.HandleFunc("PUT /api/account/credentials", server.saveAccountCredentials)
-	mux.HandleFunc("DELETE /api/account/credentials", server.deleteAccountCredentials)
 	mux.HandleFunc("POST /api/auth/open", server.openAuthentication)
-	mux.HandleFunc("POST /api/auth/restore", server.restoreAuthentication)
 	mux.HandleFunc("POST /api/catalog/seat-map", server.resolveAuditoriumSeatMap)
 	mux.HandleFunc("GET /api/catalog/seat-map:watch", server.watchAuditoriumSeatMap)
 	mux.HandleFunc("GET /api/auditoriums", server.auditoriums)
 	mux.HandleFunc("GET /api/seat-map", server.seatMap)
+	mux.HandleFunc("GET /api/catalog/posters/{movieId}", server.moviePoster)
 	mux.HandleFunc("POST /api/presets", server.createPreset)
 	mux.HandleFunc("PUT /api/presets", server.updatePreset)
 	mux.HandleFunc("DELETE /api/presets", server.deletePreset)
@@ -213,11 +228,14 @@ func (server *Server) apiRoutes() *http.ServeMux {
 	mux.HandleFunc("PUT /api/monitors", server.updateMonitor)
 	mux.HandleFunc("DELETE /api/monitors", server.deleteMonitor)
 	mux.HandleFunc("POST /api/monitors/retry", server.retryMonitor)
+	mux.HandleFunc("POST /api/monitors/stop", server.stopMonitor)
 	mux.HandleFunc("POST /api/reservations/cancel", server.cancelReservation)
 	mux.HandleFunc("GET /api/events", server.events)
 	mux.HandleFunc("POST /api/events", server.createEvent)
 	mux.HandleFunc("POST /api/events/read", server.readEvents)
 	mux.HandleFunc("DELETE /api/events", server.clearEvents)
+	mux.HandleFunc("GET /api/logs", server.logs)
+	mux.HandleFunc("POST /api/logs/client", server.recordClientLog)
 
 	return mux
 }
@@ -258,7 +276,7 @@ func (server *Server) NotifyBookingCapacityChanged() {
 	server.signalExecutionAvailable()
 }
 
-// NotifyExecutionEvent wakes the execution worker after Central data changes.
+// NotifyExecutionEvent wakes local booking capacity listeners after data changes.
 func (server *Server) NotifyExecutionEvent() {
 	server.signalExecutionAvailable()
 }
@@ -268,8 +286,7 @@ func (server *Server) ExecutionAvailable() <-chan struct{} {
 	return server.executionReady
 }
 
-// CanAcceptExecution prevents Central claims while no ready browser slot is
-// available locally.
+// CanAcceptExecution prevents local monitor work while no browser slot is available.
 func (server *Server) CanAcceptExecution() bool {
 	if server.bookingCapacityAvailable != nil {
 		return server.bookingCapacityAvailable()
@@ -293,8 +310,11 @@ func (server *Server) refreshBookingDemand(ctx context.Context) {
 	if server.bookingDemandChanged == nil {
 		return
 	}
+	server.accountMu.RLock()
+	authenticated := server.account != nil && server.account.GetAuthenticated() != nil
+	server.accountMu.RUnlock()
 	active := false
-	if strings.TrimSpace(server.userID) != "" {
+	if authenticated && strings.TrimSpace(server.userID) != "" {
 		monitors, err := server.repository.ListMonitorsByUser(ctx, server.userID)
 		if err != nil {
 			server.recordMaintenanceFailure("booking-demand", err)
@@ -334,7 +354,7 @@ func (server *Server) HasActiveTasks() bool {
 // DesktopHandler serves only dynamic API requests inside the Wails asset
 // server. It does not open a TCP listener.
 func (server *Server) DesktopHandler() http.Handler {
-	return SecurityHeaders(server.apiRoutes())
+	return logging.HTTPMiddleware(SecurityHeaders(server.apiRoutes()))
 }
 
 func Assets() fs.FS {
@@ -491,7 +511,7 @@ func (server *Server) status(writer http.ResponseWriter, _ *http.Request) {
 func (server *Server) accountStatus(writer http.ResponseWriter, _ *http.Request) {
 	server.accountMu.Lock()
 	if server.account == nil {
-		server.account = accountStateMessage("checking", false, "", "", server.clock.Now())
+		server.account = accountStateMessage("checking", "", server.clock.Now())
 		go server.checkAuthentication()
 	}
 	value := server.account
@@ -512,18 +532,6 @@ func (server *Server) checkAuthentication() {
 }
 
 func (server *Server) setAccountState(authenticated bool, err error) {
-	credentialsSaved := false
-	accountID := ""
-	if server.credentials != nil {
-		credentials, credentialErr := server.credentials.Load(server.lifetimeContext(), server.userID)
-		switch {
-		case credentialErr == nil:
-			credentialsSaved = true
-			accountID = credentials.ID
-		case !errors.Is(credentialErr, domain.ErrAccountCredentialsNotFound) && err == nil:
-			err = credentialErr
-		}
-	}
 	message := ""
 	status := "unauthenticated"
 	switch {
@@ -534,113 +542,17 @@ func (server *Server) setAccountState(authenticated bool, err error) {
 		status = "authenticated"
 	}
 	server.accountMu.Lock()
-	server.account = accountStateMessage(status, credentialsSaved, accountID, message, server.clock.Now())
+	server.account = accountStateMessage(status, message, server.clock.Now())
 	server.accountMu.Unlock()
+	if err != nil {
+		logging.Error(server.lifetimeContext(), "account.state.changed", "state", status, "authenticated", false, "error", fmt.Sprintf("%+v", err))
+	} else {
+		logging.Info(server.lifetimeContext(), "account.state.changed", "state", status, "authenticated", authenticated)
+	}
 	if server.accountStateChanged != nil {
 		server.accountStateChanged(authenticated && err == nil)
 	}
 	server.refreshBookingDemand(server.lifetimeContext())
-}
-
-func (server *Server) saveAccountCredentials(writer http.ResponseWriter, request *http.Request) {
-	if server.credentials == nil {
-		server.writeAPIError(writer, request, http.StatusNotImplemented, "credentials_unavailable", "credential storage is unavailable", false)
-		return
-	}
-	input := &clientpb.AccountCredentials{}
-	if !decodeProtoJSON(server, writer, request, input) {
-		return
-	}
-	credentials := domain.AccountCredentials{ID: input.GetId(), Password: input.GetPassword()}
-	if err := server.credentials.Save(request.Context(), server.userID, credentials); err != nil {
-		server.writeError(writer, err)
-		return
-	}
-	server.accountMu.Lock()
-	server.account = accountStateMessage("checking", true, strings.TrimSpace(input.GetId()), "", server.clock.Now())
-	server.accountMu.Unlock()
-	server.startSavedAuthentication()
-	server.refreshBookingDemand(request.Context())
-	writeProtoJSON(writer, http.StatusAccepted, actionStatus(true))
-}
-
-func (server *Server) deleteAccountCredentials(writer http.ResponseWriter, request *http.Request) {
-	if server.credentials == nil {
-		server.writeAPIError(writer, request, http.StatusNotImplemented, "credentials_unavailable", "credential storage is unavailable", false)
-		return
-	}
-	if err := server.credentials.Delete(request.Context(), server.userID); err != nil {
-		server.writeError(writer, err)
-		return
-	}
-	server.accountMu.Lock()
-	server.account = accountStateMessage("unauthenticated", false, "", "", server.clock.Now())
-	server.accountMu.Unlock()
-	server.refreshBookingDemand(request.Context())
-	writeProtoJSON(writer, http.StatusOK, actionStatus(false))
-}
-
-func (server *Server) restoreAuthentication(writer http.ResponseWriter, _ *http.Request) {
-	if server.credentials == nil {
-		server.writeAPIError(writer, nil, http.StatusNotImplemented, "credentials_unavailable", "credential storage is unavailable", false)
-		return
-	}
-	credentials, err := server.credentials.Load(server.lifetimeContext(), server.userID)
-	if errors.Is(err, domain.ErrAccountCredentialsNotFound) {
-		server.writeAPIError(writer, nil, http.StatusNotFound, "credentials_not_found", "saved CGV credentials were not found", false)
-		return
-	}
-	if err != nil {
-		server.writeError(writer, err)
-		return
-	}
-	if !server.startCredentialAuthentication(credentials) {
-		server.writeAPIError(writer, nil, http.StatusConflict, "authentication_in_progress", "CGV 로그인 브라우저가 이미 열려 있습니다.", true)
-		return
-	}
-	writeProtoJSON(writer, http.StatusAccepted, actionStatus(true))
-}
-
-func (server *Server) startSavedAuthentication() {
-	if server.credentials == nil {
-		return
-	}
-	credentials, err := server.credentials.Load(server.lifetimeContext(), server.userID)
-	if err != nil {
-		if !errors.Is(err, domain.ErrAccountCredentialsNotFound) {
-			server.setAccountState(false, err)
-		}
-		return
-	}
-	server.startCredentialAuthentication(credentials)
-}
-
-func (server *Server) startCredentialAuthentication(credentials domain.AccountCredentials) bool {
-	if !server.beginTask("authentication") {
-		return false
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(server.lifetimeContext(), 6*time.Minute)
-		defer cancel()
-		var automation Automation
-		var err error
-		automation, err = server.factory(ctx, false, AutomationSession, "account")
-		if err == nil {
-			defer automation.Close()
-			authenticated, checkErr := automation.IsAuthenticated(ctx)
-			switch {
-			case checkErr != nil:
-				err = checkErr
-			case authenticated:
-				err = nil
-			default:
-				err = automation.AuthenticateSavedUntil(ctx, credentials, 5*time.Minute)
-			}
-		}
-		server.setAccountState(err == nil, err)
-		server.finishTask("authentication", err)
-	}()
-	return true
 }
 
 func (server *Server) lifetimeContext() context.Context {
@@ -674,8 +586,8 @@ func (server *Server) resolveAuditoriumSeatMap(writer http.ResponseWriter, reque
 	if !decodeProtoJSON(server, writer, request, input) {
 		return
 	}
-	resolver, supported := server.repository.(seatMapResolver)
-	if !supported {
+	resolver, supportsResolution := server.repository.(seatMapResolver)
+	if !supportsResolution {
 		server.writeAPIError(writer, request, http.StatusServiceUnavailable, "seat_map_unavailable", "seat-map resolution is unavailable", true)
 		return
 	}
@@ -763,13 +675,14 @@ func (server *Server) deletePreset(writer http.ResponseWriter, request *http.Req
 	writeProtoJSON(writer, http.StatusOK, actionStatus(false))
 }
 
-// ExecuteAvailability runs the exact showtime selected by Central after this
-// Client receives its execution lease. Schedule discovery is deliberately not
-// repeated here: a different result would violate the command being fenced.
+// ExecuteAvailability runs the exact showtime selected by the local monitor.
+// Schedule discovery is deliberately not repeated in the latency-critical
+// authenticated browser path.
 func (server *Server) ExecuteAvailability(
 	ctx context.Context,
 	monitorID string,
 	showtime *catalogpb.Showtime,
+	watchCancellations bool,
 ) error {
 	if server.hasPaymentSession(monitorID) {
 		return nil
@@ -778,7 +691,7 @@ func (server *Server) ExecuteAvailability(
 	if err != nil {
 		return err
 	}
-	if monitor := job.GetMonitor(); monitor == nil || monitor.GetState().GetTriggered() != nil || monitor.GetState().GetPaymentUnknown() != nil {
+	if monitorExecutionUnavailable(job.GetMonitor()) {
 		return nil
 	}
 	monitor, preset, theater, auditorium, err := server.claimedBooking(ctx, monitorID)
@@ -810,13 +723,15 @@ func (server *Server) ExecuteAvailability(
 			automation.Close()
 		}
 	}()
+	watchPolicy := claimedSeatWatchPolicy(watchCancellations)
 	worker := application.NewBookingWorker(application.BookingWorkerDependencies{
 		Monitors: server.repository, Reservations: server.repository,
 		Booking: automation, Observations: server.repository,
 		IDs: server.ids, Clock: server.clock,
-		Waiter: server.waiter,
+		Waiter:       server.waiter,
+		ClaimedWatch: watchPolicy,
 	})
-	reservation, err := worker.RunClaimedShowtime(ctx, monitor, preset, theater, auditorium, showtime)
+	reservation, err := worker.WatchClaimedShowtime(ctx, monitor, preset, theater, auditorium, showtime)
 	if !stopBrowserFenceWatch() || !stopAutomationFenceWatch() || ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -824,6 +739,24 @@ func (server *Server) ExecuteAvailability(
 		retained = server.retainPaymentSession(monitorID, reservation, automation)
 	}
 	return err
+}
+
+func monitorExecutionUnavailable(monitor *clientpb.Monitor) bool {
+	return monitor == nil || monitor.GetState().GetTriggered() != nil || monitor.GetState().GetPaymentUnknown() != nil
+}
+
+func claimedSeatWatchPolicy(watchCancellations bool) application.ClaimedSeatWatchPolicy {
+	if watchCancellations {
+		return application.ClaimedSeatWatchPolicy{
+			UntilShowtime: true,
+			MinInterval:   time.Second,
+			MaxInterval:   2 * time.Second,
+		}
+	}
+	return application.ClaimedSeatWatchPolicy{
+		Window: 3 * time.Second, RefreshLimit: 2,
+		MinInterval: 750 * time.Millisecond, MaxInterval: 1250 * time.Millisecond,
+	}
 }
 
 func (server *Server) claimedBooking(
@@ -922,6 +855,11 @@ func (server *Server) finishTask(id string, err error) {
 	server.tasks[id] = taskStateMessage(id, status, message, server.clock.Now())
 	delete(server.taskCancels, id)
 	server.tasksMu.Unlock()
+	if err != nil {
+		logging.Error(server.lifetimeContext(), "local.task.completed", "task_id", id, "status", status, "error", fmt.Sprintf("%+v", err))
+		return
+	}
+	logging.Info(server.lifetimeContext(), "local.task.completed", "task_id", id, "status", status)
 }
 
 func (server *Server) writeError(writer http.ResponseWriter, err error) {
@@ -931,8 +869,7 @@ func (server *Server) writeError(writer http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case errors.Is(err, application.ErrConflict):
 		status = http.StatusConflict
-	case errors.Is(err, application.ErrBookingNotOpen), errors.Is(err, application.ErrSeatUnavailable),
-		errors.Is(err, application.ErrMonitorExpired):
+	case errors.Is(err, application.ErrBookingNotOpen), errors.Is(err, application.ErrSeatUnavailable):
 		status = http.StatusUnprocessableEntity
 	}
 	server.writeAPIError(writer, nil, status, "request_failed", publicErrorMessage(err), status >= http.StatusInternalServerError)
@@ -951,8 +888,6 @@ func publicErrorMessage(err error) string {
 		return "아직 예매할 수 없는 회차입니다."
 	case errors.Is(err, application.ErrSeatUnavailable):
 		return "조건에 맞는 좌석을 찾지 못했습니다."
-	case errors.Is(err, application.ErrMonitorExpired):
-		return "관찰할 날짜가 지나 모니터가 종료되었습니다."
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "요청 시간이 초과되었습니다. 잠시 후 다시 시도하세요."
 	}
@@ -962,7 +897,7 @@ func publicErrorMessage(err error) string {
 		return "프록시 설정이나 연결 상태를 확인하세요."
 	case strings.Contains(message, "credential"), strings.Contains(message, "authenticate"), strings.Contains(message, "authentication"), strings.Contains(message, "login"):
 		return "CGV 로그인에 실패했습니다. 로그인 정보를 확인하고 다시 시도하세요."
-	case strings.Contains(message, "central"), strings.Contains(message, "connect"), strings.Contains(message, "dial"), strings.Contains(message, "network"):
+	case strings.Contains(message, "connect"), strings.Contains(message, "dial"), strings.Contains(message, "network"):
 		return "Cineko 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요."
 	default:
 		return "요청을 처리하지 못했습니다. 입력값을 확인하고 다시 시도하세요."

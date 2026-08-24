@@ -27,7 +27,7 @@ export const Actions: Story = {
 };
 
 export const StatusAndMetrics: Story = {
-  render: () => <Canvas><Stack gap="xl"><Group><StatusIndicator label="프록시" color="green" /><StatusIndicator label="CGV" color="gray" muted /><StatusIndicator label="실행 중" color="blue" processing /></Group><Columns><Metric label="실행 중" value={2} detail="전체 모니터 4개" color="blue" processing /><Metric label="프리셋" value={5} detail="저장된 좌석 조건" color="violet" /><Metric label="예약" value={1} detail="완료된 예약" color="green" /></Columns></Stack></Canvas>,
+  render: () => <Canvas><Stack gap="xl"><Group><StatusIndicator label="프록시" color="green" /><StatusIndicator label="CGV" color="gray" muted /><StatusIndicator label="실행 중" color="blue" processing /></Group><Columns><Metric label="실행 중" value={2} detail="찾고 있는 예매 4개" color="blue" processing /><Metric label="좌석 프리셋" value={5} detail="상영관·후보 좌석" color="violet" /><Metric label="예약" value={1} detail="완료된 예약" color="green" /></Columns></Stack></Canvas>,
 };
 
 export const Fields: Story = {
@@ -51,15 +51,15 @@ export const Reservations: Story = {
 };
 
 export const OpeningSchedule: Story = {
-  render: () => <Canvas><Box maw={900}><ScheduleView form={{ ...initialMonitorForm, dates: ['2026-08-20'], weekdays: ['5', '6'], earliestTime: '18:00', latestTime: '23:30' }} onChange={noop} /></Box></Canvas>,
+  render: () => <Canvas><Box maw={900}><ScheduleView form={{ ...initialMonitorForm, weekdays: ['5', '6'], earliestTime: '18:00', latestTime: '23:30' }} onChange={noop} /></Box></Canvas>,
 };
 
 export const EveningSchedule: Story = {
-  render: () => <Canvas><Box maw={900}><ScheduleView form={{ ...initialMonitorForm, dates: ['2026-08-20'], earliestTime: '19:00' }} onChange={noop} /></Box></Canvas>,
+  render: () => <Canvas><Box maw={900}><ScheduleView form={{ ...initialMonitorForm, weekdays: ['4'], earliestTime: '19:00' }} onChange={noop} /></Box></Canvas>,
 };
 
 export const AccountAndProxy: Story = {
-  render: () => <Canvas><Stack maw={760} gap="xl"><AccountSettingsView account={authenticatedAccount} onAuthenticate={noop} onSave={noop} onRestore={noop} onDelete={noop} /><Divider /><ProxySettingsView available settings={proxyNetwork} form={{ mode: 'proxy', proxyUrls: 'socks5://127.0.0.1:1080', proxyUsername: '', proxyPassword: '' }} loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} /></Stack></Canvas>,
+  render: () => <Canvas><Stack maw={760} gap="xl"><AccountSettingsView account={authenticatedAccount} onAuthenticate={noop} /><Divider /><ProxySettingsView available settings={proxyNetwork} form={{ mode: 'proxy', proxyUrls: 'socks5://127.0.0.1:1080', proxyUsername: '', proxyPassword: '' }} loadState="ready" saving={false} onChange={noop} onReload={noop} onSave={noop} /></Stack></Canvas>,
 };
 
 export const ExternalNotifications: Story = {

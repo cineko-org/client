@@ -4,247 +4,421 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"os"
 	"path/filepath"
-	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
 	"github.com/cineko-org/client/internal/interfaces/webui"
+	"github.com/cineko-org/client/internal/logging"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"github.com/cineko-org/probe/v2/probe"
 )
 
 const (
-	embeddedProbeStartupTimeout  = 30 * time.Second
-	embeddedProbeShutdownTimeout = 10 * time.Second
+	localCatalogInterval  = 6 * time.Hour
+	localScheduleInterval = time.Second
+	localScannerRetry     = 30 * time.Second
 )
 
-type embeddedProbeRuntime interface {
-	RunReady(context.Context, chan<- error) error
-	SetDraining(bool)
+type localScannerStore interface {
+	UserID() string
+	GetCatalog(context.Context) (*catalogpb.CatalogIndex, error)
+	PutCatalogSnapshot(context.Context, *catalogpb.CatalogSnapshot) error
+	PutScheduleCaptures(context.Context, *catalogpb.Theater, []*observationpb.Capture) error
+	CachedPosterMovieIDs() []string
+	ListMonitorsByUser(context.Context, string) ([]*clientpb.Resource, error)
+	GetPreset(context.Context, string) (*clientpb.Resource, error)
+	GetTheater(context.Context, string) (*catalogpb.Theater, error)
+	GetAuditorium(context.Context, string) (*catalogpb.Auditorium, error)
+	PutSeatMap(context.Context, *seatmappb.Snapshot) error
+	SeatMapRequests() <-chan string
+	ScheduleRequests() <-chan string
 }
 
-// embeddedProbe owns the background runtime and coordinates local booking
-// activity with Probe assignment availability.
+// embeddedProbe is an in-process anonymous scanner. It has no remote identity,
+// registration, assignment polling, lease, or result transport.
 type embeddedProbe struct {
-	runtime embeddedProbeRuntime
+	scanner         *probe.LocalScanner
+	store           localScannerStore
+	scheduleChanged chan<- struct{}
+
 	cancel  context.CancelFunc
-	stopped chan struct{}
+	done    chan struct{}
 	failure chan error
 
-	activityMu    sync.Mutex
-	activeBooking int
-	closing       bool
-	runtimeErr    error
-	shutdownOnce  sync.Once
-	shutdownDone  chan struct{}
-	shutdownErr   error
-}
-
-type probeDrainingAutomation struct {
-	webui.Automation
-	releaseOnce sync.Once
-	release     func()
-}
-
-func (automation *probeDrainingAutomation) RetainPayment() error {
-	retainer, ok := automation.Automation.(interface{ RetainPayment() error })
-	if !ok {
-		return nil
-	}
-	return retainer.RetainPayment()
-}
-
-func (automation *probeDrainingAutomation) PaymentFailure() <-chan struct{} {
-	notifier, ok := automation.Automation.(interface{ PaymentFailure() <-chan struct{} })
-	if !ok {
-		return nil
-	}
-	return notifier.PaymentFailure()
-}
-
-func (automation *probeDrainingAutomation) Close() {
-	automation.releaseOnce.Do(func() {
-		defer automation.release()
-		automation.Automation.Close()
-	})
-}
-
-type clientProbeCredentialSource struct {
-	store        *centralstore.Store
-	registration *probepb.RegisterRequest
-	deviceID     string
-}
-
-func (source *clientProbeCredentialSource) Credential(ctx context.Context) (string, error) {
-	installationID := source.registration.GetInstallationId()
-	maxConcurrency := source.registration.GetMaxConcurrency()
-	request := clientpb.ProbeBootstrapTicketRequest_builder{
-		InstallationId: &installationID,
-		DeviceId:       &source.deviceID,
-		Capabilities:   source.registration.GetCapabilities(),
-		MaxConcurrency: &maxConcurrency,
-		Runtime:        source.registration.GetRuntime(),
-	}.Build()
-	response, err := source.store.IssueProbeBootstrapTicket(ctx, request)
-	if err != nil {
-		return "", fmt.Errorf("issue embedded Probe bootstrap ticket: %w", err)
-	}
-	if response.GetTicket() == "" || response.GetExpiresAt() == nil || !response.GetExpiresAt().AsTime().After(time.Now()) {
-		return "", errors.New("central returned an invalid embedded Probe bootstrap ticket")
-	}
-	return response.GetTicket(), nil
+	activityMu   sync.Mutex
+	closing      bool
+	scanCancel   context.CancelFunc
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 func startEmbeddedProbe(
 	parent context.Context,
-	store *centralstore.Store,
+	store localScannerStore,
 	dataDir string,
-	launchContext *clientpb.LaunchContext,
+	scheduleChanged chan<- struct{},
 ) (*embeddedProbe, error) {
-	if launchContext == nil || launchContext.GetInstallationId() == "" || launchContext.GetDeviceId() == "" ||
-		launchContext.GetClientVersion() == "" || launchContext.GetBrowserRevision() == "" {
-		return nil, errors.New("embedded Probe runtime identity is incomplete")
+	if parent == nil || store == nil {
+		return nil, errors.New("embedded scanner dependencies are incomplete")
 	}
-	installationID := launchContext.GetInstallationId()
-	deviceID := launchContext.GetDeviceId()
-	clientVersion := launchContext.GetClientVersion()
-	browserRevision := launchContext.GetBrowserRevision()
-	maxConcurrency := int32(1)
-	registration := probepb.RegisterRequest_builder{
-		InstallationId: &installationID,
-		Kind:           probepb.ProbeKind_builder{Client: probepb.ClientProbe_builder{}.Build()}.Build(),
-		Capabilities: []*observationpb.Capability{
-			observationpb.Capability_builder{CatalogCapture: observationpb.CatalogCapture_builder{}.Build()}.Build(),
-			observationpb.Capability_builder{ScheduleCapture: observationpb.ScheduleCapture_builder{}.Build()}.Build(),
-		},
-		MaxConcurrency: &maxConcurrency,
-		Runtime: commonpb.Runtime_builder{
-			ComponentVersion: &clientVersion, BrowserRevision: &browserRevision,
-			Platform:     func() *string { value := runtime.GOOS; return &value }(),
-			Architecture: func() *string { value := runtime.GOARCH; return &value }(),
-		}.Build(),
-	}.Build()
-	credentials, err := probe.NewClientCredentialSource(&clientProbeCredentialSource{
-		store: store, registration: registration, deviceID: deviceID,
-	}, probe.ClientCredentialConfig{
-		PublicKeyFiles: strings.TrimSpace(os.Getenv("CINEKO_PROBE_BOOTSTRAP_PUBLIC_KEYS")),
-		Issuer:         environmentValue("CINEKO_PROBE_BOOTSTRAP_ISSUER", "cineko-central"),
-		Audience:       environmentValue("CINEKO_PROBE_BOOTSTRAP_AUDIENCE", "cineko-probe"),
-		ClockSkew:      15 * time.Second,
-		Registration:   registration,
+	scanner, err := probe.NewLocalScanner(probe.LocalScannerConfig{
+		DataDir: filepath.Join(dataDir, "scanner"),
+		Logger:  logging.Logger(),
 	})
 	if err != nil {
 		return nil, err
-	}
-	probeRuntime, err := probe.NewBrowserRuntime(probe.BrowserRuntimeConfig{
-		CentralURL:   os.Getenv("CINEKO_CENTRAL_URL"),
-		DataDir:      filepath.Join(dataDir, "probe"),
-		HTTPClient:   &http.Client{Timeout: 20 * time.Second},
-		Credentials:  credentials,
-		Registration: registration,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return startEmbeddedProbeRuntime(parent, probeRuntime, embeddedProbeStartupTimeout)
-}
-
-func startEmbeddedProbeRuntime(
-	parent context.Context,
-	runtime embeddedProbeRuntime,
-	startupTimeout time.Duration,
-) (*embeddedProbe, error) {
-	if parent == nil || runtime == nil || startupTimeout <= 0 {
-		return nil, errors.New("embedded Probe startup dependencies are incomplete")
 	}
 	ctx, cancel := context.WithCancel(parent)
-	ready := make(chan error, 1)
-	done := make(chan error, 1)
-	go func() { done <- runtime.RunReady(ctx, ready) }()
-	timer := time.NewTimer(startupTimeout)
-	defer timer.Stop()
-	select {
-	case err := <-ready:
+	embedded := &embeddedProbe{
+		scanner: scanner, store: store, scheduleChanged: scheduleChanged, cancel: cancel,
+		done: make(chan struct{}), failure: make(chan error, 1),
+	}
+	go embedded.run(ctx)
+	return embedded, nil
+}
+
+func (embedded *embeddedProbe) run(ctx context.Context) {
+	defer close(embedded.done)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err := fmt.Errorf("embedded scanner panic: %v", recovered)
+			select {
+			case embedded.failure <- err:
+			default:
+			}
+		}
+	}()
+	catalogTimer := time.NewTimer(0)
+	defer catalogTimer.Stop()
+	scheduleTicker := time.NewTicker(localScheduleInterval)
+	defer scheduleTicker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-catalogTimer.C:
+			if err := embedded.captureCatalog(ctx); err != nil {
+				embedded.logFailure(ctx, "catalog", err)
+				resetTimer(catalogTimer, localScannerRetry)
+			} else {
+				resetTimer(catalogTimer, localCatalogInterval)
+				embedded.bootstrapYongsan(ctx)
+			}
+		case <-scheduleTicker.C:
+			embedded.captureActiveSchedules(ctx)
+		case theaterID := <-embedded.store.ScheduleRequests():
+			embedded.captureTheaterSchedules(ctx, theaterID)
+		case auditoriumID := <-embedded.store.SeatMapRequests():
+			embedded.captureSeatMap(ctx, auditoriumID)
+		}
+	}
+}
+
+func (embedded *embeddedProbe) captureCatalog(ctx context.Context) error {
+	return embedded.withScan(ctx, func(scanContext context.Context) error {
+		cachedPosterMovieIDs := embedded.store.CachedPosterMovieIDs()
+		snapshot, err := embedded.scanner.CaptureCatalog(scanContext, cachedPosterMovieIDs)
 		if err != nil {
-			cancel()
-			_ = waitEmbeddedProbe(done, embeddedProbeShutdownTimeout)
-			return nil, fmt.Errorf("start embedded Probe: %w", err)
+			return err
 		}
-		embedded := &embeddedProbe{
-			runtime: runtime, cancel: cancel, stopped: make(chan struct{}), failure: make(chan error, 1),
-			shutdownDone: make(chan struct{}),
+		if snapshot == nil || len(snapshot.GetMovies()) == 0 || len(snapshot.GetTheaters()) == 0 {
+			return errors.New("catalog capture did not contain movies and theaters")
 		}
-		go embedded.observeRuntime(done)
-		return embedded, nil
-	case err := <-done:
-		cancel()
-		if err == nil {
-			err = errors.New("embedded Probe stopped before readiness")
+		expectedPosters, observedPosters := catalogPosterCoverage(snapshot, cachedPosterMovieIDs)
+		if observedPosters < expectedPosters {
+			logging.WarnUnexpected(scanContext, "scanner.catalog.poster_coverage.unexpected", "poster_collection", "capture_catalog",
+				fmt.Sprintf("%d current movies cached or captured", expectedPosters),
+				fmt.Sprintf("%d current movie posters available", observedPosters),
+				"movie_count", len(snapshot.GetMovies()),
+				"captured_poster_count", len(snapshot.GetPosters()),
+				"missing_poster_count", expectedPosters-observedPosters,
+			)
 		}
-		return nil, fmt.Errorf("start embedded Probe: %w", err)
-	case <-timer.C:
-		cancel()
-		_ = waitEmbeddedProbe(done, embeddedProbeShutdownTimeout)
-		return nil, errors.New("embedded Probe startup timed out")
-	case <-parent.Done():
-		cancel()
-		_ = waitEmbeddedProbe(done, embeddedProbeShutdownTimeout)
-		return nil, parent.Err()
+		if err := embedded.store.PutCatalogSnapshot(scanContext, snapshot); err != nil {
+			return err
+		}
+		logging.Info(scanContext, "scanner.catalog.capture.completed",
+			"event", "scanner.catalog.capture.completed",
+			"scenario", "catalog_collection",
+			"operation", "capture_catalog",
+			"outcome", "succeeded",
+			"movie_count", len(snapshot.GetMovies()),
+			"theater_count", len(snapshot.GetTheaters()),
+			"captured_poster_count", len(snapshot.GetPosters()),
+		)
+		return nil
+	})
+}
+
+func catalogPosterCoverage(snapshot *catalogpb.CatalogSnapshot, cachedPosterMovieIDs []string) (int, int) {
+	if snapshot == nil {
+		return 0, 0
+	}
+	current := make(map[string]struct{}, len(snapshot.GetMovies()))
+	for _, movie := range snapshot.GetMovies() {
+		if movie != nil && strings.TrimSpace(movie.GetId()) != "" {
+			current[movie.GetId()] = struct{}{}
+		}
+	}
+	covered := make(map[string]struct{}, len(current))
+	for _, movieID := range cachedPosterMovieIDs {
+		if _, exists := current[movieID]; exists {
+			covered[movieID] = struct{}{}
+		}
+	}
+	for _, poster := range snapshot.GetPosters() {
+		if poster != nil {
+			if _, exists := current[poster.GetMovieId()]; exists {
+				covered[poster.GetMovieId()] = struct{}{}
+			}
+		}
+	}
+	return len(current), len(covered)
+}
+
+func (embedded *embeddedProbe) bootstrapYongsan(ctx context.Context) {
+	catalog, err := embedded.store.GetCatalog(ctx)
+	if err != nil {
+		embedded.logFailure(ctx, "bootstrap-yongsan-catalog", err)
+		return
+	}
+	for _, theater := range catalog.GetTheaters() {
+		if theater.GetRegion() == "서울" && theater.GetName() == "용산아이파크몰" {
+			embedded.captureTheaterSchedules(ctx, theater.GetId())
+			return
+		}
+	}
+	logging.WarnUnexpected(ctx, "scanner.bootstrap.yongsan_missing", "catalog_collection", "bootstrap_yongsan_schedule",
+		"서울 용산아이파크몰 theater in catalog", "theater not found")
+}
+
+func (embedded *embeddedProbe) captureActiveSchedules(ctx context.Context) {
+	monitors, err := embedded.store.ListMonitorsByUser(ctx, embedded.store.UserID())
+	if err != nil {
+		embedded.logFailure(ctx, "list-monitors", err)
+		return
+	}
+	targets := make(map[string]map[int32]struct{})
+	for _, resource := range monitors {
+		monitor := resource.GetMonitor()
+		if monitor == nil || monitor.GetState() == nil ||
+			(monitor.GetState().GetPending() == nil && monitor.GetState().GetRunning() == nil) {
+			continue
+		}
+		preset, err := embedded.store.GetPreset(ctx, monitor.GetPresetId())
+		if err != nil || preset.GetPreset() == nil {
+			if err == nil {
+				err = errors.New("monitor preset resource is empty")
+			}
+			logging.ErrorUnexpected(ctx, "scanner.monitor.preset.failed", "booking_monitoring", "resolve_monitor_preset",
+				"active monitor references an existing preset", "preset unavailable", err,
+				"monitor_id", monitor.GetId(), "preset_id", monitor.GetPresetId())
+			continue
+		}
+		theaterID := preset.GetPreset().GetTheaterId()
+		weekdays := targets[theaterID]
+		if weekdays == nil {
+			weekdays = make(map[int32]struct{}, 7)
+			targets[theaterID] = weekdays
+		}
+		addMonitorProviderWeekdays(weekdays, monitor.GetTargetWeekdays())
+	}
+	theaterIDs := make([]string, 0, len(targets))
+	for theaterID := range targets {
+		theaterIDs = append(theaterIDs, theaterID)
+	}
+	sort.Strings(theaterIDs)
+	for _, theaterID := range theaterIDs {
+		weekdays := make([]int32, 0, len(targets[theaterID]))
+		for weekday := range targets[theaterID] {
+			weekdays = append(weekdays, weekday)
+		}
+		sort.Slice(weekdays, func(i, j int) bool { return weekdays[i] < weekdays[j] })
+		embedded.captureTheaterScheduleWeekdays(ctx, theaterID, weekdays)
 	}
 }
 
-func (embedded *embeddedProbe) observeRuntime(done <-chan error) {
-	err := <-done
-	embedded.activityMu.Lock()
-	closing := embedded.closing
-	if err == nil && !closing {
-		err = errors.New("embedded Probe stopped unexpectedly")
+func addMonitorProviderWeekdays(result map[int32]struct{}, targetWeekdays []int32) {
+	if len(targetWeekdays) == 0 {
+		for weekday := int32(time.Sunday); weekday <= int32(time.Saturday); weekday++ {
+			result[weekday] = struct{}{}
+		}
+		return
 	}
-	embedded.runtimeErr = err
-	embedded.activityMu.Unlock()
-	if !closing && !errors.Is(err, context.Canceled) {
-		embedded.failure <- err
+	for _, weekday := range targetWeekdays {
+		result[weekday] = struct{}{}
+		// CGV represents after-midnight screenings as 24:xx or later on
+		// the preceding provider date, so scan both possible source days.
+		result[(weekday+6)%7] = struct{}{}
 	}
-	close(embedded.stopped)
 }
 
-func (embedded *embeddedProbe) Failure() <-chan error {
-	return embedded.failure
+func (embedded *embeddedProbe) captureTheaterSchedules(ctx context.Context, theaterID string) {
+	embedded.captureTheaterSchedulesFor(ctx, theaterID, nil)
 }
 
-// beginBooking prevents the embedded Probe from accepting new assignments
-// until every overlapping local booking browser has closed.
-func (embedded *embeddedProbe) beginBooking() (func(), error) {
+func (embedded *embeddedProbe) captureTheaterScheduleWeekdays(ctx context.Context, theaterID string, weekdays []int32) {
+	embedded.captureTheaterSchedulesFor(ctx, theaterID, weekdays)
+}
+
+func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, theaterID string, weekdays []int32) {
+	theater, err := embedded.store.GetTheater(ctx, theaterID)
+	if err != nil {
+		embedded.logFailure(ctx, "schedule-theater", err)
+		return
+	}
+	startedAt := time.Now()
+	err = embedded.withScan(ctx, func(scanContext context.Context) error {
+		var captures []*observationpb.Capture
+		var captureErr error
+		if len(weekdays) > 0 {
+			captures, captureErr = embedded.scanner.CaptureScheduleWeekdays(scanContext, theater, weekdays)
+		} else {
+			captures, captureErr = embedded.scanner.CaptureSchedules(scanContext, theater)
+		}
+		if captureErr != nil {
+			return captureErr
+		}
+		complete, showtimes, auditoriums := scheduleCaptureCounts(captures)
+		if complete != len(captures) {
+			logging.WarnUnexpected(scanContext, "scanner.schedule.partial", "schedule_collection", "capture_theater_schedule",
+				fmt.Sprintf("%d complete dates", len(captures)), fmt.Sprintf("%d complete dates", complete),
+				"theater_id", theater.GetId(), "capture_count", len(captures), "complete_count", complete)
+		}
+		if showtimes == 0 || auditoriums == 0 {
+			logging.WarnUnexpected(scanContext, "scanner.schedule.empty", "auditorium_collection", "capture_theater_schedule",
+				"at least one showtime and auditorium", fmt.Sprintf("%d showtimes and %d auditoriums", showtimes, auditoriums),
+				"theater_id", theater.GetId())
+		}
+		if err := embedded.store.PutScheduleCaptures(scanContext, theater, captures); err != nil {
+			return err
+		}
+		embedded.notifyScheduleChanged()
+		logging.Info(scanContext, "scanner.schedule.capture.completed",
+			"event", "scanner.schedule.capture.completed", "scenario", "schedule_collection",
+			"operation", "capture_theater_schedule", "outcome", "succeeded",
+			"theater_id", theater.GetId(), "capture_count", len(captures),
+			"complete_count", complete, "showtime_count", showtimes, "auditorium_count", auditoriums,
+			"target_weekdays", weekdays, "duration_ms", time.Since(startedAt).Milliseconds())
+		return nil
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		embedded.logFailure(ctx, "schedule", err)
+	}
+}
+
+func (embedded *embeddedProbe) notifyScheduleChanged() {
+	if embedded == nil {
+		return
+	}
+	select {
+	case embedded.scheduleChanged <- struct{}{}:
+	default:
+	}
+}
+
+func scheduleCaptureCounts(captures []*observationpb.Capture) (int, int, int) {
+	complete, showtimes := 0, 0
+	auditoriums := make(map[string]struct{})
+	for _, capture := range captures {
+		if capture == nil {
+			continue
+		}
+		if capture.GetComplete() {
+			complete++
+		}
+		for _, showtime := range capture.GetShowtimes() {
+			if showtime == nil {
+				continue
+			}
+			showtimes++
+			if auditorium := showtime.GetAuditorium(); auditorium != nil && strings.TrimSpace(auditorium.GetId()) != "" {
+				auditoriums[auditorium.GetId()] = struct{}{}
+			}
+		}
+	}
+	return complete, showtimes, len(auditoriums)
+}
+
+func (embedded *embeddedProbe) captureSeatMap(ctx context.Context, auditoriumID string) {
+	auditorium, err := embedded.store.GetAuditorium(ctx, auditoriumID)
+	if err != nil {
+		embedded.logFailure(ctx, "seat-map-auditorium", err)
+		return
+	}
+	theater, err := embedded.store.GetTheater(ctx, auditorium.GetTheaterId())
+	if err != nil {
+		embedded.logFailure(ctx, "seat-map-theater", err)
+		return
+	}
+	err = embedded.withScan(ctx, func(scanContext context.Context) error {
+		snapshot, captureErr := embedded.scanner.CaptureSeatMap(scanContext, theater, auditorium)
+		if captureErr != nil {
+			return captureErr
+		}
+		if snapshot == nil || snapshot.GetLayout() == nil || len(snapshot.GetLayout().GetSeats()) == 0 {
+			return errors.New("seat-map capture contained no seats")
+		}
+		if err := embedded.store.PutSeatMap(scanContext, snapshot); err != nil {
+			return err
+		}
+		logging.Info(scanContext, "scanner.seat_map.capture.completed",
+			"event", "scanner.seat_map.capture.completed", "scenario", "seat_map_collection",
+			"operation", "capture_seat_map", "outcome", "succeeded",
+			"auditorium_id", auditorium.GetId(), "seat_count", len(snapshot.GetLayout().GetSeats()))
+		return nil
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		embedded.logFailure(ctx, "seat-map", err)
+	}
+}
+
+func (embedded *embeddedProbe) withScan(ctx context.Context, scan func(context.Context) error) error {
 	embedded.activityMu.Lock()
 	if embedded.closing {
 		embedded.activityMu.Unlock()
-		return nil, errors.New("embedded Probe is shutting down")
+		return context.Canceled
 	}
-	embedded.activeBooking++
-	if embedded.activeBooking == 1 {
-		embedded.runtime.SetDraining(true)
-	}
+	scanContext, cancel := context.WithCancel(ctx)
+	embedded.scanCancel = cancel
 	embedded.activityMu.Unlock()
+	defer func() {
+		cancel()
+		embedded.activityMu.Lock()
+		embedded.scanCancel = nil
+		embedded.activityMu.Unlock()
+	}()
+	return scan(scanContext)
+}
 
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			embedded.activityMu.Lock()
-			embedded.activeBooking--
-			if embedded.activeBooking == 0 && !embedded.closing {
-				embedded.runtime.SetDraining(false)
-			}
-			embedded.activityMu.Unlock()
-		})
-	}, nil
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
+}
+
+func (embedded *embeddedProbe) logFailure(ctx context.Context, operation string, err error) {
+	scenario := "catalog_collection"
+	switch {
+	case strings.Contains(operation, "seat-map"):
+		scenario = "seat_map_collection"
+	case strings.Contains(operation, "schedule"):
+		scenario = "schedule_collection"
+	case strings.Contains(operation, "monitor"):
+		scenario = "booking_monitoring"
+	}
+	logging.ErrorUnexpected(ctx, "scanner.operation.failed", scenario, operation,
+		"scanner operation completes", "scanner operation failed", err)
 }
 
 func (embedded *embeddedProbe) OpenBooking(
@@ -253,65 +427,37 @@ func (embedded *embeddedProbe) OpenBooking(
 	if open == nil {
 		return nil, errors.New("booking browser opener is required")
 	}
-	release, err := embedded.beginBooking()
-	if err != nil {
-		return nil, err
-	}
-	automation, err := open()
-	if err != nil {
-		release()
-		return nil, err
-	}
 	embedded.activityMu.Lock()
 	closing := embedded.closing
 	embedded.activityMu.Unlock()
 	if closing {
-		automation.Close()
-		release()
-		return nil, errors.New("embedded Probe is shutting down")
+		return nil, errors.New("embedded scanner is shutting down")
 	}
-	return &probeDrainingAutomation{Automation: automation, release: release}, nil
+	return open()
 }
+
+func (embedded *embeddedProbe) Failure() <-chan error { return embedded.failure }
 
 func (embedded *embeddedProbe) Close() error {
 	embedded.shutdownOnce.Do(func() {
 		embedded.activityMu.Lock()
 		embedded.closing = true
-		embedded.runtime.SetDraining(true)
+		if embedded.scanCancel != nil {
+			embedded.scanCancel()
+		}
 		embedded.activityMu.Unlock()
 		embedded.cancel()
-		if err := waitEmbeddedProbeStop(embedded.stopped, embeddedProbeShutdownTimeout); err != nil {
-			embedded.shutdownErr = err
-		} else {
-			embedded.activityMu.Lock()
-			embedded.shutdownErr = embedded.runtimeErr
-			embedded.activityMu.Unlock()
+		select {
+		case <-embedded.done:
+		case <-time.After(10 * time.Second):
+			embedded.shutdownErr = errors.New("embedded scanner shutdown timed out")
 		}
-		if errors.Is(embedded.shutdownErr, context.Canceled) {
-			embedded.shutdownErr = nil
-		}
-		close(embedded.shutdownDone)
+		embedded.shutdownErr = errors.Join(embedded.shutdownErr, embedded.scanner.Close())
 	})
-	<-embedded.shutdownDone
 	return embedded.shutdownErr
 }
 
-func waitEmbeddedProbeStop(stopped <-chan struct{}, timeout time.Duration) error {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-stopped:
-		return nil
-	case <-timer.C:
-		return errors.New("embedded Probe shutdown timed out")
-	}
-}
-
-func superviseEmbeddedProbe(
-	ctx context.Context,
-	embedded *embeddedProbe,
-	onFailure func(error),
-) {
+func superviseEmbeddedProbe(ctx context.Context, embedded *embeddedProbe, onFailure func(error)) {
 	select {
 	case err := <-embedded.Failure():
 		if err != nil {
@@ -319,22 +465,4 @@ func superviseEmbeddedProbe(
 		}
 	case <-ctx.Done():
 	}
-}
-
-func waitEmbeddedProbe(done <-chan error, timeout time.Duration) error {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		return errors.New("embedded Probe shutdown timed out")
-	}
-}
-
-func environmentValue(name string, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-		return value
-	}
-	return fallback
 }

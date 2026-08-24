@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cineko-org/client/internal/logging"
 	"github.com/mxschmitt/playwright-go"
 )
 
@@ -80,6 +82,7 @@ func DefaultBrowserConfig() BrowserConfig {
 type Adapter struct {
 	ctx                context.Context
 	cancelContext      context.CancelFunc
+	owner              *Adapter
 	browserContext     playwright.BrowserContext
 	page               playwright.Page
 	identitySession    playwright.CDPSession
@@ -117,6 +120,8 @@ type Adapter struct {
 	seatResponses      chan seatNetworkResponse
 	scheduleResponseMu sync.Mutex
 	providerResponses  []capturedProviderResponse
+	networkStarts      sync.Map
+	networkCompleted   sync.Map
 	userAgent          browserUserAgent
 	userAgentMetadata  userAgentBootstrapIdentity
 	webGLIdentity      webGLIdentity
@@ -470,7 +475,8 @@ func (adapter *Adapter) installBrowserHooks(scripts []string) error {
 		return fmt.Errorf("install browser resource routing: %w", err)
 	}
 	adapter.browserContext.OnResponse(adapter.handleResponse)
-	adapter.page.OnResponse(adapter.captureProviderResponse)
+	adapter.browserContext.OnRequestFailed(adapter.handleRequestFailed)
+	adapter.installPageHooks()
 	adapter.browserContext.OnClose(func(playwright.BrowserContext) {
 		if adapter.closing.Load() {
 			return
@@ -479,17 +485,76 @@ func (adapter *Adapter) installBrowserHooks(scripts []string) error {
 			adapter.processCrashed <- errors.New("CGV browser context closed unexpectedly")
 		})
 	})
-	adapter.browserContext.OnPage(func(page playwright.Page) {
-		if page != adapter.page {
-			_ = page.Close()
-		}
-	})
 	for _, script := range scripts {
 		if _, err := adapter.page.Evaluate(script); err != nil {
 			return fmt.Errorf("initialize browser page: %w", err)
 		}
 	}
 	return nil
+}
+
+// OpenTab creates an independently synchronized booking tab in the same
+// persistent, authenticated browser context. Network routing and init scripts
+// remain context-wide while provider-response correlation stays page-local.
+func (adapter *Adapter) OpenTab(parent context.Context) (*Adapter, error) {
+	if adapter == nil || adapter.owner != nil || adapter.browserContext == nil || parent == nil {
+		return nil, errors.New("booking tab owner and context are required")
+	}
+	if adapter.closing.Load() {
+		return nil, errors.New("booking browser is closing")
+	}
+	ctx, cancel := context.WithCancel(parent)
+	page, err := adapter.browserContext.NewPage()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("create booking tab: %w", err)
+	}
+	identitySession, err := openBrowserIdentitySession(page, adapter.userAgent, adapter.userAgentMetadata)
+	if err != nil {
+		_ = page.Close()
+		cancel()
+		return nil, err
+	}
+	tab := &Adapter{
+		ctx: ctx, cancelContext: cancel, owner: adapter,
+		browserContext: adapter.browserContext, page: page, identitySession: identitySession,
+		artifactsDir: adapter.artifactsDir, seatResponses: make(chan seatNetworkResponse, 8),
+		userAgent: adapter.userAgent, userAgentMetadata: adapter.userAgentMetadata,
+		webGLIdentity: adapter.webGLIdentity, blockResources: adapter.blockResources,
+	}
+	tab.installPageHooks()
+	page.OnClose(func(playwright.Page) { cancel() })
+	go func() {
+		<-ctx.Done()
+		tab.Close()
+	}()
+	logging.Info(ctx, "cgv.booking.tab.opened",
+		"event", "cgv.booking.tab.opened", "scenario", "booking_monitoring",
+		"operation", "open_watcher_tab", "outcome", "succeeded",
+		"browser_page_count", len(adapter.browserContext.Pages()))
+	return tab, nil
+}
+
+func (adapter *Adapter) installPageHooks() {
+	if adapter == nil || adapter.page == nil {
+		return
+	}
+	adapter.page.OnResponse(adapter.captureProviderResponse)
+	adapter.page.OnResponse(adapter.handleSeatResponse)
+}
+
+func (adapter *Adapter) handleSeatResponse(response playwright.Response) {
+	if response == nil || !strings.Contains(response.URL(), seatDataPath) {
+		return
+	}
+	if response.Status() < 200 || response.Status() > 299 {
+		adapter.publishSeatResponse(seatNetworkResponse{err: providerHTTPError(response.Status())})
+		return
+	}
+	go func() {
+		body, err := response.Body()
+		adapter.publishSeatResponse(seatNetworkResponse{body: body, err: err})
+	}()
 }
 
 func readNativeBrowserLanguages(page playwright.Page) ([]string, error) {
@@ -652,33 +717,227 @@ func shouldBlockResource(requestURL, resourceType string) bool {
 
 func (adapter *Adapter) routeRequest(route playwright.Route) {
 	request := route.Request()
+	requestID := browserRequestID(request)
+	started := time.Now()
+	adapter.networkStarts.Store(requestID, started)
+	fields := browserRequestFields(request, requestID)
+	logging.Info(adapter.ctx, "http.client.request.attempted", fields...)
 	if adapter.blockResources && shouldBlockResource(request.URL(), request.ResourceType()) {
 		adapter.blockedRequests.Add(1)
-		_ = route.Abort("blockedbyclient")
+		err := route.Abort("blockedbyclient")
+		if err != nil {
+			fields = append(fields, "duration_ms", browserDurationMs(started), "status", 0, "error", fmt.Sprintf("%+v", err))
+		} else {
+			fields = append(fields, "duration_ms", browserDurationMs(started), "status", 0, "error", "blockedbyclient")
+		}
+		adapter.completeBrowserRequest(requestID, fields...)
 		return
 	}
 	adapter.continuedRequests.Add(1)
 	headers, err := request.AllHeaders()
 	if err != nil {
-		_ = route.Continue()
-		return
+		// A request header read can fail for a short-lived browser request.  We
+		// still propagate the correlation header through a fresh map so the
+		// response/failure callback can join the attempt event.
+		headers = make(map[string]string)
 	}
 	applyUserAgentHeaders(headers, adapter.userAgent, adapter.userAgentMetadata)
-	_ = route.Continue(playwright.RouteContinueOptions{Headers: headers})
+	headers[logging.RequestIDHeader] = requestID
+	if err := route.Continue(playwright.RouteContinueOptions{Headers: headers}); err != nil {
+		fields = append(fields, "duration_ms", browserDurationMs(started), "status", 0, "error", fmt.Sprintf("%+v", err))
+		adapter.completeBrowserRequest(requestID, fields...)
+		return
+	}
 }
 
 func (adapter *Adapter) handleResponse(response playwright.Response) {
-	if !strings.Contains(response.URL(), seatDataPath) {
+	request := response.Request()
+	requestID := browserRequestID(request)
+	fields := browserRequestFields(request, requestID)
+	fields = append(fields,
+		"status", response.Status(),
+		"duration_ms", browserResponseDurationMs(request),
+	)
+	if response.Status() >= http.StatusBadRequest {
+		fields = append(fields, "error", http.StatusText(response.Status()))
+	}
+	if request != nil {
+		if sizes, err := request.Sizes(); err == nil && sizes != nil {
+			fields = append(fields, "response_bytes", sizes.ResponseBodySize)
+		}
+	}
+	adapter.completeBrowserRequest(requestID, fields...)
+}
+
+func (adapter *Adapter) handleRequestFailed(request playwright.Request) {
+	requestID := browserRequestID(request)
+	err := request.Failure()
+	if err == nil {
+		err = errors.New("browser request failed")
+	}
+	// routeRequest already records client-side resource blocks synchronously;
+	// Playwright may also emit requestfailed for the same abort without the
+	// injected header, so avoid a second uncorrelated completion event.
+	if strings.EqualFold(strings.TrimSpace(err.Error()), "blockedbyclient") {
 		return
 	}
-	if response.Status() < 200 || response.Status() > 299 {
-		adapter.publishSeatResponse(seatNetworkResponse{err: providerHTTPError(response.Status())})
+	fields := browserRequestFields(request, requestID)
+	fields = append(fields,
+		"status", 0,
+		"duration_ms", browserResponseDurationMs(request),
+		"error", fmt.Sprintf("%+v", err),
+	)
+	adapter.completeBrowserRequest(requestID, fields...)
+}
+
+func browserRequestID(request playwright.Request) string {
+	if request != nil {
+		if requestID, err := request.HeaderValue(logging.RequestIDHeader); err == nil && strings.TrimSpace(requestID) != "" {
+			return strings.TrimSpace(requestID)
+		}
+	}
+	return logging.NewRequestID()
+}
+
+func browserRequestPath(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Path == "" {
+		return "/"
+	}
+	return parsed.Path
+}
+
+func browserRequestFields(request playwright.Request, requestID string) []any {
+	method, rawURL, resourceType := http.MethodGet, "", ""
+	if request != nil {
+		method = strings.TrimSpace(request.Method())
+		rawURL = request.URL()
+		resourceType = request.ResourceType()
+	}
+	if method == "" {
+		method = http.MethodGet
+	}
+	path := browserRequestPath(rawURL)
+	fields := []any{
+		"request_id", requestID,
+		"method", method,
+		"route", path,
+		"path", path,
+	}
+	if resourceType != "" {
+		fields = append(fields, "resource_type", resourceType)
+	}
+	if request != nil {
+		if body, err := request.PostDataBuffer(); err == nil && body != nil {
+			fields = append(fields, "request_bytes", len(body))
+		}
+	}
+	return fields
+}
+
+func browserDurationMs(started time.Time) float64 {
+	if started.IsZero() {
+		return 0
+	}
+	return float64(time.Since(started).Microseconds()) / 1000
+}
+
+func browserResponseDurationMs(request playwright.Request) float64 {
+	if request == nil {
+		return 0
+	}
+	if started, ok := requestTimingStart(request); ok {
+		return browserDurationMs(started)
+	}
+	timing := request.Timing()
+	if timing == nil {
+		return 0
+	}
+	for _, duration := range []float64{timing.ResponseEnd, timing.ResponseStart} {
+		if duration >= 0 {
+			return duration
+		}
+	}
+	return 0
+}
+
+func requestTimingStart(request playwright.Request) (time.Time, bool) {
+	// Playwright's Timing values are relative to a wall-clock Unix epoch.  A
+	// local start is more reliable for callbacks that arrive after the route
+	// command, so this helper is intentionally a no-op for now; routeRequest
+	// duration is retained in networkStarts and consumed by completion below.
+	return time.Time{}, false
+}
+
+func (adapter *Adapter) completeBrowserRequest(requestID string, fields ...any) {
+	if requestID == "" {
+		requestID = logging.NewRequestID()
+	}
+	if _, alreadyCompleted := adapter.networkCompleted.LoadOrStore(requestID, struct{}{}); alreadyCompleted {
 		return
 	}
-	go func() {
-		body, err := response.Body()
-		adapter.publishSeatResponse(seatNetworkResponse{body: body, err: err})
-	}()
+	time.AfterFunc(time.Minute, func() { adapter.networkCompleted.Delete(requestID) })
+	if started, ok := adapter.networkStarts.LoadAndDelete(requestID); ok {
+		if value, ok := started.(time.Time); ok {
+			fields = replaceBrowserDuration(fields, browserDurationMs(value))
+		}
+	}
+	if outcome := expectedBrowserRequestOutcome(fields); outcome != "" {
+		logging.Info(adapter.ctx, "http.client.request.completed", append(fields, "outcome", outcome)...)
+		return
+	}
+	if browserRequestFailed(fields) {
+		logging.Error(adapter.ctx, "http.client.request.completed", fields...)
+		return
+	}
+	logging.Info(adapter.ctx, "http.client.request.completed", fields...)
+}
+
+func expectedBrowserRequestOutcome(fields []any) string {
+	for index := 0; index+1 < len(fields); index += 2 {
+		if fields[index] != "error" {
+			continue
+		}
+		reason := strings.ToUpper(strings.TrimSpace(fmt.Sprint(fields[index+1])))
+		switch {
+		case strings.Contains(reason, "BLOCKEDBYCLIENT"), strings.Contains(reason, "ERR_BLOCKED_BY_CLIENT"):
+			return "blocked"
+		case strings.Contains(reason, "ERR_ABORTED"):
+			return "canceled"
+		}
+	}
+	return ""
+}
+
+func browserRequestFailed(fields []any) bool {
+	for index := 0; index+1 < len(fields); index += 2 {
+		switch fields[index] {
+		case "error":
+			return fmt.Sprint(fields[index+1]) != ""
+		case "status":
+			switch status := fields[index+1].(type) {
+			case int:
+				if status >= http.StatusBadRequest {
+					return true
+				}
+			case int32:
+				if status >= http.StatusBadRequest {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func replaceBrowserDuration(fields []any, duration float64) []any {
+	for index := 0; index+1 < len(fields); index += 2 {
+		if fields[index] == "duration_ms" {
+			fields[index+1] = duration
+			return fields
+		}
+	}
+	return append(fields, "duration_ms", duration)
 }
 
 func providerHTTPError(status int) error {
@@ -711,6 +970,31 @@ func (adapter *Adapter) Close() {
 func (adapter *Adapter) CloseWithError() error {
 	if adapter == nil {
 		return nil
+	}
+	if adapter.owner != nil {
+		adapter.closeOnce.Do(func() {
+			adapter.closing.Store(true)
+			if adapter.cancelContext != nil {
+				adapter.cancelContext()
+			}
+			var closeErr error
+			if adapter.identitySession != nil {
+				closeErr = errors.Join(closeErr, adapter.identitySession.Detach())
+			}
+			if adapter.page != nil {
+				closeErr = errors.Join(closeErr, adapter.page.Close())
+			}
+			adapter.lifecycleMu.Lock()
+			adapter.closeErr = closeErr
+			adapter.closed = true
+			adapter.lifecycleMu.Unlock()
+			logging.Info(context.Background(), "cgv.booking.tab.closed",
+				"event", "cgv.booking.tab.closed", "scenario", "booking_monitoring",
+				"operation", "close_watcher_tab", "outcome", "completed")
+		})
+		adapter.lifecycleMu.Lock()
+		defer adapter.lifecycleMu.Unlock()
+		return adapter.closeErr
 	}
 	adapter.closeOnce.Do(func() {
 		adapter.closing.Store(true)

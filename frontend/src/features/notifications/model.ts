@@ -35,7 +35,7 @@ export function monitorTransitionMessage(previousStatus: string | undefined, mon
 	const movie = monitorMovie(monitor) || '영화';
 	if (status === 'triggered') return `${movie} 예매 화면이 준비되었습니다. 결제를 확인하세요.`;
 	if (status === 'booked') return `${movie} 예매가 완료되었습니다.`;
-	if (status === 'stopped') return `${movie} 모니터가 중지되었습니다.`;
+	if (status === 'stopped') return `${movie} 예매 찾기가 중지되었습니다.`;
   return '';
 }
 

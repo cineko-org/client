@@ -11,6 +11,7 @@ import { useNetworkSettings } from '../features/settings/useNetworkSettings';
 import { useHookSettings } from '../features/settings/useHookSettings';
 import { MonitorEditorPage } from './pages/MonitorEditorPage';
 import { MonitorsPage } from './pages/MonitorsPage';
+import { OperationsPage } from './pages/OperationsPage';
 import { PresetEditorPage } from './pages/PresetEditorPage';
 import { PresetsPage } from './pages/PresetsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -49,6 +50,8 @@ export function AppRoutes({
   };
 
   switch (route.name) {
+	case 'operations':
+		return <OperationsPage />;
     case 'monitors':
       return (
         <MonitorsPage
@@ -57,6 +60,8 @@ export function AppRoutes({
             deleteId: monitors.deleteId,
             mutationId: monitors.mutationId,
             onRetry: monitors.retry,
+            onStop: monitors.stop,
+            onToggleCancellationWatch: monitors.toggleCancellationWatch,
             onDeleteRequest: monitors.setDeleteId,
             onDelete: monitors.remove,
             onOpen: (monitorId) => onNavigate({ name: 'monitor-detail', monitorId }),
@@ -103,6 +108,8 @@ export function AppRoutes({
           onBack={onMonitors}
           onEdit={() => editMonitor(monitorId)}
           onRetry={() => monitors.retry(monitorId)}
+          onStop={() => void monitors.stop(monitorId)}
+          onToggleCancellationWatch={() => void monitors.toggleCancellationWatch(monitorId)}
         />
       );
     }
@@ -150,9 +157,6 @@ export function AppRoutes({
           onReload={() => void network.load()}
           onSave={() => void network.save()}
           onAuthenticate={() => void application.openAuthentication()}
-          onSaveAccountCredentials={(id, password) => void application.saveAccountCredentials(id, password)}
-          onRestoreAuthentication={() => void application.restoreAuthentication()}
-          onDeleteAccountCredentials={() => void application.deleteAccountCredentials()}
           hookAvailable={hooks.available}
           hookForms={hooks.forms}
           hookLoadState={hooks.loadState}

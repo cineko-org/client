@@ -1,7 +1,7 @@
 import { create, toJson, type Message } from '@bufbuild/protobuf';
 import type { GenMessage } from '@bufbuild/protobuf/codegenv2';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopBridge } from '../src/api/desktop';
 import { encodeDesktopProto } from '../src/api/desktop';
 import {
@@ -9,7 +9,7 @@ import {
 	CgvAuditoriumIdentitySchema, CgvTheaterIdentitySchema, DirectNetworkSchema,
 	MonitorSchema, MonitorStateSchema, NetworkSettingsSchema, ResolutionSchema,
 	ResourceSchema, SettingsSchema, StateSchema as CollectionStateSchema, TheaterIdentitySchema, TheaterSchema, WebUIAccountStateSchema,
-	WatchSeatMapResponseSchema, WebUIActionStatusSchema, WebUIResourceListSchema, WebUIStateSchema, WebUITaskStatusResponseSchema,
+	WebUISeatMapResponseSchema, WebUIActionStatusSchema, WebUIResourceListSchema, WebUIStateSchema, WebUITaskStatusResponseSchema,
 } from '../src/api/proto';
 import type { WebUIState } from '../src/api/proto';
 import { emptyAppState } from '../src/features/application/model';
@@ -61,6 +61,10 @@ const readySeatMapResponse = (auditoriumId: string, label = 'A1') => ({
 	},
 });
 
+const queuedSeatMapResolution = () => create(ResolutionSchema, {
+	state: create(CollectionStateSchema, { state: { case: 'queued', value: {} } }),
+});
+
 function ForbiddenEventSource() { throw new Error('EventSource must not be used'); }
 
 describe('monitor editor controller', () => {
@@ -82,7 +86,7 @@ describe('monitor editor controller', () => {
 		));
 		act(() => result.current.setForm({
 			...result.current.form,
-			movieId: 'movie', movie: 'Movie', presetId: 'preset', dates: ['2026-08-20'],
+			movieId: 'movie', movie: 'Movie', presetId: 'preset', weekdays: ['4'],
 		}));
 
 		await act(async () => result.current.requestCreate());
@@ -100,7 +104,7 @@ describe('monitor editor controller', () => {
 
 describe('application connection controller', () => {
 	it('distinguishes unavailable from stale data and recovers on retry', async () => {
-		const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error('central unavailable'));
+		const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error('local service unavailable'));
 		vi.stubGlobal('fetch', fetchMock);
 		const notify = vi.fn<(message: string) => void>();
 		const loadNotices = vi.fn<(userId: string) => Promise<void>>().mockResolvedValue(undefined);
@@ -120,9 +124,9 @@ describe('application connection controller', () => {
 		await waitFor(() => expect(result.current.connection.status).toBe('ready'));
 		expect(result.current.connection.lastSuccessfulAt).toBeTruthy();
 
-		fetchMock.mockRejectedValueOnce(new Error('central timeout'));
+		fetchMock.mockRejectedValueOnce(new Error('local service timeout'));
 		await act(async () => {
-			await expect(result.current.reload()).rejects.toThrow('central timeout');
+			await expect(result.current.reload()).rejects.toThrow('local service timeout');
 		});
 		expect(result.current.connection.status).toBe('stale');
 		expect(result.current.state).toEqual(emptyAppState);
@@ -257,6 +261,12 @@ describe('preset catalog controller', () => {
 		}
 	}
 
+	beforeEach(() => {
+		vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockImplementation(
+			() => Promise.resolve(protoResponse(ResolutionSchema, queuedSeatMapResolution(), 202)),
+		));
+	});
+
 	it('aborts an older theater request before applying the newer selection', async () => {
 		let call = 0;
 		const fetchMock = vi.fn<typeof fetch>((_input, init) => {
@@ -310,16 +320,17 @@ describe('preset catalog controller', () => {
 		const { result } = renderHook(() => usePresetCatalog(state, notify));
 		let pending: Promise<void>;
 		act(() => { pending = result.current.setAuditorium('auditorium-1'); });
+		await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 		const source = FakeEventSource.instances[0];
-		expect(source.url).toBe('/api/catalog/seat-map:watch?auditoriumId=auditorium-1');
-		const resolution = create(ResolutionSchema, {
-			state: create(CollectionStateSchema, { state: { case: 'queued', value: {} } }),
-		});
+		expect(source.url).toMatch(/^\/api\/catalog\/seat-map:watch\?auditoriumId=auditorium-1&request_id=[^&]+$/);
+		expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/catalog/seat-map', expect.objectContaining({ method: 'POST' }));
+		const resolution = queuedSeatMapResolution();
 		act(() => source.emit('cineko.seat-map', JSON.stringify(toJson(
-			WatchSeatMapResponseSchema,
-			create(WatchSeatMapResponseSchema, { resolution }),
+			WebUISeatMapResponseSchema,
+			create(WebUISeatMapResponseSchema, { resolution }),
 		))));
 		await act(async () => pending!);
+		expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
 		expect(FakeEventSource.instances).toHaveLength(1);
 		expect(result.current.catalogMessage).toBe('좌석 배치 수집을 기다리고 있습니다.');
 		expect(result.current.seatMapLoadState).toBe('pending');
@@ -330,18 +341,22 @@ describe('preset catalog controller', () => {
 	it('renders a ready snapshot and rejects an idle state without one', async () => {
 		FakeEventSource.instances = [];
 		vi.stubGlobal('EventSource', FakeEventSource);
+		vi.stubGlobal('fetch', vi.fn<typeof fetch>()
+			.mockResolvedValueOnce(response(readySeatMapResponse('ready').resolution))
+			.mockResolvedValueOnce(protoResponse(ResolutionSchema, queuedSeatMapResolution(), 202)));
 		const { result } = renderHook(() => usePresetCatalog(create(WebUIStateSchema), vi.fn()));
 		let ready: Promise<void>;
 		act(() => { ready = result.current.setAuditorium('ready'); });
-		act(() => emitSeatMapResponse(FakeEventSource.instances[0], readySeatMapResponse('ready')));
 		await act(async () => ready!);
 		expect(result.current.seatMap?.layout?.seats[0].label).toBe('A1');
 		expect(result.current.catalogMessage).toBe('저장된 좌석 배치를 불러왔습니다.');
 		expect(result.current.seatMapLoadState).toBe('cached');
+		expect(FakeEventSource.instances).toHaveLength(0);
 
 		let invalid: Promise<void>;
 		act(() => { invalid = result.current.setAuditorium('invalid'); });
-		const invalidSource = FakeEventSource.instances[1];
+		await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+		const invalidSource = FakeEventSource.instances[0];
 		act(() => emitSeatMapResponse(invalidSource, { resolution: { state: { idle: {} } } }));
 		await act(async () => invalid!);
 		expect(invalidSource.closed).toBe(true);
@@ -351,13 +366,15 @@ describe('preset catalog controller', () => {
 		expect(result.current.loadingCatalog).toBe(false);
 	});
 
-	it('stops waiting when Central sends no initial seat-map state', async () => {
+	it('stops waiting when the local service sends no initial seat-map state', async () => {
 		vi.useFakeTimers();
 		FakeEventSource.instances = [];
 		vi.stubGlobal('EventSource', FakeEventSource);
 		const { result } = renderHook(() => usePresetCatalog(create(WebUIStateSchema), vi.fn()));
 		let pending: Promise<void>;
 		act(() => { pending = result.current.setAuditorium('silent'); });
+		await act(async () => vi.advanceTimersByTimeAsync(1));
+		expect(FakeEventSource.instances).toHaveLength(1);
 		expect(result.current.seatMapLoadState).toBe('loading');
 		await act(async () => vi.advanceTimersByTimeAsync(seatMapInitialEventTimeoutMs));
 		await act(async () => pending!);
@@ -373,6 +390,7 @@ describe('preset catalog controller', () => {
 		const { result } = renderHook(() => usePresetCatalog(create(WebUIStateSchema), vi.fn()));
 		let first: Promise<void>;
 		act(() => { first = result.current.setAuditorium('first'); });
+		await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 		const firstSource = FakeEventSource.instances[0];
 		act(() => emitSeatMapResponse(firstSource, {
 			resolution: { state: { queued: { queuedAt: '2026-08-23T00:00:00Z', trigger: { operatorRequest: {} } } } },
@@ -381,6 +399,7 @@ describe('preset catalog controller', () => {
 
 		let second: Promise<void>;
 		act(() => { second = result.current.setAuditorium('second'); });
+		await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
 		const secondSource = FakeEventSource.instances[1];
 		expect(firstSource.closed).toBe(true);
 		act(() => emitSeatMapResponse(firstSource, readySeatMapResponse('first', 'OLD')));
@@ -406,7 +425,7 @@ describe('preset catalog controller', () => {
 		const { result, unmount } = renderHook(() => usePresetCatalog(create(WebUIStateSchema), vi.fn()));
 		let pending: Promise<void>;
 		act(() => { pending = result.current.setAuditorium('desktop'); });
-		expect(bridge.WatchSeatMap).toHaveBeenCalledWith('desktop');
+		await waitFor(() => expect(bridge.WatchSeatMap).toHaveBeenCalledWith('desktop'));
 		act(() => listeners.get('cineko.seat-map')?.(JSON.stringify(readySeatMapResponse('desktop'))));
 		await act(async () => pending!);
 		expect(result.current.seatMap?.auditoriumId).toBe('desktop');

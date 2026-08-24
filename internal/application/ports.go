@@ -7,8 +7,8 @@ import (
 
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
-	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 )
 
 var (
@@ -16,7 +16,6 @@ var (
 	ErrConflict        = errors.New("conflict")
 	ErrBookingNotOpen  = errors.New("booking is not open")
 	ErrSeatUnavailable = errors.New("preferred seats are unavailable")
-	ErrMonitorExpired  = errors.New("all target dates have passed")
 )
 
 type Clock interface {
@@ -56,13 +55,24 @@ type CatalogRepository interface {
 	GetCatalog(context.Context) (*catalogpb.CatalogIndex, error)
 }
 
+type MoviePoster struct {
+	MovieID     string
+	MediaType   string
+	ContentHash string
+	Data        []byte
+}
+
+type MoviePosterRepository interface {
+	GetMoviePoster(context.Context, string) (*MoviePoster, error)
+}
+
 // LiveSeatObservationRepository persists the exact layout and availability
 // observed in the authenticated provider browser as one generated contract.
 type LiveSeatObservationRepository interface {
 	SubmitLiveSeatObservation(
 		context.Context,
-		*servicepb.SubmitLiveSeatObservationRequest,
-	) (*servicepb.SubmitLiveSeatObservationResponse, error)
+		*seatmappb.LiveSeatObservation,
+	) (*seatmappb.Snapshot, error)
 }
 
 type PresetRepository interface {
@@ -90,7 +100,7 @@ type ExternalOperationRepository interface {
 }
 
 type BookingGateway interface {
-	OpenSeatSelection(context.Context, *catalogpb.Showtime, int) (*seatmappb.LiveSeatObservation, error)
+	OpenSeatSelection(context.Context, *observationpb.SeatAvailabilityTask, int) (*seatmappb.LiveSeatObservation, error)
 	PreparePayment(context.Context, *catalogpb.Showtime, []string) (*clientpb.Reservation, error)
 	PrepareCancellation(context.Context, *clientpb.Reservation) (*clientpb.WebUICancellationResult, error)
 	CommitCancellation(context.Context) error
@@ -100,5 +110,5 @@ type BookingGateway interface {
 // repeating cinema, date, or showtime navigation. Booking gateways that do not
 // support this capability continue to use the single-attempt contract above.
 type LiveSeatSelectionRefresher interface {
-	RefreshSeatSelection(context.Context, *catalogpb.Showtime) (*seatmappb.LiveSeatObservation, error)
+	RefreshSeatSelection(context.Context, *observationpb.SeatAvailabilityTask) (*seatmappb.LiveSeatObservation, error)
 }

@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
-	centralstore "github.com/cineko-org/client/internal/adapters/storage/centralhttp"
+	localstore "github.com/cineko-org/client/internal/adapters/storage/local"
 	"github.com/cineko-org/client/internal/interfaces/webui"
+	"github.com/cineko-org/client/internal/logging"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -19,24 +22,18 @@ import (
 func runDesktopWindow(
 	app *DesktopApp,
 	server *webui.Server,
-	store *centralstore.Store,
+	store *localstore.Store,
 	embeddedProbe *embeddedProbe,
 	dataDir string,
 	startupReadyNonce string,
 ) error {
-	eventFailure := make(chan error, 1)
 	startupFailure := make(chan error, 1)
 	err := wails.Run(desktopWindowOptions(
-		app, server, store, embeddedProbe, dataDir, startupReadyNonce, eventFailure, startupFailure,
+		app, server, store, embeddedProbe, dataDir, startupReadyNonce, startupFailure,
 	))
 	select {
 	case startupErr := <-startupFailure:
 		err = errors.Join(err, fmt.Errorf("signal Launcher startup readiness: %w", startupErr))
-	default:
-	}
-	select {
-	case eventErr := <-eventFailure:
-		err = errors.Join(err, eventErr)
 	default:
 	}
 	return err
@@ -45,11 +42,10 @@ func runDesktopWindow(
 func desktopWindowOptions(
 	app *DesktopApp,
 	server *webui.Server,
-	store *centralstore.Store,
+	store *localstore.Store,
 	embeddedProbe *embeddedProbe,
 	dataDir string,
 	startupReadyNonce string,
-	eventFailure chan<- error,
 	startupFailure chan<- error,
 ) *options.App {
 	return &options.App{
@@ -57,10 +53,15 @@ func desktopWindowOptions(
 		BackgroundColour: options.NewRGB(10, 11, 14),
 		AssetServer: &assetserver.Options{
 			Assets: webui.Assets(), Handler: server.DesktopHandler(),
-			Middleware: webui.SecurityHeaders,
+			Middleware: assetserver.ChainMiddleware(logging.HTTPMiddleware, webui.SecurityHeaders),
 		},
 		OnStartup: func(ctx context.Context) {
-			startDesktopWindow(ctx, app, server, store, embeddedProbe, dataDir, startupReadyNonce, eventFailure, startupFailure)
+			if useLauncherOwnedActivationPolicy() {
+				logging.Info(ctx, "Client attached to Launcher application", "event", "client.application.attached", "outcome", "succeeded")
+			} else {
+				logging.Warn(ctx, "Client could not attach to Launcher application", "event", "client.application.attached", "outcome", "failed")
+			}
+			startDesktopWindow(ctx, app, server, store, embeddedProbe, dataDir, startupReadyNonce, startupFailure)
 		},
 		Bind: []interface{}{app},
 		SingleInstanceLock: &options.SingleInstanceLock{
@@ -70,6 +71,7 @@ func desktopWindowOptions(
 			Appearance: mac.NSAppearanceNameDarkAqua,
 			About:      &mac.AboutInfo{Title: "Cineko", Message: "CGV booking control room"},
 		},
+		Windows: &windows.Options{WebviewUserDataPath: filepath.Join(dataDir, "webview")},
 	}
 }
 
@@ -77,26 +79,16 @@ func startDesktopWindow(
 	ctx context.Context,
 	app *DesktopApp,
 	server *webui.Server,
-	store *centralstore.Store,
+	store *localstore.Store,
 	embeddedProbe *embeddedProbe,
 	dataDir string,
 	startupReadyNonce string,
-	eventFailure chan<- error,
 	startupFailure chan<- error,
 ) {
 	app.startup(ctx)
-	go superviseCentralEvents(ctx, store, func(eventErr error) {
-		server.RecordLocalSystemEvent(desktopErrorEvent(store.UserID(), "central.event_stream_failed",
-			"Cineko 변경 알림 연결이 중지되었습니다. 앱을 다시 시작하세요."))
-		select {
-		case eventFailure <- eventErr:
-		default:
-		}
-		wailsruntime.Quit(ctx)
-	})
 	go superviseEmbeddedProbe(ctx, embeddedProbe, func(_ error) {
 		server.RecordLocalSystemEvent(desktopErrorEvent(store.UserID(), "probe.runtime_failed",
-			"분산 좌석 탐색이 중지되었습니다. 앱을 다시 시작하세요."))
+			"일정 스캐너가 중지되었습니다. 앱을 다시 시작하세요."))
 		wailsruntime.Quit(ctx)
 	})
 	if readyErr := signalDesktopStartupReady(dataDir, startupReadyNonce); readyErr != nil {

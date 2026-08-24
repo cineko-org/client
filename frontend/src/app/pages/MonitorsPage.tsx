@@ -13,7 +13,7 @@ interface MonitorsPageProps {
 export function MonitorsPage({ monitors, reservations, onNew }: MonitorsPageProps) {
   return (
     <Stack gap="xl">
-      <PageHeader title="모니터" description="영화별 조건과 실행 상태를 관리합니다." actions={<PrimaryButton onClick={onNew}>새 모니터</PrimaryButton>} />
+      <PageHeader title="예매 찾기" description="원하는 영화·일정·좌석을 찾고 실행 상태를 관리합니다." actions={<PrimaryButton onClick={onNew}>예매 찾기 시작</PrimaryButton>} />
       <MonitorListView {...monitors} />
       <ReservationListView {...reservations} />
     </Stack>

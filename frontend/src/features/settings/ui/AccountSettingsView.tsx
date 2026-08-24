@@ -1,6 +1,5 @@
-import { Group, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
-import { useState } from 'react';
-import { DangerButton, PrimaryButton, SecondaryButton } from '../../../components/core/Actions';
+import { Group, Stack, Text } from '@mantine/core';
+import { SecondaryButton } from '../../../components/core/Actions';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
 import type { WebUIAccountState } from '../../../api/proto';
 import { accountAuthenticated } from '../../../api/resources';
@@ -8,50 +7,22 @@ import { accountAuthenticated } from '../../../api/resources';
 interface AccountSettingsViewProps {
 	account: WebUIAccountState;
   onAuthenticate: () => void;
-  onSave: (id: string, password: string) => void;
-  onRestore: () => void;
-  onDelete: () => void;
 }
 
-export function AccountSettingsView({
-  account, onAuthenticate, onSave, onRestore, onDelete,
-}: AccountSettingsViewProps) {
+export function AccountSettingsView({ account, onAuthenticate }: AccountSettingsViewProps) {
 	const authenticated = accountAuthenticated(account);
-	const [id, setId] = useState(account.accountId ?? '');
-  const [password, setPassword] = useState('');
 
   return (
     <Stack gap="md">
       <Group justify="space-between">
         <Stack gap={2}>
-		  <StatusIndicator label="CGV" color={authenticated ? 'green' : 'gray'} muted={!authenticated} />
+			<StatusIndicator label="CGV" color={authenticated ? 'green' : 'gray'} muted={!authenticated} />
           <Text size="xs" c="dimmed">
-			{account.credentialsSaved
-              ? '저장 정보로 입력을 도와드립니다. CAPTCHA와 로그인은 직접 완료해야 합니다.'
-              : '로그인하지 않아도 좌석 선택까지 진행할 수 있습니다.'}
+			좌석 선택과 예매를 시작하려면 브라우저에서 CGV 로그인을 직접 완료하세요.
           </Text>
         </Stack>
 		<SecondaryButton onClick={onAuthenticate}>{authenticated ? '브라우저에서 확인' : '직접 로그인'}</SecondaryButton>
       </Group>
-
-      {account.credentialsSaved ? (
-        <Group justify="space-between" align="flex-end" wrap="wrap">
-          <TextInput label="저장된 계정" value={account.accountId ?? ''} readOnly style={{ flex: 1 }} />
-          <Group gap="xs">
-            <SecondaryButton onClick={onRestore}>지금 다시 로그인</SecondaryButton>
-            <DangerButton onClick={onDelete}>저장 정보 삭제</DangerButton>
-          </Group>
-        </Group>
-      ) : (
-        <Group align="flex-end" wrap="wrap">
-          <TextInput label="CJ ONE 아이디" value={id} onChange={(event) => setId(event.currentTarget.value)} style={{ flex: 1 }} />
-          <PasswordInput label="비밀번호" value={password} onChange={(event) => setPassword(event.currentTarget.value)} style={{ flex: 1 }} />
-          <PrimaryButton disabled={!id.trim() || !password} onClick={() => {
-            onSave(id, password);
-            setPassword('');
-          }}>저장하고 로그인</PrimaryButton>
-        </Group>
-      )}
     </Stack>
   );
 }

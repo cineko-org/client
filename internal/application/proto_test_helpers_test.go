@@ -14,12 +14,9 @@ import (
 
 func presetFixtureForTest(id, userID, theaterID, auditoriumID string, explicitSeats []string) *clientpb.Preset {
 	name := "center"
-	seatCount := 1
 	together := true
-	seatCountValue := mustInt32ForTest(seatCount)
 	return clientpb.Preset_builder{
 		Id: &id, UserId: &userID, Name: &name, TheaterId: &theaterID, AuditoriumId: &auditoriumID,
-		SeatCount: &seatCountValue,
 		SeatPreference: clientpb.SeatPreference_builder{
 			ExplicitSeats: append([]string(nil), explicitSeats...), Together: &together,
 		}.Build(),
@@ -29,12 +26,13 @@ func presetFixtureForTest(id, userID, theaterID, auditoriumID string, explicitSe
 func monitorFixtureForTest(title string, targetDates []string) *clientpb.Monitor {
 	id, userID, presetID := "monitor", "user", "preset"
 	movieID := "movie_1"
-	horizon := int32(0)
+	seatCount, seatType := int32(1), "standard"
 	return clientpb.Monitor_builder{
 		Id: &id, UserId: &userID, PresetId: &presetID, MovieId: &movieID, MovieTitle: &title,
-		TargetDates: localDatesForTest(targetDates), SearchHorizonDays: &horizon,
-		State:     clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build(),
-		CreatedAt: timestamppb.Now(), UpdatedAt: timestamppb.Now(),
+		SeatCount: &seatCount, SeatType: &seatType,
+		TargetWeekdays: weekdaysForTestDates(targetDates),
+		State:          clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build(),
+		CreatedAt:      timestamppb.Now(), UpdatedAt: timestamppb.Now(),
 	}.Build()
 }
 
@@ -51,24 +49,29 @@ func cancellationResultFixtureForTest() *clientpb.WebUICancellationResult {
 	return clientpb.WebUICancellationResult_builder{ReservationId: &reservationID, BookingNumber: &bookingNumber, RefundAmount: &refundAmount}.Build()
 }
 
-func presetMutationForTest(revision int64, id, userID, name, theaterID, auditoriumID string, seatCount int, preference *clientpb.SeatPreference) *clientpb.WebUIResourceMutation {
-	seatCountValue := mustInt32ForTest(seatCount)
+func presetMutationForTest(revision int64, id, userID, name, theaterID, auditoriumID string, preference *clientpb.SeatPreference) *clientpb.WebUIResourceMutation {
 	return clientpb.WebUIResourceMutation_builder{
 		Mutation: commonpb.MutationIdentity_builder{ExpectedRevision: &revision}.Build(),
 		Preset: clientpb.Preset_builder{
 			Id: &id, UserId: &userID, Name: &name, TheaterId: &theaterID, AuditoriumId: &auditoriumID,
-			SeatCount: &seatCountValue, SeatPreference: preference,
+			SeatPreference: preference,
 		}.Build(),
 	}.Build()
 }
 
 //nolint:unparam // commandID mirrors MutationIdentity even though current fixtures intentionally omit it.
 func monitorMutationForTest(revision int64, commandID, id, userID, presetID, movieID, movie string, targetDates []string, targetWeekdays []int, horizon int, earliest, latest string) *clientpb.WebUIResourceMutation {
-	horizonValue := mustInt32ForTest(horizon)
+	_ = horizon
+	seatCount, seatType := int32(1), "standard"
+	weekdays := int32sForTest(targetWeekdays)
+	if len(weekdays) == 0 {
+		weekdays = weekdaysForTestDates(targetDates)
+	}
 	monitor := clientpb.Monitor_builder{
 		Id: &id, UserId: &userID, PresetId: &presetID, MovieId: &movieID, MovieTitle: &movie,
-		TargetDates: localDatesForTest(targetDates), TargetWeekdays: int32sForTest(targetWeekdays), SearchHorizonDays: &horizonValue,
-		EarliestTime: localTimeForTest(earliest), LatestTime: localTimeForTest(latest),
+		SeatCount: &seatCount, SeatType: &seatType,
+		TargetWeekdays: weekdays,
+		EarliestTime:   localTimeForTest(earliest), LatestTime: localTimeForTest(latest),
 		State: clientpb.MonitorState_builder{Pending: clientpb.MonitorPending_builder{}.Build()}.Build(),
 	}.Build()
 	command := strings.TrimSpace(commandID)
@@ -95,15 +98,20 @@ func cloneResourceMutationForTest(value *clientpb.WebUIResourceMutation) *client
 
 func boolPointer(value bool) *bool { return &value }
 
-func localDatesForTest(values []string) []*commonpb.LocalDate {
-	result := make([]*commonpb.LocalDate, 0, len(values))
+func weekdaysForTestDates(values []string) []int32 {
+	seen := make(map[int32]struct{}, len(values))
+	result := make([]int32, 0, len(values))
 	for _, value := range values {
 		parsed, err := time.Parse(time.DateOnly, value)
 		if err != nil {
 			continue
 		}
-		year, month, day := mustInt32ForTest(parsed.Year()), mustInt32ForTest(int(parsed.Month())), mustInt32ForTest(parsed.Day())
-		result = append(result, commonpb.LocalDate_builder{Year: &year, Month: &month, Day: &day}.Build())
+		weekday := mustInt32ForTest(int(parsed.Weekday()))
+		if _, exists := seen[weekday]; exists {
+			continue
+		}
+		seen[weekday] = struct{}{}
+		result = append(result, weekday)
 	}
 	return result
 }

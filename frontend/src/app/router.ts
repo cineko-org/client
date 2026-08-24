@@ -7,9 +7,10 @@ export type Route =
   | { name: 'presets' }
   | { name: 'preset-new' }
   | { name: 'preset-edit'; presetId: string }
+	| { name: 'operations' }
   | { name: 'settings' };
 
-export type MainSection = 'home' | 'monitors' | 'presets';
+export type MainSection = 'home' | 'monitors' | 'presets' | 'operations';
 
 export const homeRoute: Route = { name: 'home' };
 
@@ -26,6 +27,8 @@ export function routeSection(route: Route): MainSection | null {
     case 'preset-new':
     case 'preset-edit':
       return 'presets';
+		case 'operations':
+			return 'operations';
     case 'settings':
       return null;
   }

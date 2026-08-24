@@ -1,6 +1,16 @@
+import { create } from '@bufbuild/protobuf';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, errorMessage, watchSeatMap } from '../../api/client';
-import { AuditoriumResponseSchema, type Resolution, type Auditorium, type Preset, type Snapshot, type WebUIState } from '../../api/proto';
+import {
+  AuditoriumResponseSchema,
+  ResolutionSchema,
+  SeatMapRequestSchema,
+  type Resolution,
+  type Auditorium,
+  type Preset,
+  type Snapshot,
+  type WebUIState,
+} from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
 import type { SeatMapLoadState } from './model';
 
@@ -9,6 +19,28 @@ interface ActiveCatalogLoad {
 }
 
 export const seatMapInitialEventTimeoutMs = 10_000;
+export const auditoriumDiscoveryPollMs = 1_000;
+export const auditoriumDiscoveryTimeoutMs = 90_000;
+
+function waitForDiscovery(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(resolve, auditoriumDiscoveryPollMs);
+    signal.addEventListener('abort', () => {
+      window.clearTimeout(timeout);
+      reject(new DOMException('aborted', 'AbortError'));
+    }, { once: true });
+  });
+}
+
+function resolveSeatMap(auditoriumId: string, signal: AbortSignal) {
+  return api(
+    '/api/catalog/seat-map',
+    ResolutionSchema,
+    { method: 'POST', signal },
+    SeatMapRequestSchema,
+    create(SeatMapRequestSchema, { auditoriumId }),
+  );
+}
 
 /** Completes only the catalog request that still owns the loading state. */
 function finishCatalogRequest(activeRequest: ActiveCatalogLoad, request: AbortController, setLoading: (loading: boolean) => void) {
@@ -103,21 +135,33 @@ export function usePresetCatalog(state: WebUIState, notify: Notify) {
       setActiveTheaterId(selectedTheater?.id || '');
       if (!selectedTheater) {
         setAuditoriums([]);
-        setCatalogMessage(value ? 'Central에 저장된 상영관이 없습니다.' : '');
+        setCatalogMessage(value ? '아직 수집된 상영관이 없습니다.' : '');
         finishCatalogRequest(activeRequest, request, setLoadingCatalog);
         return;
       }
       setLoadingCatalog(true);
       try {
-        const response = await api(`/api/auditoriums?theaterId=${encodeURIComponent(selectedTheater.id)}`, AuditoriumResponseSchema, {
-          signal: request.signal,
-        });
-        if (request.signal.aborted) return;
-        const values = response.auditoriums;
-        setAuditoriums(values);
-        setCatalogMessage(
-          values.length > 0 ? `저장된 상영관 ${values.length}개를 불러왔습니다.` : 'Central에 저장된 상영관이 없습니다. 관측이 완료되면 자동으로 표시됩니다.',
-        );
+        const deadline = Date.now() + auditoriumDiscoveryTimeoutMs;
+        for (;;) {
+          // oxlint-disable-next-line no-await-in-loop -- each poll must observe the previous response before retrying.
+          const response = await api(`/api/auditoriums?theaterId=${encodeURIComponent(selectedTheater.id)}`, AuditoriumResponseSchema, {
+            signal: request.signal,
+          });
+          if (request.signal.aborted) return;
+          const values = response.auditoriums;
+          setAuditoriums(values);
+          if (values.length > 0) {
+            setCatalogMessage(`확인된 상영관 ${values.length}개를 불러왔습니다.`);
+            break;
+          }
+          if (Date.now() >= deadline) {
+            setCatalogMessage('아직 예매 가능한 상영관을 찾지 못했습니다. 잠시 후 다시 시도해 주세요.');
+            break;
+          }
+          setCatalogMessage('이 영화관의 상영관을 확인하고 있습니다.');
+          // oxlint-disable-next-line no-await-in-loop -- the delay is intentionally sequential between discovery polls.
+          await waitForDiscovery(request.signal);
+        }
       } catch (error) {
         if (!request.signal.aborted) notify(errorMessage(error), { tone: 'error' });
       } finally {
@@ -138,7 +182,26 @@ export function usePresetCatalog(state: WebUIState, notify: Notify) {
         return;
       }
       setLoadingCatalog(true);
-      setCatalogMessage('Central에 저장된 좌석 배치를 확인합니다.');
+      setCatalogMessage('저장된 좌석 배치를 확인합니다.');
+      try {
+        const initial = await resolveSeatMap(id, request.signal);
+        if (request.signal.aborted) return;
+        if (initial.snapshot) {
+          setSeatMap(initial.snapshot);
+          setPickedSeats((current) => current.filter((label) => initial.snapshot?.layout?.seats.some((seat) => seat.label === label)));
+          setSeatMapLoadState('cached');
+          setCatalogMessage('저장된 좌석 배치를 불러왔습니다.');
+          finishCatalogRequest(activeRequest, request, setLoadingCatalog);
+          return;
+        }
+      } catch (error) {
+        if (!request.signal.aborted) {
+          setSeatMapLoadState('error');
+          setCatalogMessage(errorMessage(error));
+          finishCatalogRequest(activeRequest, request, setLoadingCatalog);
+        }
+        return;
+      }
       await new Promise<void>((resolve) => {
         let firstEvent = true;
         let stop: (() => void) | null = null;
@@ -171,7 +234,7 @@ export function usePresetCatalog(state: WebUIState, notify: Notify) {
               break;
             case 'collecting':
               setSeatMapLoadState('pending');
-              setCatalogMessage('Central에서 좌석 배치를 수집하고 있습니다.');
+              setCatalogMessage('좌석 배치를 수집하고 있습니다.');
               break;
             case 'waitingForShowtime':
               setSeatMapLoadState('pending');

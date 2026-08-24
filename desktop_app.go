@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,9 +14,9 @@ import (
 	"github.com/cineko-org/client/internal/adapters/egress"
 	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/interfaces/webui"
+	"github.com/cineko-org/client/internal/logging"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
-	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -24,6 +25,7 @@ import (
 const (
 	desktopSeatMapEvent      = "cineko.seat-map"
 	desktopSeatMapErrorEvent = "cineko.seat-map.error"
+	maximumDesktopLogBytes   = 64 << 10
 )
 
 type desktopSettingsRepository interface {
@@ -36,12 +38,12 @@ type desktopSeatMapWatcher interface {
 }
 
 type DesktopApp struct {
-	server    *webui.Server
-	settings  desktopSettingsRepository
-	egress    egressConfigurator
-	hooks     hookConfigurator
-	userID    string
-	execution *desktopExecutionWorker
+	server   *webui.Server
+	settings desktopSettingsRepository
+	egress   egressConfigurator
+	hooks    hookConfigurator
+	userID   string
+	monitor  *desktopMonitorWorker
 
 	contextMu      sync.RWMutex
 	ctx            context.Context
@@ -106,11 +108,11 @@ func (app *DesktopApp) startup(ctx context.Context) {
 		app.server.RecordLocalSystemEvent(desktopErrorEvent(app.activeUserID(), "hook.invalid", "저장된 외부 알림 설정을 적용하지 못했습니다. 설정을 확인하세요."))
 	}
 	app.server.Start(ctx)
-	if app.execution != nil {
+	if app.monitor != nil {
 		go func() {
-			if err := app.execution.Run(ctx); err != nil {
+			if err := app.monitor.Run(ctx); err != nil {
 				app.server.RecordLocalSystemEvent(desktopErrorEvent(
-					app.activeUserID(), "execution.supervisor_failed", "예매 실행 연결을 복구하지 못했습니다. 앱을 다시 시작하세요.",
+					app.activeUserID(), "monitor.supervisor_failed", "로컬 예매 모니터가 중지되었습니다. 앱을 다시 시작하세요.",
 				))
 				runtime.Quit(ctx)
 			}
@@ -126,7 +128,7 @@ func (app *DesktopApp) startup(ctx context.Context) {
 
 func (app *DesktopApp) GetUserID() (string, error) {
 	if app.userID == "" {
-		return "", errors.New("central user is unavailable")
+		return "", errors.New("local user is unavailable")
 	}
 	return app.userID, nil
 }
@@ -146,9 +148,23 @@ func (app *DesktopApp) Exit() {
 	}
 }
 
-// WatchSeatMap bridges Central's generated stream through Wails runtime
-// events. Wails' virtual AssetServer response writer does not support the
-// streaming semantics required by EventSource.
+// RecordClientLog keeps UI warnings and errors on the same local JSONL journal
+// as server, scanner, monitor, and browser events without consuming the HTTP
+// request channel used by application commands.
+func (app *DesktopApp) RecordClientLog(payload string) error {
+	if len(payload) == 0 || len(payload) > maximumDesktopLogBytes {
+		return errors.New("client log payload size is invalid")
+	}
+	var event logging.ClientEvent
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return fmt.Errorf("decode client log event: %w", err)
+	}
+	return event.Record(app.contextOrBackground())
+}
+
+// WatchSeatMap bridges local collection updates through Wails runtime events.
+// Wails' virtual AssetServer response writer does not support the streaming
+// semantics required by EventSource.
 func (app *DesktopApp) WatchSeatMap(auditoriumID string) error {
 	auditoriumID = strings.TrimSpace(auditoriumID)
 	if auditoriumID == "" {
@@ -171,7 +187,7 @@ func (app *DesktopApp) WatchSeatMap(auditoriumID string) error {
 
 	go func() {
 		err := watcher.WatchSeatMap(ctx, auditoriumID, func(resolution *seatmappb.Resolution) error {
-			response := servicepb.WatchSeatMapResponse_builder{Resolution: resolution}.Build()
+			response := clientpb.WebUISeatMapResponse_builder{Resolution: resolution}.Build()
 			if err := protovalidate.Validate(response); err != nil {
 				return fmt.Errorf("validate seat-map stream response: %w", err)
 			}
@@ -216,7 +232,7 @@ func (app *DesktopApp) readSettings() (*clientpb.Settings, error) {
 
 func (app *DesktopApp) readSettingsRemote() (*clientpb.Settings, error) {
 	if app.settings == nil {
-		return nil, errors.New("central settings are unavailable")
+		return nil, errors.New("local settings are unavailable")
 	}
 	settings := &clientpb.Settings{}
 	if _, err := app.settings.GetSettings(app.contextOrBackground(), settings); err != nil {
@@ -231,7 +247,7 @@ func (app *DesktopApp) updateSettings(
 	app.settingsMu.Lock()
 	defer app.settingsMu.Unlock()
 	if app.settings == nil {
-		return errors.New("central settings are unavailable")
+		return errors.New("local settings are unavailable")
 	}
 	for range 3 {
 		settings := &clientpb.Settings{}

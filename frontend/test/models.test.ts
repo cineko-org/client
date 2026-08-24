@@ -1,39 +1,37 @@
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 import {
-	LocalDateSchema, LocalTimeSchema, MonitorSchema, MonitorStateSchema,
+	LocalTimeSchema, MonitorSchema, MonitorStateSchema,
 	MovieSchema, PresetSchema, ProxyNetworkSchema, NetworkSettingsSchema,
-	ReservationBookedSchema, ReservationCancelledSchema, ReservationSchema, SeatPreferenceSchema, SeatSchema, TheaterSchema, WebhookTargetSchema,
+	ReservationBookedSchema, ReservationCancelledSchema, ReservationSchema, SeatPreferenceSchema, TheaterSchema, WebhookTargetSchema,
 	DirectNetworkSchema, type Theater,
 } from '../src/api/proto';
 import { emptyAppState } from '../src/features/application/model';
 import {
-	formFromMonitor, initialMonitorForm, localDateString, monitorFormError,
-	monitorScheduleLabel, monitorTimeLabel, monitorSaveRequest, monitorStatusLabel, normalizeHorizon,
-	scheduleBounds, scheduleDescription, weekdayOptions, orderedCatalogMovies,
+	formFromMonitor, initialMonitorForm, monitorFormError,
+	monitorBookingLabel, monitorScheduleLabel, monitorTimeLabel, monitorSaveRequest, monitorStatusLabel,
+	monitorWatchLabel,
+	scheduleDescription, weekdayOptions, orderedCatalogMovies,
 } from '../src/features/monitors/model';
+import { moviePosterSource } from '../src/features/monitors/ui/MoviePicker';
 import {
 	markNoticesRead, monitorTransitionMessage, prependNotice, reservationTransitionMessage,
 	unreadNoticeCount, type Notice,
 } from '../src/features/notifications/model';
 import {
-	candidateSelectionError, catalogRegions, catalogTheaters, csv, formFromPreset, initialPresetForm,
+		catalogRegions, catalogTheaters, formFromPreset, initialPresetForm,
 	presetSaveRequest, presetSummary, seatPresentation,
 } from '../src/features/presets/model';
 import { networkForm, networkSettingsInput, networkUsageDescription } from '../src/features/settings/model';
 import { hookForms, hookSettingsInput, selectAllHookEvents, toggleHookEvent } from '../src/features/settings/hookModel';
 import { reservationReference, reservationStatusLabel } from '../src/features/reservations/model';
 
-const date = (value: string) => {
-	const [year, month, day] = value.split('-').map(Number);
-	return create(LocalDateSchema, { year, month, day });
-};
 const time = (value: string) => {
 	const [hour, minute] = value.split(':').map(Number);
 	return create(LocalTimeSchema, { hour, minute });
 };
 const monitorWithStatus = (status: 'pending' | 'running' | 'triggered' | 'booked' | 'failed' | 'stopped', movieTitle = '오디세이') => create(MonitorSchema, {
-	id: 'monitor', movieId: 'movie', movieTitle, userId: 'user', presetId: 'preset', targetDates: [], targetWeekdays: [],
+	id: 'monitor', movieId: 'movie', movieTitle, userId: 'user', presetId: 'preset', seatCount: 1, seatType: 'standard', targetWeekdays: [],
 	state: create(MonitorStateSchema, { state: { case: status, value: status === 'failed' ? { reason: '' } : {} } }),
 });
 const reservationWithStatus = (status: 'booked' | 'cancelled') => create(ReservationSchema, {
@@ -51,46 +49,52 @@ describe('application view model', () => {
 });
 
 describe('monitor model', () => {
-	it('formats local bounds and normalizes schedule input', () => {
-		const today = new Date(2026, 7, 9, 12);
-		expect(localDateString(today)).toBe('2026-08-09');
-		expect(scheduleBounds(today)).toEqual({ today: '2026-08-09', last: '2027-08-09' });
-		expect(normalizeHorizon(14)).toBe(14);
-		expect(normalizeHorizon('')).toBe(14);
-		expect(normalizeHorizon(28)).toBe(14);
+	it('uses only the local poster cache route and rejects provider URLs', () => {
+		const movie = create(MovieSchema, {
+			id: `movie_${'a'.repeat(32)}`,
+			title: '긴 영화 제목',
+			posterUrl: `/v1/catalog/posters/movie_${'a'.repeat(32)}?v=${'b'.repeat(64)}`,
+		});
+		expect(moviePosterSource(movie)).toBe(`/api/catalog/posters/movie_${'a'.repeat(32)}?v=${'b'.repeat(64)}`);
+		movie.posterUrl = 'https://cdn.cgv.co.kr/poster.jpg';
+		expect(moviePosterSource(movie)).toBe('');
+	});
+
+	it('exposes every weekday', () => {
 		expect(weekdayOptions).toHaveLength(7);
 	});
 
 	it.each([
-		[{ ...initialMonitorForm }, '날짜나 반복 요일을 추가하세요.'],
-		[{ ...initialMonitorForm, dates: ['2026-08-10'] }, '1개 날짜를 확인합니다.'],
-		[{ ...initialMonitorForm, weekdays: ['1'], horizonDays: 14 }, '앞으로 14일간 선택한 요일을 확인합니다.'],
-		[{ ...initialMonitorForm, dates: ['2026-08-10'], weekdays: ['1'], horizonDays: 14 }, '1개 날짜와 앞으로 14일간 선택한 요일을 확인합니다.'],
+		[{ ...initialMonitorForm }, '반복 요일을 하나 이상 선택하세요.'],
+		[{ ...initialMonitorForm, weekdays: ['1'] }, '선택한 요일에 예매가 열릴 때까지 계속 확인합니다.'],
 	])('describes schedule %#', (form, expected) => expect(scheduleDescription(form)).toBe(expected));
 
 	it('validates required monitor selections', () => {
 		expect(monitorFormError(initialMonitorForm)).toBe('영화와 좌석 프리셋을 선택하세요.');
 		const selected = { ...initialMonitorForm, movieId: 'movie', movie: '영화', presetId: 'preset' };
-		expect(monitorFormError(selected)).toBe('관람 날짜나 반복 요일을 하나 이상 추가하세요.');
-		expect(monitorFormError({ ...selected, dates: ['2026-08-10'] })).toBe('');
+		expect(monitorFormError({ ...selected, seatCount: 0 })).toBe('예매 인원은 1명부터 8명까지 입력하세요.');
+		expect(monitorFormError({ ...selected, seatType: '' })).toBe('좌석 타입을 선택하세요.');
+		expect(monitorFormError(selected)).toBe('반복 요일을 하나 이상 선택하세요.');
 		expect(monitorFormError({ ...selected, weekdays: ['1'] })).toBe('');
 	});
 
 	it('maps the editor form to the protobuf resource mutation', () => {
 		const form = {
-			...initialMonitorForm, id: 'monitor', movieId: 'movie', movie: '영화', presetId: 'preset', dates: ['2026-08-10'],
+			...initialMonitorForm, id: 'monitor', movieId: 'movie', movie: '영화', presetId: 'preset',
 			weekdays: ['1', '6'],
 		};
 		const mutation = monitorSaveRequest(form, 'user');
 		expect(mutation.resource.case).toBe('monitor');
 		if (mutation.resource.case !== 'monitor') return;
-		expect(mutation.resource.value).toMatchObject({ id: 'monitor', userId: 'user', movieId: 'movie', targetWeekdays: [1, 6] });
-		expect(mutation.resource.value.targetDates.map((value) => `${value.year}-${value.month}-${value.day}`)).toEqual(['2026-8-10']);
+		expect(mutation.resource.value).toMatchObject({
+			id: 'monitor', userId: 'user', movieId: 'movie', seatCount: 1, seatType: 'standard',
+			watchCancellationSeats: true, targetWeekdays: [1, 6],
+		});
 	});
 
 	it('keeps explicit monitor time windows in the protobuf mutation', () => {
 		const form = {
-			...initialMonitorForm, movieId: 'movie', movie: '영화', presetId: 'preset', dates: ['2026-08-10'],
+			...initialMonitorForm, movieId: 'movie', movie: '영화', presetId: 'preset', weekdays: ['1'],
 			earliestTime: '18:00', latestTime: '22:30',
 		};
 		const mutation = monitorSaveRequest(form, 'user');
@@ -100,24 +104,29 @@ describe('monitor model', () => {
 	});
 
 	it('labels monitor schedules and time windows', () => {
-		expect(monitorScheduleLabel({})).toBe('대상 일정 없음');
-		expect(monitorScheduleLabel({ targetDates: [date('2026-08-10')] })).toBe('2026-08-10');
-		expect(monitorScheduleLabel({ targetWeekdays: [1, 6], searchHorizonDays: 14 })).toBe('매주 월 · 토요일 · 앞으로 14일');
-		expect(monitorScheduleLabel({ targetDates: [date('2026-08-10')], targetWeekdays: [8] })).toBe('2026-08-10 / 매주 요일 · 앞으로 14일');
+		expect(monitorScheduleLabel({})).toBe('대상 요일 없음');
+		expect(monitorScheduleLabel({ targetWeekdays: [1, 6] })).toBe('매주 월 · 토요일 · 찾을 때까지 계속');
+		expect(monitorScheduleLabel({ targetWeekdays: [8] })).toBe('매주 요일 · 찾을 때까지 계속');
 		expect(monitorTimeLabel({ earliestTime: time('18:00'), latestTime: time('22:00') })).toBe('18:00–22:00');
 		expect(monitorTimeLabel({ earliestTime: time('18:00') })).toBe('18:00 이후');
 		expect(monitorTimeLabel({ latestTime: time('22:00') })).toBe('22:00 이전');
 		expect(monitorTimeLabel({})).toBe('모든 시간대');
+		expect(monitorBookingLabel({ seatCount: 2, seatType: 'recliner' })).toBe('2명 · 리클라이너');
+		expect(monitorBookingLabel({})).toBe('1명 · 일반석');
+		expect(monitorBookingLabel({ seatCount: 0, seatType: 'balcony' })).toBe('1명 · balcony');
+		expect(monitorWatchLabel({ watchCancellationSeats: true })).toBe('신규 오픈 + 취소표 감시');
+		expect(monitorWatchLabel({ watchCancellationSeats: false })).toBe('신규 오픈만 감시');
 	expect(['pending', 'running', 'triggered', 'payment_unknown', 'booked', 'failed', 'stopped'].map((status) => monitorStatusLabel(status))).toEqual([
 			'대기', '실행 중', '결제 확인 필요', '결제 결과 확인 필요', '예매 완료', '실패', '중지',
 		]);
 		const stored = create(MonitorSchema, {
-			id: 'monitor', movieId: 'movie', movieTitle: '영화', presetId: 'preset', userId: 'user',
-			targetDates: [date('2026-08-10')], targetWeekdays: [1], searchHorizonDays: 14,
+			id: 'monitor', movieId: 'movie', movieTitle: '영화', presetId: 'preset', userId: 'user', seatCount: 2, seatType: 'recliner',
+			watchCancellationSeats: true,
+			targetWeekdays: [1],
 			earliestTime: time('18:00'), latestTime: time('22:00'),
 		});
-		expect(formFromMonitor(stored)).toMatchObject({ id: 'monitor', movieId: 'movie', weekdays: ['1'], horizonDays: 14 });
-		expect(formFromMonitor(create(MonitorSchema, { ...stored, searchHorizonDays: 0 }))).toMatchObject({ horizonDays: 14 });
+		expect(formFromMonitor(stored)).toMatchObject({ id: 'monitor', movieId: 'movie', seatCount: 2, seatType: 'recliner', watchCancellationSeats: true, weekdays: ['1'] });
+		expect(formFromMonitor(create(MonitorSchema))).toMatchObject({ seatCount: 1, seatType: 'standard', watchCancellationSeats: false });
 		expect(monitorStatusLabel('unknown')).toBe('unknown');
 	});
 
@@ -142,7 +151,7 @@ describe('notification model', () => {
 		expect(monitorTransitionMessage(undefined, monitorWithStatus('booked'))).toBe('');
 		expect(monitorTransitionMessage('running', monitorWithStatus('triggered'))).toBe('오디세이 예매 화면이 준비되었습니다. 결제를 확인하세요.');
 		expect(monitorTransitionMessage('running', monitorWithStatus('booked', ''))).toBe('영화 예매가 완료되었습니다.');
-		expect(monitorTransitionMessage('running', monitorWithStatus('stopped'))).toBe('오디세이 모니터가 중지되었습니다.');
+		expect(monitorTransitionMessage('running', monitorWithStatus('stopped'))).toBe('오디세이 예매 찾기가 중지되었습니다.');
 		expect(monitorTransitionMessage('running', monitorWithStatus('failed'))).toBe('');
 		expect(monitorTransitionMessage('booked', monitorWithStatus('booked'))).toBe('');
 		expect(reservationTransitionMessage('booked', reservationWithStatus('cancelled'))).toBe('예매가 취소되었습니다.');
@@ -151,17 +160,14 @@ describe('notification model', () => {
 	});
 });
 
-describe('preset model', () => {
+	describe('preset model', () => {
 	const preset = create(PresetSchema, {
-		id: 'preset', name: '중앙', seatCount: 2,
-		seatPreference: create(SeatPreferenceSchema, { explicitSeats: ['H10', 'H11'], preferredRows: ['H'], preferredTypes: ['recliner'], together: true }),
+		id: 'preset', name: '중앙',
+		seatPreference: create(SeatPreferenceSchema, { explicitSeats: ['H10', 'H11'] }),
 	});
-	it('parses CSV and maps stored preset state into a form', () => {
-		expect(csv(' H, , I ')).toEqual(['H', 'I']);
-		expect(formFromPreset(preset)).toEqual({ id: 'preset', revision: 0, name: '중앙', seatCount: 2, seatType: 'recliner', preferredRows: 'H' });
-		expect(formFromPreset(create(PresetSchema, { ...preset, seatPreference: create(SeatPreferenceSchema, { ...preset.seatPreference, preferredTypes: [] }) }))).toMatchObject({ seatType: 'standard' });
-		expect(formFromPreset(create(PresetSchema, { id: 'empty', name: '빈 프리셋', seatCount: 1 }))).toMatchObject({ seatType: 'standard', preferredRows: '' });
-		expect(initialPresetForm.seatCount).toBe(1);
+	it('maps stored preset state into a seat-selection form', () => {
+		expect(formFromPreset(preset)).toEqual({ id: 'preset', revision: 0, name: '중앙' });
+		expect(initialPresetForm).toEqual({ id: '', revision: 0, name: '' });
 	});
 	it('renders future provider seat types with the unknown fallback', () => {
 		expect(seatPresentation('future-provider-seat')).toEqual(seatPresentation('unknown'));
@@ -176,30 +182,24 @@ describe('preset model', () => {
 		expect(catalogTheaters(theaters, '서울')).toEqual(['여의도', '용산아이파크몰']);
 		expect(catalogTheaters(theaters, '')).toEqual([]);
 	});
-	it('summarizes candidate and scored seat preferences', () => {
-		expect(presetSummary(preset)).toBe('2석 연석 필수 · H10 · H11');
-		expect(presetSummary(create(PresetSchema, { ...preset, seatCount: 1 }))).toBe('선택 후보 중 1석 · H10 · H11');
+	it('summarizes selected or automatic candidate seats', () => {
+		expect(presetSummary(preset)).toBe('선택 좌석 · H10 · H11');
 		const automatic = create(PresetSchema, { ...preset, seatPreference: create(SeatPreferenceSchema, { ...preset.seatPreference, explicitSeats: [] }) });
-		expect(presetSummary(automatic)).toBe('실시간 좌석에서 2석 연석 자동 선택');
-		expect(presetSummary(create(PresetSchema, { ...automatic, seatCount: 1 }))).toBe('실시간 좌석에서 1석 자동 선택');
-		expect(presetSummary(create(PresetSchema, { id: 'empty', name: '빈 프리셋', seatCount: 1 }))).toBe('실시간 좌석에서 1석 자동 선택');
+		expect(presetSummary(automatic)).toBe('전체 좌석에서 자동 선택');
+		expect(presetSummary(create(PresetSchema, { id: 'empty', name: '빈 프리셋' }))).toBe('전체 좌석에서 자동 선택');
 	});
 	it('maps the editor form to a protobuf mutation without sharing mutable seats', () => {
 		const seats = ['H10', 'H11'];
-		const request = presetSaveRequest(formFromPreset(preset), 'user', 'theater', 'auditorium', seats);
+		const request = presetSaveRequest(formFromPreset(preset), 'user', 'theater', 'auditorium', seats, 'command-preset');
 		seats.push('H12');
+		expect(request.mutation?.commandId).toBe('command-preset');
 		expect(request.resource.case).toBe('preset');
 		if (request.resource.case !== 'preset') return;
 		expect(request.resource.value).toMatchObject({ id: 'preset', userId: 'user', name: '중앙', theaterId: 'theater', auditoriumId: 'auditorium' });
 		expect(request.resource.value.seatPreference?.explicitSeats).toEqual(['H10', 'H11']);
-	});
-	it('validates candidate count and required adjacency before saving', () => {
-		const seats = [create(SeatSchema, { label: 'H10', row: 'H', number: 10 }), create(SeatSchema, { label: 'H11', row: 'H', number: 11 }), create(SeatSchema, { label: 'H13', row: 'H', number: 13 })];
-		expect(candidateSelectionError(seats, [], 2)).toBe('');
-		expect(candidateSelectionError(seats, ['H10'], 2)).toBe('후보 좌석을 2석 이상 선택하세요.');
-		expect(candidateSelectionError(seats, ['H10', 'H13'], 2)).toBe('선택한 후보에 2석 연석이 없습니다.');
-		expect(candidateSelectionError(seats, ['H10', 'H11'], 2)).toBe('');
-		expect(candidateSelectionError(seats, ['H10', 'H13'], 1)).toBe('');
+		expect(request.resource.value.seatPreference?.preferredRows).toEqual([]);
+		expect(request.resource.value.seatPreference?.preferredTypes).toEqual([]);
+		expect(request.resource.value.seatPreference?.together).toBe(false);
 	});
 });
 

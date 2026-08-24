@@ -7,6 +7,7 @@ export interface DesktopBridge {
 	GetHookSettings(): Promise<string>;
 	SaveHookSettings(input: string): Promise<string>;
 	GetUserID(): Promise<string>;
+	RecordClientLog(payload: string): Promise<void>;
 	WatchSeatMap(auditoriumId: string): Promise<void>;
 	StopSeatMapWatch(): Promise<void>;
 	Exit(): Promise<void>;
@@ -23,7 +24,12 @@ export function encodeDesktopProto<T extends Message>(schema: GenMessage<T>, mes
 declare global {
 	interface Window {
 		go?: { main?: { DesktopApp?: DesktopBridge } };
-		runtime?: { EventsOn?: (name: string, callback: (...args: unknown[]) => void) => (() => void) };
+		runtime?: {
+			EventsOn?: (name: string, callback: (...args: unknown[]) => void) => (() => void);
+			LogInfo?: (message: string) => void;
+			LogWarning?: (message: string) => void;
+			LogError?: (message: string) => void;
+		};
 		__cinekoAppBooted?: boolean;
 	}
 }

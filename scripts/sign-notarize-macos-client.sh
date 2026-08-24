@@ -36,6 +36,8 @@ done
 [[ -d "$app_path" ]] || fail 'app bundle does not exist'
 [[ "$app_path" == *.app ]] || fail 'input must be an app bundle'
 [[ -n "$output_path" && "$output_path" == *.zip ]] || fail 'output must be a ZIP path'
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$app_path/Contents/Info.plist" 2>/dev/null)" == 'true' ]] || \
+  fail 'Client must be packaged as a Launcher-owned UI element'
 
 work_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cineko-client-signing.XXXXXX")"
 keychain_path="$work_dir/cineko-client-release.keychain-db"

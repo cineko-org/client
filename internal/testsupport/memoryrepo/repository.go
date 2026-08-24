@@ -12,7 +12,6 @@ import (
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
-	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -117,16 +116,16 @@ func (repository *Repository) GetSeatMap(_ context.Context, auditoriumID string)
 
 func (repository *Repository) SubmitLiveSeatObservation(
 	_ context.Context,
-	request *servicepb.SubmitLiveSeatObservationRequest,
-) (*servicepb.SubmitLiveSeatObservationResponse, error) {
-	snapshot := request.GetObservation().GetLayout()
+	observation *seatmappb.LiveSeatObservation,
+) (*seatmappb.Snapshot, error) {
+	snapshot := observation.GetLayout()
 	if snapshot == nil {
 		return nil, application.ErrNotFound
 	}
 	repository.mu.Lock()
 	repository.seatMaps[snapshot.GetAuditoriumId()] = clone(snapshot)
 	repository.mu.Unlock()
-	return servicepb.SubmitLiveSeatObservationResponse_builder{Snapshot: clone(snapshot)}.Build(), nil
+	return clone(snapshot), nil
 }
 
 func (repository *Repository) ResolveSeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Resolution, error) {

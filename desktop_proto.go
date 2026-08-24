@@ -22,15 +22,6 @@ func desktopErrorEvent(userID, kind, message string) *clientpb.AppEvent {
 	}.Build()
 }
 
-func desktopSuccessEvent(userID, kind, message string) *clientpb.AppEvent {
-	return clientpb.AppEvent_builder{
-		UserId:  &userID,
-		Kind:    &kind,
-		Message: &message,
-		Success: clientpb.EventSuccess_builder{}.Build(),
-	}.Build()
-}
-
 // marshalDesktopProtoJSON crosses the Wails string bridge with canonical
 // ProtoJSON because Wails' encoding/json codec cannot encode opaque Go Proto.
 func marshalDesktopProtoJSON(message proto.Message) (string, error) {

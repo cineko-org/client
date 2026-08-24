@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { create } from '@bufbuild/protobuf';
 import { api, desktopBridge, errorMessage } from '../../api/client';
 import {
-	AccountCredentialsSchema, WebUIAccountStateSchema, WebUIActionStatusSchema, WebUIStateSchema,
+	WebUIAccountStateSchema, WebUIActionStatusSchema, WebUIStateSchema,
 	WebUITaskStatusResponseSchema, type WebUIAccountState, type WebUIState,
 } from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
@@ -134,37 +134,6 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
     }
   }, [notify, pollStatus]);
 
-  const saveAccountCredentials = useCallback(async (id: string, password: string) => {
-    try {
-		await api('/api/account/credentials', WebUIActionStatusSchema, { method: 'PUT' }, AccountCredentialsSchema,
-			create(AccountCredentialsSchema, { id, password }));
-      notify('로그인 정보를 안전하게 저장하고 CGV 로그인을 시작했습니다.');
-      void pollStatus();
-    } catch (error) {
-      notify(errorMessage(error), { tone: 'error' });
-    }
-  }, [notify, pollStatus]);
-
-  const restoreAuthentication = useCallback(async () => {
-    try {
-		await api('/api/auth/restore', WebUIActionStatusSchema, { method: 'POST' });
-      notify('저장된 정보로 CGV 로그인을 시작했습니다.');
-      void pollStatus();
-    } catch (error) {
-      notify(errorMessage(error), { tone: 'error' });
-    }
-  }, [notify, pollStatus]);
-
-  const deleteAccountCredentials = useCallback(async () => {
-    try {
-		await api('/api/account/credentials', WebUIActionStatusSchema, { method: 'DELETE' });
-      notify('저장된 CGV 로그인 정보를 삭제했습니다.');
-      void pollStatus();
-    } catch (error) {
-      notify(errorMessage(error), { tone: 'error' });
-    }
-  }, [notify, pollStatus]);
-
   const exit = useCallback(async () => {
     if (!bridge) return;
     try {
@@ -177,7 +146,6 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
   return {
     state, userId, account, loading, connection, desktopAvailable: Boolean(bridge),
     retryConnection: initialize,
-    reload: loadState, openAuthentication, saveAccountCredentials, restoreAuthentication,
-    deleteAccountCredentials, exit, pollStatus,
+    reload: loadState, openAuthentication, exit, pollStatus,
   };
 }

@@ -3,7 +3,7 @@ package domain
 import "strings"
 
 // ScheduleCapture is the result of one complete theater/date schedule fetch.
-// Central owns observation policy and persistence; the Client only uses this
+// The embedded scanner owns observation policy and local persistence; the Client uses this
 // value while executing an assigned capture.
 type ScheduleCapture struct {
 	TargetDate string
