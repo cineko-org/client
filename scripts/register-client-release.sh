@@ -68,6 +68,7 @@ append_release() {
   local architecture="$2"
   local extension="$3"
   local executable="$4"
+  local platform_key="${platform}-${architecture}"
   local filename="cineko-client-v${version}-${platform}-${architecture}.${extension}"
   local artifact_path="${assets_dir}/${filename}"
 
@@ -78,7 +79,7 @@ append_release() {
 
   local release_path="$temporary_root/${platform}-${architecture}.json"
   "$release_contract" release client "$version" "$platform/$architecture" "$artifact_path" "$executable" \
-    "${public_base}/${filename}" "$published_at" >"$release_path"
+    "${public_base}/${platform_key}/${filename}" "$published_at" >"$release_path"
 	if [[ -n "${CINEKO_RELEASE_METADATA_DIR:-}" ]]; then
 		mkdir -p "$CINEKO_RELEASE_METADATA_DIR"
 		local published_path="${CINEKO_RELEASE_METADATA_DIR%/}/client-release-${platform}-${architecture}.json"

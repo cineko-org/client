@@ -8,6 +8,50 @@ import { test } from 'node:test';
 process.env.CINEKO_RELEASES_PUBLIC_BASE_URL = 'https://releases.example.com/cineko';
 const goModuleCache = execFileSync('go', ['env', 'GOMODCACHE'], { encoding: 'utf8' }).trim();
 
+test('release registration includes the CDN platform path', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cineko-release-registration-'));
+  const clientVersion = '2.8.1';
+  const playwrightVersion = execFileSync('bash', ['scripts/playwright-version.sh', 'driver'], { encoding: 'utf8' }).trim();
+  const filenames = [
+    `cineko-client-v${clientVersion}-darwin-arm64.zip`,
+    `cineko-client-v${clientVersion}-windows-amd64.zip`,
+    `cineko-client-v${clientVersion}-linux-amd64.tar.gz`,
+    `cineko-playwright-${playwrightVersion}-darwin-arm64.tar.gz`,
+    `cineko-playwright-${playwrightVersion}-windows-amd64.zip`,
+    `cineko-playwright-${playwrightVersion}-linux-amd64.tar.gz`,
+  ];
+  try {
+    await Promise.all(filenames.map((filename) => writeFile(join(root, filename), filename)));
+    const clientSet = JSON.parse(execFileSync('bash', [
+      'scripts/register-client-release.sh', clientVersion, '2026-08-24T00:00:00Z', root,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CINEKO_CLIENT_RELEASE_BASE: `https://cdn.example/cineko/releases/client/v${clientVersion}`,
+        CINEKO_MINIMUM_LAUNCHER_VERSION: '1.4.0',
+        CINEKO_BROWSER_REVISION: '1228',
+        CINEKO_PLAYWRIGHT_VERSION: playwrightVersion,
+      },
+    }));
+    const playwrightSet = JSON.parse(execFileSync('bash', [
+      'scripts/register-playwright-release.sh', playwrightVersion, '2026-08-24T00:00:00Z', root,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CINEKO_PLAYWRIGHT_RELEASE_BASE: `https://cdn.example/cineko/releases/playwright/v${playwrightVersion}`,
+      },
+    }));
+    for (const release of [...clientSet.releases, ...playwrightSet.releases]) {
+      const platformKey = `${release.platform}-${release.architecture}`;
+      assert.equal(new URL(release.artifact.url).pathname.includes(`/${platformKey}/`), true);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('writes independently publishable component metadata', async () => {
   await mkdir('build/release', { recursive: true });
   const fixtures = [
