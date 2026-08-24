@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/cineko-org/client/compare/v2.7.4...v2.8.0) (2026-08-24)
+
+
+### Features
+
+* run Cineko entirely from the local Client ([#35](https://github.com/cineko-org/client/issues/35)) ([36c41a0](https://github.com/cineko-org/client/commit/36c41a02b770009bb6d9e7bb1cdf2d38eec691b2))
+
 ## [2.7.4](https://github.com/cineko-org/client/compare/v2.7.3...v2.7.4) (2026-08-22)
 
 
