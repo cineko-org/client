@@ -24,7 +24,7 @@
     "@cineko/contracts": "https://github.com/cineko-org/contracts/archive/b42e9f0105739d9daca688d7b6dfe47b78593aa8.tar.gz",
     "@mantine/core": "9.5.1",
     "@mantine/dates": "9.5.1",
-    "@mantine/hooks": "9.5.1",
+    "@mantine/hooks": "9.5.2",
     "@tabler/icons-react": "3.46.0",
     "dayjs": "1.11.23",
     "pretendard": "1.3.9",
