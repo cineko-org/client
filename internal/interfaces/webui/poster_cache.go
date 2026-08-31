@@ -86,12 +86,12 @@ func (cache *posterCache) load(ctx context.Context, movieID, version string) (*c
 	lock.Lock()
 	defer lock.Unlock()
 	if poster, ok := cache.read(movieID, version); ok {
-		logging.Info(ctx, "poster.cache.hit", "event", "poster.cache.hit", "scenario", "poster_delivery",
+		logging.Debug(ctx, "poster.cache.hit", "event", "poster.cache.hit", "scenario", "poster_delivery",
 			"operation", "load_cached_poster", "outcome", "succeeded",
 			"movie_id", movieID, "poster_version", version, "bytes", len(poster.data))
 		return poster, nil
 	}
-	logging.Info(ctx, "poster.cache.miss", "event", "poster.cache.miss", "scenario", "poster_delivery",
+	logging.Debug(ctx, "poster.cache.miss", "event", "poster.cache.miss", "scenario", "poster_delivery",
 		"operation", "load_cached_poster", "outcome", "cache_miss", "movie_id", movieID, "poster_version", version)
 	downloaded, err := cache.source.GetMoviePoster(ctx, movieID)
 	if err != nil {

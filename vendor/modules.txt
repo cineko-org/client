@@ -37,12 +37,14 @@ github.com/cineko-org/contracts/v3/gen/go/cineko/common
 github.com/cineko-org/contracts/v3/gen/go/cineko/observation
 github.com/cineko-org/contracts/v3/gen/go/cineko/release
 github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap
-# github.com/cineko-org/probe/v2 v2.8.0
+# github.com/cineko-org/probe/v2 v2.8.2
 ## explicit; go 1.27
 github.com/cineko-org/probe/v2/internal/egress
 github.com/cineko-org/probe/v2/internal/provider/cgv
 github.com/cineko-org/probe/v2/internal/provider/cgv/browser
 github.com/cineko-org/probe/v2/internal/telemetry
+github.com/cineko-org/probe/v2/networkcapture
+github.com/cineko-org/probe/v2/networkcapture/playwrightcapture
 github.com/cineko-org/probe/v2/probe
 # github.com/deckarep/golang-set/v2 v2.9.0
 ## explicit; go 1.18

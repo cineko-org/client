@@ -56,10 +56,15 @@ func desktopWindowOptions(
 			Middleware: assetserver.ChainMiddleware(logging.HTTPMiddleware, webui.SecurityHeaders),
 		},
 		OnStartup: func(ctx context.Context) {
-			if useLauncherOwnedActivationPolicy() {
-				logging.Info(ctx, "Client attached to Launcher application", "event", "client.application.attached", "outcome", "succeeded")
+			foreground := isDevDirectLaunch()
+			if configureDesktopActivationPolicy(foreground) {
+				mode := "launcher_owned"
+				if foreground {
+					mode = "foreground_dev"
+				}
+				logging.Info(ctx, "Client activation policy configured", "event", "client.application.activation.configured", "outcome", "succeeded", "mode", mode)
 			} else {
-				logging.Warn(ctx, "Client could not attach to Launcher application", "event", "client.application.attached", "outcome", "failed")
+				logging.Warn(ctx, "Client activation policy could not be configured", "event", "client.application.activation.configured", "outcome", "failed", "foreground", foreground)
 			}
 			startDesktopWindow(ctx, app, server, store, embeddedProbe, dataDir, startupReadyNonce, startupFailure)
 		},

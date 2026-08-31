@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/client/internal/logging"
+	"github.com/cineko-org/probe/v2/networkcapture"
+	"github.com/cineko-org/probe/v2/networkcapture/playwrightcapture"
 	"github.com/mxschmitt/playwright-go"
 )
 
@@ -44,6 +46,7 @@ type BrowserConfig struct {
 	UserAgentMode    UserAgentMode
 	Proxy            *BrowserProxy
 	Capacity         int
+	NetworkCapture   *networkcapture.Store
 }
 
 // BrowserProxy is the proxy identity assigned to one browser process. Secrets
@@ -88,6 +91,8 @@ type Adapter struct {
 	identitySession    playwright.CDPSession
 	stopPlaywright     func() error
 	processPID         int
+	browserProcessPID  int
+	hideUntilPayment   bool
 	profileDir         string
 	sessionStatePath   string
 	processCrashed     chan error
@@ -105,6 +110,7 @@ type Adapter struct {
 	closing            atomic.Bool
 	closeOnce          sync.Once
 	lifecycleMu        sync.Mutex
+	windowVisibilityMu sync.Mutex
 	closeHooks         []func()
 	closed             bool
 	closeErr           error
@@ -122,6 +128,10 @@ type Adapter struct {
 	providerResponses  []capturedProviderResponse
 	networkStarts      sync.Map
 	networkCompleted   sync.Map
+	networkCapture     *networkcapture.Store
+	rateLimit          *networkcapture.RateLimitGate
+	rateLimitAutomated bool
+	paymentHandoff     atomic.Bool
 	userAgent          browserUserAgent
 	userAgentMetadata  userAgentBootstrapIdentity
 	webGLIdentity      webGLIdentity
@@ -282,6 +292,7 @@ func NewAdapter(parent context.Context, config BrowserConfig) (*Adapter, error) 
 	return adapter, nil
 }
 
+//nolint:gocyclo,cyclop // Browser construction validates and owns one coupled Playwright identity session.
 func newAdapter(
 	parent context.Context,
 	pw *playwright.Playwright,
@@ -344,13 +355,22 @@ func newAdapter(
 		identitySession: identity.session,
 		stopPlaywright:  stopPlaywright, artifactsDir: config.ArtifactsDir,
 		processPID: pw.Pid(), profileDir: config.ProfileDir, sessionStatePath: config.SessionStatePath,
-		processCrashed: make(chan error, 1), processDone: make(chan struct{}),
+		hideUntilPayment: config.StartMinimized && !config.Headless,
+		processCrashed:   make(chan error, 1), processDone: make(chan struct{}),
 		closeAttemptDone: make(chan struct{}), forceWait: make(chan struct{}),
 		processWaitDone:   make(chan struct{}),
 		seatResponses:     make(chan seatNetworkResponse, 8),
 		userAgent:         selectedUserAgent,
 		userAgentMetadata: identity.metadata, webGLIdentity: identity.webGL,
-		blockResources: config.BlockResources,
+		blockResources: config.BlockResources, networkCapture: config.NetworkCapture,
+		rateLimit: networkcapture.NewRateLimitGate(), rateLimitAutomated: config.Headless || config.StartMinimized,
+	}
+	if adapter.networkCapture == nil {
+		adapter.networkCapture, err = networkcapture.NewStore(filepath.Join(config.ArtifactsDir, "network"), logging.Logger(), networkcapture.WithDebug(logging.DebugEnabled()))
+		if err != nil {
+			adapter.Close()
+			return nil, fmt.Errorf("initialize booking network capture: %w", err)
+		}
 	}
 	if persistedIdentity == nil {
 		if err := saveSessionIdentity(config, persistentBrowserIdentity{
@@ -364,6 +384,12 @@ func newAdapter(
 	if err := adapter.installBrowserHooks(identity.scripts); err != nil {
 		adapter.Close()
 		return nil, err
+	}
+	if config.StartMinimized && !config.Headless {
+		if err := adapter.minimizeBrowserWindow(); err != nil {
+			adapter.Close()
+			return nil, fmt.Errorf("minimize background booking browser: %w", err)
+		}
 	}
 	go func() {
 		<-adapterContext.Done()
@@ -475,7 +501,25 @@ func (adapter *Adapter) installBrowserHooks(scripts []string) error {
 		return fmt.Errorf("install browser resource routing: %w", err)
 	}
 	adapter.browserContext.OnResponse(adapter.handleResponse)
+	adapter.browserContext.OnResponse(adapter.observeRateLimitResponse)
+	adapter.browserContext.OnRequestFinished(func(request playwright.Request) {
+		adapter.captureNetworkExchange(request, false)
+	})
+	adapter.browserContext.OnRequestFailed(func(request playwright.Request) {
+		adapter.observeRateLimitFailure(request)
+		adapter.captureNetworkExchange(request, true)
+	})
 	adapter.browserContext.OnRequestFailed(adapter.handleRequestFailed)
+	if adapter.hideUntilPayment {
+		adapter.browserContext.OnPage(func(playwright.Page) {
+			if err := adapter.ensureBackgroundBrowserHidden(); err != nil {
+				logging.ErrorUnexpected(adapter.ctx, "cgv.booking.window.repark.failed",
+					"booking_monitoring", "repark_booking_window",
+					"new background tabs remain minimized and off-screen until payment",
+					"a new browser tab may have become visible", err)
+			}
+		})
+	}
 	adapter.installPageHooks()
 	adapter.browserContext.OnClose(func(playwright.BrowserContext) {
 		if adapter.closing.Load() {
@@ -519,10 +563,18 @@ func (adapter *Adapter) OpenTab(parent context.Context) (*Adapter, error) {
 		ctx: ctx, cancelContext: cancel, owner: adapter,
 		browserContext: adapter.browserContext, page: page, identitySession: identitySession,
 		artifactsDir: adapter.artifactsDir, seatResponses: make(chan seatNetworkResponse, 8),
+		networkCapture: adapter.networkCapture,
+		rateLimit:      adapter.rateLimit, rateLimitAutomated: true,
 		userAgent: adapter.userAgent, userAgentMetadata: adapter.userAgentMetadata,
 		webGLIdentity: adapter.webGLIdentity, blockResources: adapter.blockResources,
 	}
 	tab.installPageHooks()
+	if err := adapter.ensureBackgroundBrowserHidden(); err != nil {
+		_ = identitySession.Detach()
+		_ = page.Close()
+		cancel()
+		return nil, fmt.Errorf("keep booking browser hidden after opening tab: %w", err)
+	}
 	page.OnClose(func(playwright.Page) { cancel() })
 	go func() {
 		<-ctx.Done()
@@ -541,6 +593,32 @@ func (adapter *Adapter) installPageHooks() {
 	}
 	adapter.page.OnResponse(adapter.captureProviderResponse)
 	adapter.page.OnResponse(adapter.handleSeatResponse)
+	root := adapter.rootAdapter()
+	if root != nil && root.hideUntilPayment {
+		adapter.page.OnFrameNavigated(func(frame playwright.Frame) {
+			if frame == adapter.page.MainFrame() {
+				adapter.rehideAfterBrowserEvent("main_frame_navigated")
+			}
+		})
+		adapter.page.OnLoad(func(playwright.Page) {
+			adapter.rehideAfterBrowserEvent("page_loaded")
+		})
+	}
+}
+
+func (adapter *Adapter) rehideAfterBrowserEvent(operation string) {
+	root := adapter.rootAdapter()
+	if root == nil || root.closing.Load() || root.paymentHandoff.Load() {
+		return
+	}
+	go func() {
+		if err := root.ensureBackgroundBrowserHidden(); err != nil && !root.closing.Load() {
+			logging.ErrorUnexpected(root.ctx, "cgv.booking.window.repark.failed",
+				"booking_monitoring", operation,
+				"background Chrome remains hidden until payment",
+				"browser navigation may have made Chrome visible", err)
+		}
+	}()
 }
 
 func (adapter *Adapter) handleSeatResponse(response playwright.Response) {
@@ -655,6 +733,9 @@ func persistentContextOptions(
 		Screen:         &playwright.Size{Width: 1440, Height: 1100},
 		Viewport:       &playwright.Size{Width: 1440, Height: 1100},
 	}
+	if config.StartMinimized && !config.Headless {
+		options.Args = append(options.Args, "--start-minimized")
+	}
 	if config.RestoreSession {
 		options.Args = append(options.Args, "--restore-last-session")
 		options.IgnoreDefaultArgs = append(options.IgnoreDefaultArgs, "--no-startup-window")
@@ -721,7 +802,7 @@ func (adapter *Adapter) routeRequest(route playwright.Route) {
 	started := time.Now()
 	adapter.networkStarts.Store(requestID, started)
 	fields := browserRequestFields(request, requestID)
-	logging.Info(adapter.ctx, "http.client.request.attempted", fields...)
+	logging.Debug(adapter.ctx, "http.client.request.attempted", fields...)
 	if adapter.blockResources && shouldBlockResource(request.URL(), request.ResourceType()) {
 		adapter.blockedRequests.Add(1)
 		err := route.Abort("blockedbyclient")
@@ -732,6 +813,17 @@ func (adapter *Adapter) routeRequest(route playwright.Route) {
 		}
 		adapter.completeBrowserRequest(requestID, fields...)
 		return
+	}
+	if adapter.rateLimitAutomated && !adapter.paymentHandoff.Load() {
+		if allowed, decision := adapter.rateLimit.Allow(browserRequestHost(request.URL())); !allowed {
+			adapter.blockedRequests.Add(1)
+			fields = append(fields, "duration_ms", browserDurationMs(started), "status", 0,
+				"retry_at", decision.BlockedUntil, "retry_after_ms", decision.Delay.Milliseconds(),
+				"error", "provider rate limit circuit is open")
+			adapter.completeBrowserRequest(requestID, fields...)
+			_ = route.Abort("blockedbyclient")
+			return
+		}
 	}
 	adapter.continuedRequests.Add(1)
 	headers, err := request.AllHeaders()
@@ -767,6 +859,59 @@ func (adapter *Adapter) handleResponse(response playwright.Response) {
 		}
 	}
 	adapter.completeBrowserRequest(requestID, fields...)
+}
+
+func (adapter *Adapter) captureNetworkExchange(request playwright.Request, failed bool) {
+	if adapter == nil || adapter.networkCapture == nil || request == nil {
+		return
+	}
+	if !playwrightcapture.ShouldCapturePlaywrightRequest(adapter.networkCapture, request, failed) {
+		return
+	}
+	record := playwrightcapture.PlaywrightRecord(request, failed)
+	record.Service = "client"
+	record.Scenario = "booking_browser"
+	record.CorrelationID = browserRequestID(request)
+	if _, err := adapter.networkCapture.Save(context.WithoutCancel(adapter.ctx), record); err != nil {
+		logging.ErrorUnexpected(adapter.ctx, "browser.network.capture.failed", "network", "capture_booking_exchange",
+			"complete browser request and response artifact", "network artifact write failed", err,
+			"request_id", record.CorrelationID, "method", record.Request.Method, "request_url", record.Request.URL)
+	}
+}
+
+func (adapter *Adapter) observeRateLimitResponse(response playwright.Response) {
+	if adapter == nil || adapter.rateLimit == nil || response == nil || !adapter.rateLimitAutomated || adapter.paymentHandoff.Load() {
+		return
+	}
+	host := browserRequestHost(response.URL())
+	if response.Status() != http.StatusTooManyRequests {
+		if adapter.rateLimit.ObserveSuccess(host) {
+			logging.Info(adapter.ctx, "browser.network.rate_limit.closed", "event", "browser.network.rate_limit.closed",
+				"scenario", "booking_monitoring", "request_url", response.URL(), "status", response.Status(), "outcome", "recovered")
+		}
+		return
+	}
+	headers, _ := response.HeadersArray()
+	decision := adapter.rateLimit.Observe429(host, playwrightcapture.PlaywrightHeaders(headers))
+	logging.ErrorUnexpected(adapter.ctx, "browser.network.rate_limit.opened", "booking_monitoring", "observe_provider_response",
+		"provider request below its rate limit", "HTTP 429 opened the local circuit", ErrProviderThrottled,
+		"request_url", response.URL(), "status", response.Status(), "retry_at", decision.BlockedUntil,
+		"retry_after_ms", decision.Delay.Milliseconds(), "rate_limit_source", decision.Source,
+		"rate_limit_failures", decision.Failures)
+}
+
+func (adapter *Adapter) observeRateLimitFailure(request playwright.Request) {
+	if adapter == nil || adapter.rateLimit == nil || request == nil || !adapter.rateLimitAutomated || adapter.paymentHandoff.Load() {
+		return
+	}
+	decision, observed := adapter.rateLimit.ObserveFailure(browserRequestHost(request.URL()))
+	if !observed {
+		return
+	}
+	logging.WarnUnexpected(adapter.ctx, "browser.network.rate_limit.half_open_failed", "booking_monitoring", "probe_provider_rate_limit",
+		"one successful half-open provider request", "half-open request failed before a response",
+		"request_url", request.URL(), "retry_at", decision.BlockedUntil,
+		"retry_after_ms", decision.Delay.Milliseconds(), "rate_limit_failures", decision.Failures)
 }
 
 func (adapter *Adapter) handleRequestFailed(request playwright.Request) {
@@ -805,6 +950,14 @@ func browserRequestPath(rawURL string) string {
 		return "/"
 	}
 	return parsed.Path
+}
+
+func browserRequestHost(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	return parsed.Hostname()
 }
 
 func browserRequestFields(request playwright.Request, requestID string) []any {
@@ -883,17 +1036,32 @@ func (adapter *Adapter) completeBrowserRequest(requestID string, fields ...any) 
 		}
 	}
 	if outcome := expectedBrowserRequestOutcome(fields); outcome != "" {
-		logging.Info(adapter.ctx, "http.client.request.completed", append(fields, "outcome", outcome)...)
+		logging.Debug(adapter.ctx, "http.client.request.completed", append(fields, "outcome", outcome)...)
 		return
 	}
 	if browserRequestFailed(fields) {
 		logging.Error(adapter.ctx, "http.client.request.completed", fields...)
 		return
 	}
-	logging.Info(adapter.ctx, "http.client.request.completed", fields...)
+	logging.Debug(adapter.ctx, "http.client.request.completed", fields...)
 }
 
 func expectedBrowserRequestOutcome(fields []any) string {
+	for index := 0; index+1 < len(fields); index += 2 {
+		if fields[index] != "status" {
+			continue
+		}
+		switch status := fields[index+1].(type) {
+		case int:
+			if status == http.StatusUnauthorized {
+				return "unauthenticated"
+			}
+		case int32:
+			if status == http.StatusUnauthorized {
+				return "unauthenticated"
+			}
+		}
+	}
 	for index := 0; index+1 < len(fields); index += 2 {
 		if fields[index] != "error" {
 			continue

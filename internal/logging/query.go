@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -23,6 +24,7 @@ type Query struct {
 	MinimumLevel slog.Level
 	Scenario     string
 	Limit        int
+	Since        time.Time
 }
 
 type Entry struct {
@@ -60,12 +62,15 @@ type Snapshot struct {
 	InvalidLines int         `json:"invalid_lines"`
 	ScannedBytes int64       `json:"scanned_bytes"`
 	Truncated    bool        `json:"truncated"`
+	StartedAt    string      `json:"started_at,omitempty"`
 }
 
 func ParseMinimumLevel(value string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "warn", "warning":
 		return slog.LevelWarn, nil
+	case "debug":
+		return slog.LevelDebug, nil
 	case "error":
 		return slog.LevelError, nil
 	case "info":
@@ -134,6 +139,9 @@ func scanSnapshot(file *os.File, offset, size int64, query Query, limit int) (Sn
 		Entries:   make([]Entry, 0, limit),
 		Truncated: offset > 0, ScannedBytes: size - offset,
 	}
+	if !query.Since.IsZero() {
+		snapshot.StartedAt = query.Since.Format(time.RFC3339Nano)
+	}
 	aggregates := make(map[string]*Aggregate)
 	scenarioFilter := strings.TrimSpace(query.Scenario)
 	var sequence int64
@@ -143,6 +151,12 @@ func scanSnapshot(file *os.File, offset, size int64, query Query, limit int) (Sn
 		if !ok {
 			snapshot.InvalidLines++
 			continue
+		}
+		if !query.Since.IsZero() {
+			entryTime, err := time.Parse(time.RFC3339Nano, entry.Time)
+			if err != nil || entryTime.Before(query.Since) {
+				continue
+			}
 		}
 		if level < query.MinimumLevel || (scenarioFilter != "" && entry.Scenario != scenarioFilter) {
 			continue

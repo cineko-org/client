@@ -5,7 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestParseMinimumLevelIncludesDebug(t *testing.T) {
+	level, err := ParseMinimumLevel("debug")
+	if err != nil || level != slog.LevelDebug {
+		t.Fatalf("debug level = %v, %v", level, err)
+	}
+}
 
 func TestReadSnapshotFiltersAndAggregatesUnexpectedEvents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client.log")
@@ -39,6 +47,24 @@ func TestReadSnapshotFiltersAndAggregatesUnexpectedEvents(t *testing.T) {
 	}
 	if errorsOnly.Matching != 1 || len(errorsOnly.Entries) != 1 || errorsOnly.Entries[0].Level != "ERROR" {
 		t.Fatalf("errors-only snapshot = %+v", errorsOnly)
+	}
+}
+
+func TestReadSnapshotScopesCountsToCurrentRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.log")
+	contents := `{"time":"2026-08-25T05:00:00Z","level":"ERROR","event":"old.failure"}
+{"time":"2026-08-25T06:00:01Z","level":"WARN","event":"current.warning"}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Date(2026, 8, 25, 6, 0, 0, 0, time.UTC)
+	snapshot, err := ReadSnapshot(path, Query{MinimumLevel: slog.LevelWarn, Since: since})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Matching != 1 || snapshot.Warnings != 1 || snapshot.Errors != 0 || snapshot.StartedAt != since.Format(time.RFC3339Nano) {
+		t.Fatalf("current-run snapshot = %+v", snapshot)
 	}
 }
 

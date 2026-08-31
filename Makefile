@@ -84,7 +84,7 @@ workflow-check:
 contract-check:
 	@! grep -Eq '^replace github.com/cineko-org/(contracts/v3|probe/v2)' go.mod
 	grep -Eq '^# github.com/cineko-org/contracts/v3 v3.7.0$$' vendor/modules.txt
-	grep -Eq '^# github.com/cineko-org/probe/v2 v2.8.0$$' vendor/modules.txt
+	grep -Eq '^# github.com/cineko-org/probe/v2 v2.8.2$$' vendor/modules.txt
 
 contract-release-check: contract-check
 

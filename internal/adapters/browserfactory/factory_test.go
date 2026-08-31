@@ -228,8 +228,12 @@ func TestTaskBrowserIdentityPolicy(t *testing.T) {
 	t.Parallel()
 	base := cgv.DefaultBrowserConfig()
 	session := browserConfigForTask(base, Task{Purpose: egress.PurposeSession, Headless: true})
-	if !session.RestoreSession || session.BlockResources || session.UserAgentMode != cgv.UserAgentSession || session.Headless || !session.StartMinimized {
+	if !session.RestoreSession || session.BlockResources || session.UserAgentMode != cgv.UserAgentSession || !session.Headless || session.StartMinimized {
 		t.Fatalf("session browser config = %+v", session)
+	}
+	interactive := browserConfigForTask(base, Task{Purpose: egress.PurposeSession})
+	if interactive.Headless || interactive.StartMinimized {
+		t.Fatalf("interactive session browser config = %+v", interactive)
 	}
 	scan := browserConfigForTask(base, Task{Purpose: egress.PurposeScan})
 	if scan.RestoreSession || !scan.BlockResources || scan.UserAgentMode != cgv.UserAgentRandomizedScan {

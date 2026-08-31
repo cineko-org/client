@@ -2,4 +2,4 @@
 
 package main
 
-func useLauncherOwnedActivationPolicy() bool { return true }
+func configureDesktopActivationPolicy(bool) bool { return true }

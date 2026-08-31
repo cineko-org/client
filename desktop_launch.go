@@ -16,6 +16,10 @@ import (
 
 const maximumLaunchPayload = 16 << 10
 
+func isDevDirectLaunch() bool {
+	return desktopVersion == "dev" && os.Getenv("CINEKO_DEV_DIRECT") == "1"
+}
+
 func openDesktopStore(
 	ctx context.Context,
 	dataDir string,
@@ -26,7 +30,7 @@ func openDesktopStore(
 		return nil, nil, "", err
 	}
 
-	if desktopVersion == "dev" && os.Getenv("CINEKO_DEV_DIRECT") == "1" {
+	if isDevDirectLaunch() {
 		clientVersion, err := devDirectClientVersion()
 		if err != nil {
 			_ = store.Close()

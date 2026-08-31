@@ -35,7 +35,7 @@ func (adapter *Adapter) PreparePayment(
 			return nil, err
 		}
 		if strings.Contains(strings.ToLower(err.Error()), "no longer selectable") {
-			logging.Info(ctx, "cgv.booking.round.unavailable",
+			logging.Debug(ctx, "cgv.booking.round.unavailable",
 				"event", "cgv.booking.round.unavailable", "scenario", "seat_selection",
 				"operation", stage, "outcome", "unavailable", "showtime_id", showtimeID,
 				"seat_labels", strings.Join(seatLabels, ","), "duration_ms", browserDurationMs(started),
@@ -65,6 +65,10 @@ func (adapter *Adapter) PreparePayment(
 		return fail("read_payment_total", err)
 	}
 	adapter.preparedPayment = true
+	adapter.paymentHandoff.Store(true)
+	if adapter.owner != nil {
+		adapter.owner.paymentHandoff.Store(true)
+	}
 	if err := adapter.PresentPaymentWindow(); err != nil {
 		// The provider hold is already prepared. Keep the successful reservation
 		// alive even if the desktop window manager refuses the focus request.

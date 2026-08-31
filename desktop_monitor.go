@@ -137,7 +137,7 @@ func (runtime *localMonitorRuntime) handleResult(ctx context.Context, result loc
 
 func logLocalMonitorFailure(ctx context.Context, result localMonitorResult) {
 	if errors.Is(result.err, application.ErrSeatUnavailable) || errors.Is(result.err, application.ErrBookingNotOpen) {
-		logging.Info(ctx, "monitor.execution.completed",
+		logging.Debug(ctx, "monitor.execution.completed",
 			"event", "monitor.execution.completed", "scenario", "booking_monitoring",
 			"operation", "watch_showtime_tab", "outcome", "unavailable",
 			"monitor_id", result.monitorID, "showtime_id", result.showtimeID,
@@ -197,7 +197,7 @@ func (runtime *localMonitorRuntime) startExecution(ctx context.Context, key stri
 	executionContext, cancel := context.WithCancel(ctx)
 	execution := &localMonitorExecution{target: target, cancel: cancel}
 	runtime.active[key] = execution
-	logging.Info(ctx, "monitor.execution.started",
+	logging.Debug(ctx, "monitor.execution.started",
 		"event", "monitor.execution.started", "scenario", "booking_monitoring",
 		"operation", "watch_showtime_tab", "outcome", "started",
 		"monitor_id", target.monitorID, "showtime_id", target.showtime.GetId(), "signal_kind", target.signal,

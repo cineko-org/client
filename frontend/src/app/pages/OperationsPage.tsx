@@ -13,8 +13,14 @@ export function OperationsPage() {
 				snapshot={logs.snapshot}
 				loading={logs.loading}
 				error={logs.error}
+				network={logs.network}
+				selectedNetwork={logs.selectedNetwork}
+				selectedNetworkID={logs.selectedNetworkID}
+				clearing={logs.clearing}
 				onMinimumLevelChange={logs.setMinimumLevel}
 				onReload={() => void logs.reload()}
+				onInspectNetwork={(id) => void logs.inspectNetwork(id)}
+				onClear={logs.clearLogs}
 			/>
 		</Stack>
 	);

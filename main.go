@@ -18,6 +18,7 @@ import (
 	"github.com/cineko-org/client/internal/logging"
 	"github.com/cineko-org/client/internal/platform"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	"github.com/cineko-org/probe/v2/networkcapture"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -54,12 +55,21 @@ func runDesktop() (runErr error) {
 	if err := configureDesktopRuntimePaths(dataDir); err != nil {
 		return err
 	}
-	closeLog, err := logging.OpenPersistent(dataDir)
+	debugMode := desktopDebugMode()
+	restoreDebug := logging.SetDebug(debugMode)
+	defer restoreDebug()
+	logJournal, closeLog, err := logging.OpenPersistentJournal(dataDir)
 	if err != nil {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, closeLog()) }()
-	logging.Info(context.Background(), "Client startup", "event", "client.startup", "data_dir", dataDir, "version", desktopVersion)
+	logging.Info(context.Background(), "Client startup", "event", "client.startup", "data_dir", dataDir, "version", desktopVersion, "debug", debugMode)
+	networkCapture, err := networkcapture.NewStore(filepath.Join(dataDir, "artifacts", "network"), logging.Logger(), networkcapture.WithDebug(debugMode))
+	if err != nil {
+		return err
+	}
+	restoreNetworkCapture := logging.SetNetworkCapture(networkCapture)
+	defer restoreNetworkCapture()
 	store, launchContext, startupReadyNonce, err := openDesktopStore(context.Background(), dataDir, os.Stdin)
 	if err != nil {
 		return err
@@ -68,7 +78,7 @@ func runDesktop() (runErr error) {
 	if err := prepareDesktopState(context.Background(), store, launchContext, dataDir); err != nil {
 		return err
 	}
-	browsers, err := browserfactory.NewFromEnvironment(dataDir)
+	browsers, err := browserfactory.NewFromEnvironment(dataDir, networkCapture)
 	if err != nil {
 		return err
 	}
@@ -79,7 +89,7 @@ func runDesktop() (runErr error) {
 	}
 	defer func() { runErr = errors.Join(runErr, warmPool.Close()) }()
 	scheduleChanged := make(chan struct{}, 1)
-	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, scheduleChanged)
+	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, scheduleChanged, networkCapture)
 	if err != nil {
 		return err
 	}
@@ -94,7 +104,14 @@ func runDesktop() (runErr error) {
 		Factory:    newAutomationFactory(browsers, bookingHost, embeddedProbe, store.UserID()),
 		IDs:        platform.IDGenerator{}, Clock: platform.Clock{}, Waiter: platform.Waiter{}, Events: hooks,
 		UserID: store.UserID(), PosterCacheDir: filepath.Join(dataDir, "posters"),
-		LogPath: filepath.Join(dataDir, "client.log"),
+		LogPath:           filepath.Join(dataDir, "client.log"),
+		NetworkCaptureDir: networkCapture.Root(),
+		ClearLogs: func(context.Context) error {
+			if err := networkCapture.Clear(); err != nil {
+				return err
+			}
+			return logJournal.Clear()
+		},
 		BookingDemandChanged: func(active bool) {
 			bookingHost.SetDemand(active)
 		},
@@ -118,6 +135,15 @@ func runDesktop() (runErr error) {
 		return errors.Join(err, errUpdateRequired)
 	}
 	return err
+}
+
+func desktopDebugMode() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CINEKO_DEBUG"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func prepareDesktopState(
