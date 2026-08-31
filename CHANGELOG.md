@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.2](https://github.com/cineko-org/client/compare/v2.8.1...v2.8.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* make local monitoring bounded and observable ([#42](https://github.com/cineko-org/client/issues/42)) ([46fae42](https://github.com/cineko-org/client/commit/46fae42b26a7c5cedbc7625c2dd909b8286ffcbe))
+
 ## [2.8.1](https://github.com/cineko-org/client/compare/v2.8.0...v2.8.1) (2026-08-24)
 
 
