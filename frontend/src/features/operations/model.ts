@@ -35,7 +35,48 @@ export interface OperationsLogSnapshot {
 	invalid_lines: number;
 	scanned_bytes: number;
 	truncated: boolean;
+	started_at?: string;
 }
+
+export interface NetworkCaptureSummary {
+	version: number;
+	id: string;
+	completed_at: string;
+	service: string;
+	scenario?: string;
+	transport: string;
+	outcome: string;
+	method: string;
+	url: string;
+	status: number;
+	duration_ms: number;
+	manifest_path: string;
+	error?: string;
+	request_body_sha256?: string;
+	request_body_bytes?: number;
+	response_body_sha256?: string;
+	response_body_bytes?: number;
+}
+
+export interface NetworkCaptureSnapshot {
+	entries: NetworkCaptureSummary[];
+	matching: number;
+	statistics: NetworkCaptureStatistics;
+}
+
+export interface NetworkCaptureStatistics {
+	captured: number;
+	provider_sent: number;
+	blocked: number;
+	failed: number;
+	status_429: number;
+	truncated: boolean;
+}
+
+export const emptyNetworkCaptureSnapshot: NetworkCaptureSnapshot = {
+	entries: [], matching: 0,
+	statistics: { captured: 0, provider_sent: 0, blocked: 0, failed: 0, status_429: 0, truncated: false },
+};
 
 export const emptyOperationsLogSnapshot: OperationsLogSnapshot = {
 	entries: [], aggregates: [], matching: 0, warnings: 0, errors: 0,

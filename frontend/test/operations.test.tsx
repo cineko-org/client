@@ -32,8 +32,9 @@ describe('operations log view', () => {
 		expect(formatLogTime('2026-08-24T01:02:03Z')).not.toBe('2026-08-24T01:02:03Z');
 	});
 
-	it('shows warning and error aggregates and can request the error-only filter', () => {
+	it('shows warning and error aggregates and can request the error-only filter', async () => {
 		const onMinimumLevelChange = vi.fn<(value: 'warn' | 'error') => void>();
+		const onClear = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
 		render(
 			<MantineProvider theme={cinekoTheme}>
 				<OperationsLogView
@@ -56,8 +57,13 @@ describe('operations log view', () => {
 					}}
 					loading={false}
 					error=""
+					network={{
+						entries: [], matching: 0,
+						statistics: { captured: 81, provider_sent: 19, blocked: 59, failed: 0, status_429: 0, truncated: false },
+					}}
 					onMinimumLevelChange={onMinimumLevelChange}
 					onReload={vi.fn<() => void>()}
+					onClear={onClear}
 				/>
 			</MantineProvider>,
 		);
@@ -66,8 +72,15 @@ describe('operations log view', () => {
 		expect(screen.getByText('좌석 선택')).not.toBeNull();
 		expect(screen.getByText('scanner.schedule.partial')).not.toBeNull();
 		expect(screen.getByText('unexpected dialog')).not.toBeNull();
+		expect(screen.getByText('CGV 요청 전송')).not.toBeNull();
+		expect(screen.getByText('19')).not.toBeNull();
+		expect(screen.getByText('HTTP 429')).not.toBeNull();
+		expect(screen.getByText(/브라우저 리소스 59건 · HTTP 응답이나 오류가 아닙니다/)).not.toBeNull();
 
 		fireEvent.click(screen.getByText('오류만'));
 		expect(onMinimumLevelChange).toHaveBeenCalledWith('error');
+		fireEvent.click(screen.getByText('로그 비우기'));
+		expect(await screen.findByText(/구조화 로그와 저장된 네트워크 요청/)).not.toBeNull();
+		expect(onClear).not.toHaveBeenCalled();
 	});
 });

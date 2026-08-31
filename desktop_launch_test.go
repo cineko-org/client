@@ -58,4 +58,18 @@ func TestDevDirectClientVersion(t *testing.T) {
 	}
 }
 
+func TestIsDevDirectLaunchRequiresDevelopmentBuildAndOptIn(t *testing.T) {
+	previousVersion := desktopVersion
+	t.Cleanup(func() { desktopVersion = previousVersion })
+	desktopVersion = "dev"
+	t.Setenv("CINEKO_DEV_DIRECT", "1")
+	if !isDevDirectLaunch() {
+		t.Fatal("development direct launch was not detected")
+	}
+	desktopVersion = "2.8.0"
+	if isDevDirectLaunch() {
+		t.Fatal("release Client accepted direct launch mode")
+	}
+}
+
 func launchStringPointer(value string) *string { return &value }

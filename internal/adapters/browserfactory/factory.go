@@ -13,6 +13,7 @@ import (
 
 	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/adapters/egress"
+	"github.com/cineko-org/probe/v2/networkcapture"
 )
 
 var ErrClosed = errors.New("browser factory is closed")
@@ -70,7 +71,7 @@ func New(base cgv.BrowserConfig, egressManager *egress.Manager) (*Factory, error
 	return factory, nil
 }
 
-func NewFromEnvironment(dataDir string) (*Factory, error) {
+func NewFromEnvironment(dataDir string, captures ...*networkcapture.Store) (*Factory, error) {
 	egressManager, err := egress.NewFromEnvironment()
 	if err != nil {
 		return nil, err
@@ -78,6 +79,9 @@ func NewFromEnvironment(dataDir string) (*Factory, error) {
 	configuration := cgv.DefaultBrowserConfig()
 	configuration.ProfileDir = filepath.Join(dataDir, "chrome-profile")
 	configuration.ArtifactsDir = filepath.Join(dataDir, "artifacts")
+	if len(captures) > 0 {
+		configuration.NetworkCapture = captures[0]
+	}
 	if chromePath := strings.TrimSpace(os.Getenv("CINEKO_CHROME_PATH")); chromePath != "" {
 		configuration.ChromePath = chromePath
 	}
@@ -273,8 +277,8 @@ func browserConfigForTask(base cgv.BrowserConfig, task Task) cgv.BrowserConfig {
 	base.UserAgentMode = cgv.UserAgentSession
 	switch task.Purpose {
 	case egress.PurposeSession:
-		base.Headless = false
-		base.StartMinimized = task.StartMinimized || task.Headless
+		base.Headless = task.Headless
+		base.StartMinimized = task.StartMinimized && !task.Headless
 	case egress.PurposeScan:
 		base.UserAgentMode = cgv.UserAgentRandomizedScan
 	}

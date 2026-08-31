@@ -1,6 +1,7 @@
 package cgv
 
 import (
+	"net/http"
 	"testing"
 )
 
@@ -41,6 +42,9 @@ func TestBrowserRequestFailureRecognizesStatusAndRawError(t *testing.T) {
 }
 
 func TestExpectedBrowserRequestOutcomeRecognizesFiltersAndNavigationCancellation(t *testing.T) {
+	if got := expectedBrowserRequestOutcome([]any{"status", http.StatusUnauthorized, "error", "Unauthorized"}); got != "unauthenticated" {
+		t.Fatalf("401 outcome = %q", got)
+	}
 	if got := expectedBrowserRequestOutcome([]any{"error", "blockedbyclient"}); got != "blocked" {
 		t.Fatalf("blocked outcome = %q", got)
 	}

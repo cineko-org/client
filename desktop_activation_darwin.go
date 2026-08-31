@@ -14,23 +14,32 @@ struct cineko_activation_result {
 	int applied;
 };
 
-static void cineko_apply_accessory_activation_policy(void *context) {
+static void cineko_apply_activation_policy(void *context) {
 	struct cineko_activation_result *result = context;
-	result->applied = [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory] ? 1 : 0;
+	NSInteger policy = result->applied == 2 ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory;
+	[NSApp setActivationPolicy:policy];
+	if (policy == NSApplicationActivationPolicyRegular) {
+		[NSApp activateIgnoringOtherApps:YES];
+	}
+	result->applied = [NSApp activationPolicy] == policy ? 1 : 0;
 }
 
-static int cineko_use_launcher_owned_activation_policy(void) {
-	struct cineko_activation_result result = {0};
+static int cineko_configure_activation_policy(int foreground) {
+	struct cineko_activation_result result = {foreground ? 2 : 0};
 	if (pthread_main_np() != 0) {
-		cineko_apply_accessory_activation_policy(&result);
+		cineko_apply_activation_policy(&result);
 	} else {
-		dispatch_sync_f(dispatch_get_main_queue(), &result, cineko_apply_accessory_activation_policy);
+		dispatch_sync_f(dispatch_get_main_queue(), &result, cineko_apply_activation_policy);
 	}
 	return result.applied;
 }
 */
 import "C"
 
-func useLauncherOwnedActivationPolicy() bool {
-	return C.cineko_use_launcher_owned_activation_policy() == 1
+func configureDesktopActivationPolicy(foreground bool) bool {
+	value := C.int(0)
+	if foreground {
+		value = 1
+	}
+	return C.cineko_configure_activation_policy(value) == 1
 }

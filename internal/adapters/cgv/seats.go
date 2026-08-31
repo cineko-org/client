@@ -48,7 +48,7 @@ func (adapter *Adapter) OpenSeatSelection(
 		return nil, err
 	}
 	snapshot := seatSnapshotProto(selection.snapshot, showtime.AuditoriumID)
-	logging.Info(ctx, "cgv.seat_selection.open.completed",
+	logging.Debug(ctx, "cgv.seat_selection.open.completed",
 		"event", "cgv.seat_selection.open.completed", "scenario", "seat_selection",
 		"operation", "open_seat_selection", "outcome", "succeeded",
 		"showtime_id", showtime.ID, "auditorium_id", showtime.AuditoriumID,
@@ -92,7 +92,7 @@ func (adapter *Adapter) RefreshSeatSelection(
 		return nil, err
 	}
 	protoSnapshot := seatSnapshotProto(snapshot, showtime.AuditoriumID)
-	logging.Info(ctx, "cgv.seat_selection.refresh.completed",
+	logging.Debug(ctx, "cgv.seat_selection.refresh.completed",
 		"event", "cgv.seat_selection.refresh.completed", "scenario", "seat_selection",
 		"operation", "refresh_seat_selection", "outcome", "succeeded",
 		"showtime_id", showtime.ID, "auditorium_id", showtime.AuditoriumID,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,13 +17,18 @@ import (
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	"github.com/cineko-org/probe/v2/networkcapture"
 	"github.com/cineko-org/probe/v2/probe"
 )
 
 const (
-	localCatalogInterval  = 6 * time.Hour
-	localScheduleInterval = time.Second
+	localCatalogInterval = 6 * time.Hour
+	// Opening detection is a low-frequency schedule scan. Cancellation-seat
+	// watching has its own browser-tab loop and must never amplify this into a
+	// complete multi-date theater scan every second.
+	localScheduleInterval = 30 * time.Second
 	localScannerRetry     = 30 * time.Second
+	catalogRefreshMarker  = "catalog-refresh"
 )
 
 type localScannerStore interface {
@@ -51,11 +57,14 @@ type embeddedProbe struct {
 	done    chan struct{}
 	failure chan error
 
-	activityMu   sync.Mutex
-	closing      bool
-	scanCancel   context.CancelFunc
-	shutdownOnce sync.Once
-	shutdownErr  error
+	activityMu         sync.Mutex
+	closing            bool
+	scanCancel         context.CancelFunc
+	shutdownOnce       sync.Once
+	shutdownErr        error
+	scheduleCursor     map[string]int
+	catalogRefreshPath string
+	clock              func() time.Time
 }
 
 func startEmbeddedProbe(
@@ -63,13 +72,15 @@ func startEmbeddedProbe(
 	store localScannerStore,
 	dataDir string,
 	scheduleChanged chan<- struct{},
+	networkCapture *networkcapture.Store,
 ) (*embeddedProbe, error) {
 	if parent == nil || store == nil {
 		return nil, errors.New("embedded scanner dependencies are incomplete")
 	}
 	scanner, err := probe.NewLocalScanner(probe.LocalScannerConfig{
-		DataDir: filepath.Join(dataDir, "scanner"),
-		Logger:  logging.Logger(),
+		DataDir:        filepath.Join(dataDir, "scanner"),
+		Logger:         logging.Logger(),
+		NetworkCapture: networkCapture,
 	})
 	if err != nil {
 		return nil, err
@@ -78,6 +89,9 @@ func startEmbeddedProbe(
 	embedded := &embeddedProbe{
 		scanner: scanner, store: store, scheduleChanged: scheduleChanged, cancel: cancel,
 		done: make(chan struct{}), failure: make(chan error, 1),
+		scheduleCursor:     make(map[string]int),
+		catalogRefreshPath: filepath.Join(dataDir, "scanner", catalogRefreshMarker),
+		clock:              time.Now,
 	}
 	go embedded.run(ctx)
 	return embedded, nil
@@ -94,7 +108,7 @@ func (embedded *embeddedProbe) run(ctx context.Context) {
 			}
 		}
 	}()
-	catalogTimer := time.NewTimer(0)
+	catalogTimer := time.NewTimer(embedded.initialCatalogDelay(ctx))
 	defer catalogTimer.Stop()
 	scheduleTicker := time.NewTicker(localScheduleInterval)
 	defer scheduleTicker.Stop()
@@ -103,12 +117,19 @@ func (embedded *embeddedProbe) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-catalogTimer.C:
+			bootstrapSchedule := embedded.needsYongsanScheduleBootstrap(ctx)
 			if err := embedded.captureCatalog(ctx); err != nil {
 				embedded.logFailure(ctx, "catalog", err)
 				resetTimer(catalogTimer, localScannerRetry)
 			} else {
+				if err := embedded.recordCatalogRefresh(); err != nil {
+					logging.WarnUnexpected(ctx, "scanner.catalog.refresh_marker.failed", "catalog_collection", "record_catalog_refresh",
+						"durable catalog refresh timestamp", "timestamp could not be written", "error", err.Error())
+				}
 				resetTimer(catalogTimer, localCatalogInterval)
-				embedded.bootstrapYongsan(ctx)
+				if bootstrapSchedule {
+					embedded.bootstrapYongsan(ctx)
+				}
 			}
 		case <-scheduleTicker.C:
 			embedded.captureActiveSchedules(ctx)
@@ -118,6 +139,71 @@ func (embedded *embeddedProbe) run(ctx context.Context) {
 			embedded.captureSeatMap(ctx, auditoriumID)
 		}
 	}
+}
+
+func (embedded *embeddedProbe) initialCatalogDelay(ctx context.Context) time.Duration {
+	now := embedded.clock()
+	catalog, err := embedded.store.GetCatalog(ctx)
+	if err != nil || catalog.GetGeneration() == 0 || len(catalog.GetMovies()) == 0 || len(catalog.GetTheaters()) == 0 {
+		return 0
+	}
+	contents, err := os.ReadFile(filepath.Clean(embedded.catalogRefreshPath)) // #nosec G304 -- application-owned scanner metadata path.
+	if errors.Is(err, os.ErrNotExist) {
+		if markerErr := embedded.recordCatalogRefresh(); markerErr != nil {
+			logging.WarnUnexpected(ctx, "scanner.catalog.refresh_marker.bootstrap.failed", "catalog_collection", "bootstrap_catalog_refresh_marker",
+				"durable catalog refresh timestamp", "timestamp could not be written", "error", markerErr.Error())
+		}
+		return localCatalogInterval
+	}
+	if err != nil {
+		logging.WarnUnexpected(ctx, "scanner.catalog.refresh_marker.read.failed", "catalog_collection", "read_catalog_refresh_marker",
+			"readable catalog refresh timestamp", "timestamp could not be read", "error", err.Error())
+		return 0
+	}
+	lastRefresh, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(contents)))
+	if err != nil {
+		logging.WarnUnexpected(ctx, "scanner.catalog.refresh_marker.invalid", "catalog_collection", "parse_catalog_refresh_marker",
+			"RFC3339 catalog refresh timestamp", "timestamp was invalid", "error", err.Error())
+		return 0
+	}
+	remaining := lastRefresh.Add(localCatalogInterval).Sub(now)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+func (embedded *embeddedProbe) recordCatalogRefresh() error {
+	if err := os.MkdirAll(filepath.Dir(embedded.catalogRefreshPath), 0o700); err != nil {
+		return fmt.Errorf("create catalog refresh directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Clean(embedded.catalogRefreshPath), []byte(embedded.clock().Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write catalog refresh marker: %w", err)
+	}
+	return nil
+}
+
+func (embedded *embeddedProbe) needsYongsanScheduleBootstrap(ctx context.Context) bool {
+	catalog, err := embedded.store.GetCatalog(ctx)
+	if err != nil {
+		return true
+	}
+	yongsanID := ""
+	for _, theater := range catalog.GetTheaters() {
+		if theater.GetRegion() == "서울" && theater.GetName() == "용산아이파크몰" {
+			yongsanID = theater.GetId()
+			break
+		}
+	}
+	if yongsanID == "" {
+		return true
+	}
+	for _, showtime := range catalog.GetShowtimes() {
+		if showtime.GetTheaterId() == yongsanID {
+			return false
+		}
+	}
+	return true
 }
 
 func (embedded *embeddedProbe) captureCatalog(ctx context.Context) error {
@@ -240,7 +326,9 @@ func (embedded *embeddedProbe) captureActiveSchedules(ctx context.Context) {
 			weekdays = append(weekdays, weekday)
 		}
 		sort.Slice(weekdays, func(i, j int) bool { return weekdays[i] < weekdays[j] })
-		embedded.captureTheaterScheduleWeekdays(ctx, theaterID, weekdays)
+		shard := embedded.scheduleCursor[theaterID]
+		embedded.captureTheaterScheduleWeekdayShard(ctx, theaterID, weekdays, shard)
+		embedded.scheduleCursor[theaterID] = shard + 1
 	}
 }
 
@@ -260,14 +348,14 @@ func addMonitorProviderWeekdays(result map[int32]struct{}, targetWeekdays []int3
 }
 
 func (embedded *embeddedProbe) captureTheaterSchedules(ctx context.Context, theaterID string) {
-	embedded.captureTheaterSchedulesFor(ctx, theaterID, nil)
+	embedded.captureTheaterSchedulesFor(ctx, theaterID, nil, nil)
 }
 
-func (embedded *embeddedProbe) captureTheaterScheduleWeekdays(ctx context.Context, theaterID string, weekdays []int32) {
-	embedded.captureTheaterSchedulesFor(ctx, theaterID, weekdays)
+func (embedded *embeddedProbe) captureTheaterScheduleWeekdayShard(ctx context.Context, theaterID string, weekdays []int32, shard int) {
+	embedded.captureTheaterSchedulesFor(ctx, theaterID, weekdays, &shard)
 }
 
-func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, theaterID string, weekdays []int32) {
+func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, theaterID string, weekdays []int32, shard *int) {
 	theater, err := embedded.store.GetTheater(ctx, theaterID)
 	if err != nil {
 		embedded.logFailure(ctx, "schedule-theater", err)
@@ -277,9 +365,12 @@ func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, t
 	err = embedded.withScan(ctx, func(scanContext context.Context) error {
 		var captures []*observationpb.Capture
 		var captureErr error
-		if len(weekdays) > 0 {
+		switch {
+		case len(weekdays) > 0 && shard != nil:
+			captures, captureErr = embedded.scanner.CaptureScheduleWeekdayShard(scanContext, theater, weekdays, *shard)
+		case len(weekdays) > 0:
 			captures, captureErr = embedded.scanner.CaptureScheduleWeekdays(scanContext, theater, weekdays)
-		} else {
+		default:
 			captures, captureErr = embedded.scanner.CaptureSchedules(scanContext, theater)
 		}
 		if captureErr != nil {
@@ -300,7 +391,7 @@ func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, t
 			return err
 		}
 		embedded.notifyScheduleChanged()
-		logging.Info(scanContext, "scanner.schedule.capture.completed",
+		logging.Debug(scanContext, "scanner.schedule.capture.completed",
 			"event", "scanner.schedule.capture.completed", "scenario", "schedule_collection",
 			"operation", "capture_theater_schedule", "outcome", "succeeded",
 			"theater_id", theater.GetId(), "capture_count", len(captures),
@@ -308,7 +399,7 @@ func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, t
 			"target_weekdays", weekdays, "duration_ms", time.Since(startedAt).Milliseconds())
 		return nil
 	})
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, probe.ErrProviderThrottled) {
 		embedded.logFailure(ctx, "schedule", err)
 	}
 }

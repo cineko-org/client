@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cineko-org/client/internal/logging"
+	"github.com/cineko-org/probe/v2/networkcapture"
 )
 
 func TestLogsReturnsFilteredLocalSnapshot(t *testing.T) {
@@ -52,5 +54,69 @@ func TestRecordClientLogPersistsStructuredWarning(t *testing.T) {
 	}
 	if value := output.String(); !strings.Contains(value, `"level":"WARN"`) || !strings.Contains(value, `"scenario":"seat_selection"`) || !strings.Contains(value, `"route":"/presets"`) {
 		t.Fatalf("log = %s", value)
+	}
+}
+
+func TestNetworkLogsExposeManifestAndBody(t *testing.T) {
+	root := t.TempDir()
+	store, err := networkcapture.NewStore(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Save(context.Background(), networkcapture.Record{
+		Exchange: networkcapture.Exchange{
+			ID: "exchange-1", Service: "client", Scenario: "booking_browser", Transport: "chromium",
+			StartedAt: time.Now().Add(-time.Second), CompletedAt: time.Now(), Outcome: "failed", Error: "HTTP 429",
+			Request:  networkcapture.Request{Method: http.MethodPost, URL: "https://cgv.test/schedule?date=20260829"},
+			Response: &networkcapture.Response{Status: http.StatusTooManyRequests, Headers: []networkcapture.Header{{Name: "Retry-After", Value: "60"}}},
+		},
+		RequestBody: []byte("request-body"), ResponseBody: []byte("response-body"),
+		RequestContentType: "text/plain", ResponseContentType: "text/plain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{networkCaptureDir: root}
+
+	listRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/logs/network?status=429", nil)
+	listResponse := httptest.NewRecorder()
+	server.networkLogs(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), result.ID) {
+		t.Fatalf("list status/body = %d/%s", listResponse.Code, listResponse.Body.String())
+	}
+
+	detailRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/logs/network/"+result.ID, nil)
+	detailRequest.SetPathValue("id", result.ID)
+	detailResponse := httptest.NewRecorder()
+	server.networkLog(detailResponse, detailRequest)
+	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"status":429`) {
+		t.Fatalf("detail status/body = %d/%s", detailResponse.Code, detailResponse.Body.String())
+	}
+
+	bodyRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/logs/network/"+result.ID+"/body/response", nil)
+	bodyRequest.SetPathValue("id", result.ID)
+	bodyRequest.SetPathValue("side", "response")
+	bodyResponse := httptest.NewRecorder()
+	server.networkLogBody(bodyResponse, bodyRequest)
+	if bodyResponse.Code != http.StatusOK || bodyResponse.Body.String() != "response-body" {
+		t.Fatalf("body status/body = %d/%q", bodyResponse.Code, bodyResponse.Body.String())
+	}
+}
+
+func TestClearOperationLogsUsesConfiguredBoundary(t *testing.T) {
+	called := false
+	now := time.Date(2026, 8, 25, 15, 0, 0, 0, time.Local)
+	server := &Server{
+		clock:     webTestClock{now: now},
+		clearLogs: func(context.Context) error { called = true; return nil },
+	}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/api/logs", nil)
+	response := httptest.NewRecorder()
+	server.clearOperationLogs(response, request)
+	if response.Code != http.StatusNoContent || !called {
+		t.Fatalf("status/called = %d/%v, body = %s", response.Code, called, response.Body.String())
+	}
+	if got := server.observabilityStart(); !got.Equal(now) {
+		t.Fatalf("observability start = %s", got)
 	}
 }

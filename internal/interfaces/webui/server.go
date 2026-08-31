@@ -100,6 +100,8 @@ type Dependencies struct {
 	UserID              string
 	PosterCacheDir      string
 	LogPath             string
+	NetworkCaptureDir   string
+	ClearLogs           func(context.Context) error
 	// BookingDemandChanged tells the Client runtime whether authenticated
 	// active monitors need warm booking capacity.
 	BookingDemandChanged func(bool)
@@ -120,6 +122,10 @@ type Server struct {
 	bookingCapacityAvailable func() bool
 	posterCache              *posterCache
 	logPath                  string
+	networkCaptureDir        string
+	clearLogs                func(context.Context) error
+	observabilityMu          sync.RWMutex
+	observabilityStartedAt   time.Time
 	executionReady           chan struct{}
 
 	rootContext     context.Context
@@ -155,6 +161,9 @@ func New(dependencies Dependencies) (*Server, error) {
 		bookingCapacityAvailable: dependencies.BookingCapacityAvailable,
 		posterCache:              posters,
 		logPath:                  strings.TrimSpace(dependencies.LogPath),
+		networkCaptureDir:        strings.TrimSpace(dependencies.NetworkCaptureDir),
+		clearLogs:                dependencies.ClearLogs,
+		observabilityStartedAt:   dependencies.Clock.Now(),
 		executionReady:           make(chan struct{}, 1),
 		tasks:                    make(map[string]*clientpb.WebUITaskState), taskCancels: make(map[string]context.CancelFunc),
 		paymentSessions: make(map[string]*paymentSession),
@@ -235,6 +244,10 @@ func (server *Server) apiRoutes() *http.ServeMux {
 	mux.HandleFunc("POST /api/events/read", server.readEvents)
 	mux.HandleFunc("DELETE /api/events", server.clearEvents)
 	mux.HandleFunc("GET /api/logs", server.logs)
+	mux.HandleFunc("DELETE /api/logs", server.clearOperationLogs)
+	mux.HandleFunc("GET /api/logs/network", server.networkLogs)
+	mux.HandleFunc("GET /api/logs/network/{id}", server.networkLog)
+	mux.HandleFunc("GET /api/logs/network/{id}/body/{side}", server.networkLogBody)
 	mux.HandleFunc("POST /api/logs/client", server.recordClientLog)
 
 	return mux
@@ -859,7 +872,7 @@ func (server *Server) finishTask(id string, err error) {
 		logging.Error(server.lifetimeContext(), "local.task.completed", "task_id", id, "status", status, "error", fmt.Sprintf("%+v", err))
 		return
 	}
-	logging.Info(server.lifetimeContext(), "local.task.completed", "task_id", id, "status", status)
+	logging.Debug(server.lifetimeContext(), "local.task.completed", "task_id", id, "status", status)
 }
 
 func (server *Server) writeError(writer http.ResponseWriter, err error) {
