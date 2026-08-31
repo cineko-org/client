@@ -13,6 +13,6 @@ test ! -e desktop_execution.go
 ! grep -Fq 'replace github.com/cineko-org/contracts/v3' go.mod
 ! grep -Fq 'replace github.com/cineko-org/probe/v2' go.mod
 grep -Fq 'github.com/cineko-org/contracts/v3 v3.7.0' go.mod
-grep -Fq 'github.com/cineko-org/probe/v2 v2.8.2' go.mod
+grep -Fq 'github.com/cineko-org/probe/v2 v2.8.3' go.mod
 
 printf 'Client-only behavior boundary checks passed\n'
