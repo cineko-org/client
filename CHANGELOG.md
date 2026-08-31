@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.3](https://github.com/cineko-org/client/compare/v2.8.2...v2.8.3) (2026-08-31)
+
+
+### Bug Fixes
+
+* consume quiet probe browser logging ([#44](https://github.com/cineko-org/client/issues/44)) ([5c0966e](https://github.com/cineko-org/client/commit/5c0966e8d5ab5d52f55e582e616eda05c267212c))
+
 ## [2.8.2](https://github.com/cineko-org/client/compare/v2.8.1...v2.8.2) (2026-08-31)
 
 
