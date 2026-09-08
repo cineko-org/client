@@ -30,11 +30,9 @@ describe('application shell', () => {
 					connection={{ status: 'ready', message: '', lastSuccessfulAt: '', retrying: false }}
 					account={unauthenticatedAccount}
 					soxyStatus="ready"
-					desktopAvailable={false}
 					unreadNotices={0}
 					feedback={null}
 					onNavigate={noop}
-					onExit={noop}
 					onOpenNotifications={noop}
 					onOpenSettings={noop}
 					onDismissFeedback={noop}
@@ -49,6 +47,9 @@ describe('application shell', () => {
 		expect(screen.queryByText('신규 조회')).toBeNull();
 		expect(screen.getByRole('img', { name: 'SOXY: 정상' })).not.toBeNull();
 		expect(screen.queryByText('예매 프록시')).toBeNull();
+		expect(screen.queryByRole('button', { name: /^(나가기|종료)$/ })).toBeNull();
+		expect(screen.getByRole('button', { name: '알림' })).not.toBeNull();
+		expect(screen.getByRole('button', { name: '설정' })).not.toBeNull();
 		expect(container.querySelector('footer')?.classList.contains('mantine-hidden-from-sm')).toBe(true);
 		expect(screen.getAllByRole('button', { name: '홈' })).toHaveLength(2);
 		expect(screen.getAllByRole('button', { name: '예매 찾기' })).toHaveLength(2);

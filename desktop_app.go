@@ -144,13 +144,6 @@ func (app *DesktopApp) activeUserID() string {
 	return app.userID
 }
 
-func (app *DesktopApp) Exit() {
-	app.StopSeatMapWatch()
-	if appContext := app.context(); appContext != nil {
-		runtime.Quit(appContext)
-	}
-}
-
 // RecordClientLog keeps UI warnings and errors on the same local JSONL journal
 // as server, scanner, monitor, and browser events without consuming the HTTP
 // request channel used by application commands.
