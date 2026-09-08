@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.4](https://github.com/cineko-org/client/compare/v2.8.3...v2.8.4) (2026-09-08)
+
+
+### Bug Fixes
+
+* stabilize monitoring runtime, SOXY routing and booking ownership ([#48](https://github.com/cineko-org/client/issues/48)) ([00699da](https://github.com/cineko-org/client/commit/00699da4b237aa9386a4e8e802f3c35b54d1da01))
+
 ## [2.8.3](https://github.com/cineko-org/client/compare/v2.8.2...v2.8.3) (2026-08-31)
 
 
