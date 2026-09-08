@@ -2,9 +2,11 @@
 #import "../desktop_activation_darwin.m"
 
 static void settle(void) {
-    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:0.3];
+    NSDate *until = [NSDate dateWithTimeIntervalSinceNow:0.5];
     while ([until timeIntervalSinceNow] > 0) {
-        [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
+        NSEvent *event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:until
+            inMode:NSDefaultRunLoopMode dequeue:YES];
+        if (event != nil) [NSApp sendEvent:event];
     }
 }
 
@@ -31,7 +33,7 @@ int main(void) {
         settle();
         NSCAssert(window.miniaturized, @"fixture did not minimize");
         activate();
-        NSCAssert(!window.miniaturized && window.visible, @"activation did not restore minimized window");
+        NSCAssert(!window.miniaturized && window.visible, @"activation did not restore minimized window: mini=%d visible=%d windows=%@", window.miniaturized, window.visible, NSApp.windows);
         [window orderOut:nil];
         activate();
         NSCAssert(window.visible, @"activation did not reveal hidden window");

@@ -14,7 +14,9 @@ static void restoreClientWindow(void) {
     NSWindow *window = NSApp.mainWindow;
     if (window == nil) {
         for (NSWindow *candidate in NSApp.windows) {
-            if (candidate.canBecomeMainWindow && ![candidate isKindOfClass:[NSPanel class]]) {
+            // canBecomeMainWindow may be false while the window is hidden or
+            // miniaturized, precisely when activation needs to restore it.
+            if ((candidate.styleMask & NSWindowStyleMaskTitled) && ![candidate isKindOfClass:[NSPanel class]]) {
                 window = candidate;
                 break;
             }
