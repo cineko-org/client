@@ -139,13 +139,9 @@ jobs:
     permissions:
       contents: write
     env:
-      CINEKO_MINIMUM_LAUNCHER_VERSION: 1.4.0
+      CINEKO_MINIMUM_LAUNCHER_VERSION: 1.4.3
       CINEKO_BROWSER_REVISION: ${{ needs.browser.outputs.revision }}
       CINEKO_PLAYWRIGHT_VERSION: ${{ needs.browser.outputs.playwright_version }}
-      CINEKO_RELEASES_S3_ENDPOINT: ${{ secrets.CINEKO_RELEASES_S3_ENDPOINT }}
-      CINEKO_RELEASES_S3_ACCESS_KEY: ${{ secrets.CINEKO_RELEASES_S3_ACCESS_KEY }}
-      CINEKO_RELEASES_S3_SECRET_KEY: ${{ secrets.CINEKO_RELEASES_S3_SECRET_KEY }}
-      CINEKO_RELEASES_PUBLIC_BASE_URL: https://cdn.dsub.io/cineko/releases
     steps:
       - uses: actions/checkout@v7
         with:
@@ -183,38 +179,31 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --pattern "cineko-playwright-${CINEKO_PLAYWRIGHT_VERSION}-*" \
             --dir release-assets/playwright
-      - name: Publish immutable Client and Playwright artifacts
+      - name: Generate GitHub Client and Playwright metadata
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release.outputs.version }}
         run: |
           client_published_at="$(git show -s --format=%cI HEAD)"
-          export CINEKO_CLIENT_RELEASE_BASE="${CINEKO_RELEASES_PUBLIC_BASE_URL}/client/v${VERSION}"
+          export CINEKO_CLIENT_RELEASE_BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
           export CINEKO_RELEASE_METADATA_DIR=release-assets
           export CINEKO_RELEASE_PAYLOAD_OUT=release-assets/client-release-set.json
           scripts/register-client-release.sh "$VERSION" "$client_published_at" release-assets
-          scripts/publish-release.sh \
-            release-assets/client-release-darwin-arm64.json \
-            release-assets/client-release-linux-amd64.json \
-            release-assets/client-release-windows-amd64.json
 
           playwright_published_at="$(gh release view "playwright-v${CINEKO_PLAYWRIGHT_VERSION}" \
             --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)"
-          export CINEKO_PLAYWRIGHT_RELEASE_BASE="${CINEKO_RELEASES_PUBLIC_BASE_URL}/playwright/v${CINEKO_PLAYWRIGHT_VERSION}"
+          export CINEKO_PLAYWRIGHT_RELEASE_BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/playwright-v${CINEKO_PLAYWRIGHT_VERSION}"
           export CINEKO_RELEASE_METADATA_DIR=release-assets/playwright
           export CINEKO_RELEASE_PAYLOAD_OUT=release-assets/playwright/playwright-release-set.json
           scripts/register-playwright-release.sh \
             "$CINEKO_PLAYWRIGHT_VERSION" "$playwright_published_at" release-assets/playwright
-          scripts/publish-release.sh \
-            release-assets/playwright/playwright-release-darwin-arm64.json \
-            release-assets/playwright/playwright-release-linux-amd64.json \
-            release-assets/playwright/playwright-release-windows-amd64.json
-      - name: Publish the compatible Client runtime channel
+      - name: Generate compatible Client runtime manifests
         run: |
           scripts/publish-runtime-channel.sh \
             release-assets/client-release-set.json \
             release-assets/browser/browser-release-set.json \
-            release-assets/playwright/playwright-release-set.json
+            release-assets/playwright/playwright-release-set.json \
+            release-assets
       - name: Attach portable Clients
         env:
           GH_TOKEN: ${{ github.token }}
@@ -224,6 +213,9 @@ jobs:
           release-assets/cineko-client-*
           release-assets/SHA256SUMS
           release-assets/client-release-set.json
+          release-assets/runtime-darwin-arm64.json
+          release-assets/runtime-linux-amd64.json
+          release-assets/runtime-windows-amd64.json
           --repo "${{ github.repository }}"
       - name: Publish the complete Client release
         env:

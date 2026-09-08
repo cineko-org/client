@@ -61,7 +61,7 @@ final_zip_line="$(grep -n "ditto -c -k --sequesterRsrc --keepParent \"\$app_path
 draft_guard_line="$(grep -n 'Require an unpublished draft release' "$workflow" | head -n 1 | cut -d: -f1)"
 upload_line="$(grep -n 'Attach portable Clients' "$workflow" | head -n 1 | cut -d: -f1)"
 publish_line="$(grep -n 'Publish the complete Client release' "$workflow" | head -n 1 | cut -d: -f1)"
-channel_line="$(grep -n 'Publish the compatible Client runtime channel' "$workflow" | head -n 1 | cut -d: -f1)"
+channel_line="$(grep -n 'Generate compatible Client runtime manifests' "$workflow" | head -n 1 | cut -d: -f1)"
 [[ -n "$draft_guard_line" && -n "$upload_line" && -n "$publish_line" && -n "$channel_line" ]] || \
   fail 'draft publication order cannot be verified'
 ((draft_guard_line < channel_line && channel_line < upload_line && upload_line < publish_line)) || \

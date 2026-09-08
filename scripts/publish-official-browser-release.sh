@@ -6,6 +6,8 @@ if [[ $# -ne 3 ]]; then
   exit 2
 fi
 : "${CINEKO_RELEASE_PUBLISHED_AT:?required}"
+: "${GITHUB_REPOSITORY:?required}"
+: "${CINEKO_BROWSER_ASSETS_DIR:?required}"
 
 readonly revision="$1"
 readonly chrome_version="$2"
@@ -28,6 +30,8 @@ work_dir="$(mktemp -d)"
 readonly work_dir
 trap 'rm -rf "$work_dir"' EXIT
 readonly official_base="https://storage.googleapis.com/chrome-for-testing-public/$chrome_version"
+readonly github_base="https://github.com/$GITHUB_REPOSITORY/releases/download/chrome-v$chrome_version"
+mkdir -p "$CINEKO_BROWSER_ASSETS_DIR"
 readonly release_contract="$work_dir/releasecontract"
 GOWORK=off go build -mod=vendor -o "$release_contract" ./cmd/releasecontract
 release_paths=()
@@ -52,7 +56,7 @@ publish_platform() {
   local architecture="$2"
   local official_platform="$3"
   local executable="$4"
-  local archive="$work_dir/chrome-$official_platform.zip"
+  local archive="$CINEKO_BROWSER_ASSETS_DIR/chrome-$official_platform.zip"
   local url="$official_base/$official_platform/chrome-$official_platform.zip"
 
   curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
@@ -63,7 +67,7 @@ publish_platform() {
   }
   local release_path="$work_dir/${platform}-${architecture}.json"
   "$release_contract" release browser "$revision" "$platform/$architecture" "$archive" "$executable" \
-    "$url" "$CINEKO_RELEASE_PUBLISHED_AT" >"$release_path"
+    "$github_base/chrome-$official_platform.zip" "$CINEKO_RELEASE_PUBLISHED_AT" >"$release_path"
   release_paths+=("$release_path")
 }
 

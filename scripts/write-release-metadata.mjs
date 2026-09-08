@@ -9,7 +9,7 @@ const version = rawVersion.replace(/^v/, '');
 const platformSlug = platform.replace('/', '-');
 const publicBase = (process.env.CINEKO_RELEASES_PUBLIC_BASE_URL ?? '').replace(/\/$/, '');
 const publishedAt = process.env.CINEKO_RELEASE_PUBLISHED_AT ?? '';
-const publicUrl = `${publicBase}/${component}/v${version}/${platformSlug}/${basename(artifact)}`;
+const publicUrl = `${publicBase}/${basename(artifact)}`;
 const payload = execFileSync('go', [
   'run', '-mod=vendor', './cmd/releasecontract', 'release',
   component, version, platform, artifact, executable, publicUrl, publishedAt,
