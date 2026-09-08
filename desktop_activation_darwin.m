@@ -4,6 +4,7 @@
 #import <pthread.h>
 
 static id windowActivationObserver;
+static id quitObserver;
 
 static void onMainThread(dispatch_block_t action) {
     if (pthread_main_np()) action();
@@ -40,6 +41,10 @@ int cineko_configure_activation_policy(int foreground) {
             windowActivationObserver = [[[NSNotificationCenter defaultCenter]
                 addObserverForName:NSApplicationDidBecomeActiveNotification object:NSApp queue:nil
                 usingBlock:^(NSNotification *note) { restoreClientWindow(); }] retain];
+            NSString *quitName = [NSString stringWithFormat:@"io.cineko.client.quit.%d", NSProcessInfo.processInfo.processIdentifier];
+            quitObserver = [[[NSDistributedNotificationCenter defaultCenter]
+                addObserverForName:quitName object:nil queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) { [NSApp terminate:nil]; }] retain];
         }
         if (foreground) [NSApp activateIgnoringOtherApps:YES];
         applied = NSApp.activationPolicy == policy;
@@ -53,5 +58,8 @@ void cineko_remove_window_activation_observer(void) {
         [[NSNotificationCenter defaultCenter] removeObserver:windowActivationObserver];
         [windowActivationObserver release];
         windowActivationObserver = nil;
+        [[NSDistributedNotificationCenter defaultCenter] removeObserver:quitObserver];
+        [quitObserver release];
+        quitObserver = nil;
     });
 }

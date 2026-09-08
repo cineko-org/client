@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 
 	localstore "github.com/cineko-org/client/internal/adapters/storage/local"
 	"github.com/cineko-org/client/internal/interfaces/webui"
@@ -50,7 +51,8 @@ func desktopWindowOptions(
 ) *options.App {
 	return &options.App{
 		Title: "Cineko", Width: 1440, Height: 980, MinWidth: 360, MinHeight: 600,
-		BackgroundColour: options.NewRGB(10, 11, 14),
+		HideWindowOnClose: runtime.GOOS == "darwin",
+		BackgroundColour:  options.NewRGB(10, 11, 14),
 		AssetServer: &assetserver.Options{
 			Assets: webui.Assets(), Handler: server.DesktopHandler(),
 			Middleware: assetserver.ChainMiddleware(logging.HTTPMiddleware, webui.SecurityHeaders),
