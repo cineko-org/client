@@ -139,7 +139,7 @@ jobs:
     permissions:
       contents: write
     env:
-      CINEKO_MINIMUM_LAUNCHER_VERSION: 1.4.3
+      CINEKO_MINIMUM_LAUNCHER_VERSION: 1.5.0
       CINEKO_BROWSER_REVISION: ${{ needs.browser.outputs.revision }}
       CINEKO_PLAYWRIGHT_VERSION: ${{ needs.browser.outputs.playwright_version }}
     steps:
