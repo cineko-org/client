@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.6](https://github.com/cineko-org/client/compare/v2.8.5...v2.8.6) (2026-09-08)
+
+
+### Bug Fixes
+
+* restore the Client window when Launcher activates it ([#53](https://github.com/cineko-org/client/issues/53)) ([c584821](https://github.com/cineko-org/client/commit/c58482103320b76673aae07e94f25b6ff9eb6889))
+
 ## [2.8.5](https://github.com/cineko-org/client/compare/v2.8.4...v2.8.5) (2026-09-08)
 
 
