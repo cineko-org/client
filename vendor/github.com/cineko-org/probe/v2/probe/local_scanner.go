@@ -13,6 +13,7 @@ import (
 	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	"github.com/cineko-org/probe/v2/internal/egress"
 	"github.com/cineko-org/probe/v2/internal/provider/cgv"
 	cgvbrowser "github.com/cineko-org/probe/v2/internal/provider/cgv/browser"
 	"github.com/cineko-org/probe/v2/networkcapture"
@@ -21,9 +22,12 @@ import (
 // LocalScanner is the in-process scanner owned by Client. It performs anonymous
 // catalog, schedule, and seat-map reads without any remote coordination.
 type LocalScanner struct {
-	factory  *cgvbrowser.Factory
-	executor *CGVExecutor
-	logger   *slog.Logger
+	settingsMu     sync.Mutex
+	egressPath     string
+	networkCapture *networkcapture.Store
+	factory        *cgvbrowser.Factory
+	executor       *CGVExecutor
+	logger         *slog.Logger
 
 	scheduleContext context.Context
 	cancelSchedule  context.CancelFunc
@@ -38,18 +42,33 @@ type LocalScanner struct {
 var ErrProviderThrottled = cgv.ErrProviderThrottled
 
 type LocalScannerConfig struct {
-	DataDir        string
-	Logger         *slog.Logger
-	NetworkCapture *networkcapture.Store
+	EgressConfigPath string
+	DataDir          string
+	Logger           *slog.Logger
+	NetworkCapture   *networkcapture.Store
 }
 
 func NewLocalScanner(config LocalScannerConfig) (*LocalScanner, error) {
 	if strings.TrimSpace(config.DataDir) == "" {
 		return nil, errors.New("local scanner data directory is required")
 	}
-	factory, err := cgvbrowser.NewFromEnvironmentWithLogger(filepath.Clean(config.DataDir), config.Logger, config.NetworkCapture)
+	egressConfig, err := egress.LocalScanConfig(config.EgressConfigPath)
 	if err != nil {
-		return nil, err
+		// Keep settings accessible for repair, without allowing direct scanning.
+		if config.Logger != nil {
+			config.Logger.Warn("Scanner settings require repair", "event", "scanner.settings.invalid", "error", err.Error())
+		}
+		egressConfig = egress.Config{RequireProxy: true}
+	}
+	factory, err := cgvbrowser.NewWithEgressConfig(filepath.Clean(config.DataDir), config.Logger, egressConfig, config.NetworkCapture)
+	if err != nil {
+		if config.Logger != nil {
+			config.Logger.Warn("Scanner settings require repair", "event", "scanner.settings.invalid", "error", err.Error())
+		}
+		factory, err = cgvbrowser.NewWithEgressConfig(filepath.Clean(config.DataDir), config.Logger, egress.Config{RequireProxy: true}, config.NetworkCapture)
+		if err != nil {
+			return nil, err
+		}
 	}
 	executor, err := NewCGVExecutor(factory)
 	if err != nil {
@@ -58,6 +77,7 @@ func NewLocalScanner(config LocalScannerConfig) (*LocalScanner, error) {
 	}
 	scheduleContext, cancelSchedule := context.WithCancel(context.Background())
 	return &LocalScanner{
+		egressPath: config.EgressConfigPath, networkCapture: config.NetworkCapture,
 		factory: factory, executor: executor, logger: config.Logger,
 		scheduleContext: scheduleContext, cancelSchedule: cancelSchedule,
 	}, nil

@@ -38,6 +38,7 @@ type desktopSeatMapWatcher interface {
 }
 
 type DesktopApp struct {
+	scanner  scannerSettingsService
 	server   *webui.Server
 	settings desktopSettingsRepository
 	egress   egressConfigurator
@@ -109,7 +110,9 @@ func (app *DesktopApp) startup(ctx context.Context) {
 	}
 	app.server.Start(ctx)
 	if app.monitor != nil {
+		app.server.SetMonitoringRunning(true)
 		go func() {
+			defer app.server.SetMonitoringRunning(false)
 			if err := app.monitor.Run(ctx); err != nil {
 				app.server.RecordLocalSystemEvent(desktopErrorEvent(
 					app.activeUserID(), "monitor.supervisor_failed", "로컬 예매 모니터가 중지되었습니다. 앱을 다시 시작하세요.",

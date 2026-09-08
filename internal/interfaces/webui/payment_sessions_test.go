@@ -2,11 +2,13 @@ package webui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
@@ -19,8 +21,34 @@ import (
 
 type webPaymentAutomation struct {
 	*webProbeAutomation
-	closed   *atomic.Int32
-	retained *atomic.Int32
+	closed          *atomic.Int32
+	retained        *atomic.Int32
+	presentationErr error
+}
+
+func (automation *webPaymentAutomation) PaymentPresentationError() error {
+	return automation.presentationErr
+}
+
+func TestFailedWindowPresentationKeepsPaymentSessionAndWarnsUser(t *testing.T) {
+	store := memoryrepo.New()
+	server := &Server{repository: store, rootContext: t.Context(), ids: &webAtomicIDs{}, clock: webTestClock{time.Now()}}
+	var closed, retained atomic.Int32
+	automation := &webPaymentAutomation{webProbeAutomation: &webProbeAutomation{}, closed: &closed, retained: &retained, presentationErr: errors.New("window remained hidden")}
+	user, id := "user", "reservation"
+	resource := clientpb.Resource_builder{Reservation: clientpb.Reservation_builder{Id: &id, UserId: &user, Prepared: clientpb.ReservationPrepared_builder{}.Build()}.Build()}.Build()
+	wrapped := &lifetimeAutomation{Automation: automation, cancel: func() {}}
+	if !server.retainPaymentSession("monitor", resource, wrapped) {
+		t.Fatal("display failure discarded the seat hold")
+	}
+	defer closePaymentSession(server.removePaymentSession("monitor", nil))
+	if closed.Load() != 0 || retained.Load() != 1 {
+		t.Fatal("display failure closed the retained browser")
+	}
+	events, err := store.ListAppEvents(t.Context(), user, 10)
+	if err != nil || len(events) != 1 || events[0].GetAppEvent().GetKind() != "payment.window_not_visible" {
+		t.Fatalf("missing user warning: %v/%v", events, err)
+	}
 }
 
 func (*webPaymentAutomation) OpenSeatSelection(
@@ -200,8 +228,8 @@ func TestPaymentSessionExpirationClosesBrowserAndReactivatesMonitor(t *testing.T
 		updatedMonitor.GetMonitor().GetReservationId() != reservation.GetId() {
 		t.Fatalf("expired state = %+v / %+v", updatedMonitor, updatedReservation)
 	}
-	if err := server.ExecuteAvailability(ctx, monitor.GetId(), showtimeProtoForTest(domain.Showtime{}), true); err != nil {
-		t.Fatalf("unknown payment accepted a duplicate execution: %v", err)
+	if err := server.ExecuteAvailability(ctx, monitor.GetId(), showtimeProtoForTest(domain.Showtime{}), true); !errors.Is(err, application.ErrSeatUnavailable) {
+		t.Fatalf("unknown payment must not report a successful execution: %v", err)
 	}
 	events, err := store.ListAppEvents(ctx, monitor.GetUserId(), 10)
 	if err != nil || len(events) != 1 || events[0].GetAppEvent().GetKind() != "payment.expired" || events[0].GetAppEvent().GetWarning() == nil {

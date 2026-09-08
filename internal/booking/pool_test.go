@@ -234,6 +234,18 @@ func TestPaymentRetentionBlocksReplacementUntilExplicitRelease(t *testing.T) {
 	if stats := pool.Stats(); stats.Retained != 1 {
 		t.Fatalf("payment lease was not retained: %+v", stats)
 	}
+	pool.SetDesired(0)
+	if stats := pool.Stats(); stats.Desired != 0 || stats.Retained != 1 {
+		t.Fatalf("stopped monitoring discarded payment ownership: %+v", stats)
+	}
+	process, ok := lease.Process().(*fakeProcess)
+	if !ok {
+		t.Fatal("unexpected lease process")
+	}
+	if process.closeCalls.Load() != 0 {
+		t.Fatal("demand drop closed the retained payment browser")
+	}
+	pool.SetDesired(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	if _, err := pool.Acquire(ctx); !errors.Is(err, context.DeadlineExceeded) {
@@ -325,6 +337,36 @@ func TestPermanentStartupFailureDoesNotRetry(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if creates.Load() != 1 || pool.Stats().Ready != 0 {
 		t.Fatalf("permanent startup failure retried or admitted: creates=%d stats=%+v", creates.Load(), pool.Stats())
+	}
+}
+
+func TestStartupFailureIsReportedOnceAndRecoveryClearsCause(t *testing.T) {
+	pool, err := NewPool(context.Background(), func(context.Context, uint64) (Process, error) {
+		return newFakeProcess(987, "recovered"), nil
+	}, Config{MaxCapacity: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pool.Close() }()
+	var notices atomic.Int32
+	pool.SetStartupFailureNotifier(func(err error) {
+		if !errors.Is(err, ErrPermanent) {
+			t.Errorf("failure = %v", err)
+		}
+		notices.Add(1)
+	})
+	pool.mu.Lock()
+	pool.desired = 1
+	pool.mu.Unlock()
+	pool.failStartup(ErrPermanent, false)
+	pool.failStartup(ErrPermanent, false)
+	if notices.Load() != 1 || !errors.Is(pool.StartupError(), ErrPermanent) {
+		t.Fatal("failure missing or duplicated")
+	}
+	pool.SetDesired(1)
+	waitForStats(t, pool, func(stats Stats) bool { return stats.Ready == 1 })
+	if pool.StartupError() != nil {
+		t.Fatal("recovery retained failure")
 	}
 }
 

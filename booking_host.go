@@ -29,7 +29,8 @@ type bookingAutomationHost struct {
 	winner  *bookingTabAutomation
 	closed  bool
 
-	attemptMu sync.Mutex
+	attemptMu  sync.Mutex
+	queryPacer bookingQueryPacer
 }
 
 type bookingTabAutomation struct {
@@ -147,8 +148,12 @@ func (host *bookingAutomationHost) CanAccept() bool {
 		return false
 	}
 	host.mu.Lock()
-	available := !host.closed && host.winner == nil && (host.parent != nil || host.opening != nil)
+	unavailable := host.closed || host.winner != nil
+	available := host.parent != nil || host.opening != nil
 	host.mu.Unlock()
+	if unavailable {
+		return false
+	}
 	if available {
 		return true
 	}
@@ -308,7 +313,15 @@ func (host *bookingAutomationHost) Reset() {
 	if host == nil {
 		return
 	}
+	// Monitoring demand is not payment ownership. Wait until a seat attempt
+	// has either failed or installed its winner before retiring the host.
+	host.attemptMu.Lock()
+	defer host.attemptMu.Unlock()
 	host.mu.Lock()
+	if host.winner != nil && !host.closed {
+		host.mu.Unlock()
+		return
+	}
 	parent := host.parent
 	host.parent = nil
 	host.winner = nil

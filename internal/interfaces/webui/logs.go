@@ -105,14 +105,9 @@ func (server *Server) networkLogs(writer http.ResponseWriter, request *http.Requ
 		server.writeAPIError(writer, request, http.StatusInternalServerError, "network_logs_unavailable", "network captures could not be read", true)
 		return
 	}
-	statistics, err := networkcapture.Stats(server.networkCaptureDir, networkcapture.Query{
-		CompletedAfter: server.observabilityStart(),
-	})
-	if err != nil {
-		logging.ErrorUnexpected(request.Context(), "operations.network_logs.stats.failed", "operations", "read_network_statistics",
-			"readable local network journal", "network statistics read failed", err)
-		server.writeAPIError(writer, request, http.StatusInternalServerError, "network_logs_unavailable", "network captures could not be summarized", true)
-		return
+	var statistics networkcapture.Statistics
+	if server.networkStatistics != nil {
+		statistics = server.networkStatistics()
 	}
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(writer).Encode(map[string]any{"entries": entries, "matching": len(entries), "statistics": statistics})

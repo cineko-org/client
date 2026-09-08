@@ -18,7 +18,7 @@ func (adapter *Adapter) AuthenticateManuallyUntil(ctx context.Context, timeout t
 		return errors.New("manual login timeout must be positive")
 	}
 	authenticated, err := adapter.openAccountHome()
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrAuthenticationUnverified) {
 		return err
 	}
 	if authenticated {
@@ -31,13 +31,15 @@ func (adapter *Adapter) AuthenticateManuallyUntil(ctx context.Context, timeout t
 }
 
 func (adapter *Adapter) openAccountHome() (bool, error) {
+	adapter.authEvidence.reset()
 	if err := adapter.navigate(homeURL); err != nil {
 		return false, fmt.Errorf("open CGV: %w", err)
 	}
-	return adapter.authenticatedState()
+	return adapter.waitForAuthentication(adapter.ctx)
 }
 
 func (adapter *Adapter) waitForManualLogin(ctx context.Context, timeout time.Duration) error {
+	adapter.authEvidence.reset()
 	if err := adapter.navigate(loginURL); err != nil {
 		return fmt.Errorf("open CGV login: %w", err)
 	}
@@ -108,10 +110,11 @@ func (adapter *Adapter) IsAuthenticated(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	adapter.authEvidence.reset()
 	if err := adapter.navigate(homeURL); err != nil {
 		return false, err
 	}
-	authenticated, err := adapter.authenticatedState()
+	authenticated, err := adapter.waitForAuthentication(ctx)
 	if err != nil || !authenticated {
 		return authenticated, err
 	}
@@ -133,7 +136,7 @@ func (adapter *Adapter) authenticatedState() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return state.HasLogout, nil
+	return state.HasLogout && adapter.authEvidence.verified(), nil
 }
 
 func containsPath(url, path string) bool {

@@ -2,6 +2,7 @@ package cgv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -34,6 +35,9 @@ func (adapter *Adapter) OpenSeatSelection(
 	task *observationpb.SeatAvailabilityTask,
 	seatCount int,
 ) (*seatmappb.LiveSeatObservation, error) {
+	if err := adapter.sessionAuthenticationError(); err != nil {
+		return nil, err
+	}
 	showtime, err := seatAvailabilityTaskDomain(task)
 	if err != nil {
 		return nil, err
@@ -63,6 +67,9 @@ func (adapter *Adapter) RefreshSeatSelection(
 	ctx context.Context,
 	task *observationpb.SeatAvailabilityTask,
 ) (*seatmappb.LiveSeatObservation, error) {
+	if err := adapter.sessionAuthenticationError(); err != nil {
+		return nil, err
+	}
 	showtime, err := seatAvailabilityTaskDomain(task)
 	if err != nil {
 		return nil, err
@@ -195,7 +202,7 @@ func (adapter *Adapter) openShowtime(showtime domain.Showtime) (domain.Showtime,
 		return domain.Showtime{}, err
 	}
 	if !clicked {
-		return domain.Showtime{}, fmt.Errorf("%w: exact showtime %s was not found", ErrUIContractChanged, showtime.ID)
+		return domain.Showtime{}, fmt.Errorf("%w: exact showtime %s was not found (tuple=%s, service_date=%s, provider_clock=%s-%s)", ErrUIContractChanged, showtime.ID, providerShowtime.SourceKey, providerShowtime.Date, providerShowtime.ProviderStartsAt, providerShowtime.ProviderEndsAt)
 	}
 	if err := adapter.waitForSeatSelectionPage(adapter.ctx); err != nil {
 		return domain.Showtime{}, err
@@ -255,6 +262,9 @@ func (adapter *Adapter) clickExactShowtime(showtime domain.Showtime) (bool, erro
 	if err := validateShowtimeIdentity(showtime); err != nil {
 		return false, err
 	}
+	if showtime.ProviderStartsAt == "" || showtime.ProviderEndsAt == "" {
+		return false, fmt.Errorf("%w: provider schedule clocks are missing", ErrUIContractChanged)
+	}
 	// CGV schedule buttons expose display text only; the authoritative tuple was
 	// captured from searchMovScnInfo before this boundary. Never infer identity
 	// from DOM attributes or silently choose among duplicate display rows. Seat
@@ -283,7 +293,7 @@ func (adapter *Adapter) clickExactShowtime(showtime domain.Showtime) (bool, erro
 		matches[0].scrollIntoView({block: 'center'});
 		matches[0].click();
 		return {count: 1, clicked: true};
-	})()`, jsString(showtime.Movie), jsString(showtime.AuditoriumName), jsString(showtime.StartsAt), jsString(showtime.EndsAt))
+	})()`, jsString(showtime.Movie), jsString(showtime.AuditoriumName), jsString(showtime.ProviderStartsAt), jsString(showtime.ProviderEndsAt))
 	var result struct {
 		Count   int  `json:"count"`
 		Clicked bool `json:"clicked"`
@@ -407,38 +417,53 @@ func (adapter *Adapter) verifySeatPageShowtime(showtime domain.Showtime) error {
 	if err := validateShowtimeIdentity(showtime); err != nil {
 		return err
 	}
-	dateVariants, err := showtimeDateDisplayVariants(showtime.Date)
+	providerDates, err := showtimeDateDisplayVariants(showtime.Date)
 	if err != nil {
 		return err
 	}
-	encodedDates := make([]string, 0, len(dateVariants))
-	for _, value := range dateVariants {
-		encodedDates = append(encodedDates, jsString(value))
+	civilDate := showtime.CivilDate
+	if civilDate == "" {
+		civilDate = showtime.Date
+	}
+	civilDates, err := showtimeDateDisplayVariants(civilDate)
+	if err != nil {
+		return err
+	}
+	type display struct {
+		Dates []string `json:"dates"`
+		Start string   `json:"start"`
+		End   string   `json:"end"`
+	}
+	// Keep the date and both clocks paired: service-day 25:00 is not
+	// interchangeable with 01:00 on the same calendar day.
+	variants := []display{{civilDates, showtime.StartsAt, showtime.EndsAt}}
+	if showtime.ProviderStartsAt != "" && showtime.ProviderEndsAt != "" {
+		variants = append(variants, display{providerDates, showtime.ProviderStartsAt, showtime.ProviderEndsAt})
+	}
+	encoded, err := json.Marshal(variants)
+	if err != nil {
+		return err
 	}
 	expression := fmt.Sprintf(`(() => {
 		const text = (document.body && (document.body.innerText || document.body.textContent) || '').replace(/\s+/g, ' ').trim();
-		const expectedDate = [%s];
+		const displays = %s;
 		return {
 			movie: text.includes(%s),
 			theater: text.includes(%s),
 			auditorium: text.includes(%s),
-			start: text.includes(%s),
-			end: text.includes(%s),
-			date: expectedDate.some(value => text.includes(value))
+			schedule: displays.some(value => text.includes(value.start) && text.includes(value.end) && value.dates.some(date => text.includes(date)))
 		};
-	})()`, strings.Join(encodedDates, ","), jsString(showtime.Movie), jsString(showtime.TheaterName), jsString(showtime.AuditoriumName), jsString(showtime.StartsAt), jsString(showtime.EndsAt))
+	})()`, encoded, jsString(showtime.Movie), jsString(showtime.TheaterName), jsString(showtime.AuditoriumName))
 	var result struct {
 		Movie      bool `json:"movie"`
 		Theater    bool `json:"theater"`
 		Auditorium bool `json:"auditorium"`
-		Start      bool `json:"start"`
-		End        bool `json:"end"`
-		Date       bool `json:"date"`
+		Schedule   bool `json:"schedule"`
 	}
 	if err := adapter.evaluate(expression, &result); err != nil {
 		return err
 	}
-	if !result.Movie || !result.Theater || !result.Auditorium || !result.Start || !result.End || !result.Date {
+	if !result.Movie || !result.Theater || !result.Auditorium || !result.Schedule {
 		return fmt.Errorf("%w: seat-page showtime display does not match provider tuple %s", ErrUIContractChanged, showtime.SourceKey)
 	}
 	return nil

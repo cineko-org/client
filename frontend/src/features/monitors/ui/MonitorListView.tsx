@@ -4,9 +4,11 @@ import { EmptyState, Section } from '../../../components/core/Section';
 import { StatusIndicator } from '../../../components/core/StatusIndicator';
 import type { Monitor } from '../../../api/proto';
 import { monitorMovie, monitorStatus } from '../../../api/resources';
-import { monitorBookingLabel, monitorScheduleLabel, monitorStatusLabel, monitorTimeLabel, monitorWatchLabel } from '../model';
+import { monitorBookingLabel, monitorScheduleLabel, monitorTimeLabel, monitorWatchLabel } from '../model';
+import { monitorPresentation, type MonitoringRuntime } from '../runtime';
 
 export interface MonitorListViewProps {
+  runtime?: MonitoringRuntime;
   monitors: Monitor[];
   deleteId: string | null;
   mutationId: string | null;
@@ -19,21 +21,12 @@ export interface MonitorListViewProps {
   onEdit: (id: string) => void;
 }
 
-function monitorColor(monitor: Monitor): string {
-	const status = monitorStatus(monitor);
-	if (status === 'booked') return 'green';
-	if (status === 'triggered' || status === 'payment_unknown') return 'orange';
-	if (status === 'failed') return 'red';
-	if (status === 'pending' || status === 'running') return 'blue';
-  return 'gray';
-}
-
 function executionDescription(monitor: Monitor): string {
 	const status = monitorStatus(monitor);
 	if (status === 'triggered') return '결제 화면을 열어 두었습니다 · 최대 15분 유지';
 	if (status === 'payment_unknown') return 'CGV 예매 내역을 확인해야 합니다 · 자동 재실행 안 함';
 	if (status === 'failed') return '최근 실행에서 오류가 발생했습니다 · 다시 찾을 수 있습니다';
-	if (status === 'stopped') return '꺼진 모니터 · 켜면 감시를 재개합니다';
+	if (status === 'stopped') return '켜면 감시를 시작합니다';
   return `${monitorTimeLabel(monitor)} · 결제 전까지 진행`;
 }
 
@@ -45,14 +38,15 @@ function retryLabel(monitor: Monitor): string {
   return '다시 찾기';
 }
 
-export function MonitorListView({ monitors, deleteId, mutationId, onRetry, onStop, onToggleCancellationWatch, onDeleteRequest, onDelete, onOpen, onEdit }: MonitorListViewProps) {
+export function MonitorListView({ runtime, monitors, deleteId, mutationId, onRetry, onStop, onToggleCancellationWatch, onDeleteRequest, onDelete, onOpen, onEdit }: MonitorListViewProps) {
   return (
-    <Section title="찾고 있는 예매" actions={<Text size="xs" c="dimmed">{monitors.length}개</Text>} subtle>
-      {monitors.length === 0 ? <EmptyState>찾고 있는 예매가 없습니다.</EmptyState> : (
+    <Section title="예매 찾기 목록" actions={<Text size="xs" c="dimmed">{monitors.length}개</Text>} subtle>
+      {monitors.length === 0 ? <EmptyState>저장된 예매 찾기가 없습니다.</EmptyState> : (
         <Stack gap="xs">
           {monitors.map((monitor) => {
 			const status = monitorStatus(monitor);
 			const active = status === 'pending' || status === 'running';
+			const presentation = monitorPresentation(monitor, runtime);
 			const paymentBlocked = status === 'triggered' || status === 'payment_unknown';
 			const retryable = paymentBlocked || status === 'failed' || status === 'stopped';
             const mutationLocked = Boolean(mutationId);
@@ -61,12 +55,12 @@ export function MonitorListView({ monitors, deleteId, mutationId, onRetry, onSto
               <Stack key={monitor.id} gap="xs" bg="dark.6" p="md">
                 <Group justify="space-between">
 				  <Text fw={600}>{monitorMovie(monitor)}</Text>
-				  <StatusIndicator label={monitorStatusLabel(status)} color={monitorColor(monitor)} processing={active} />
+				  <StatusIndicator label={presentation.label} color={presentation.color} processing={presentation.active} />
                 </Group>
 				<Stack gap={2}>
 				  <Text size="sm" c="dimmed">{monitorBookingLabel(monitor)}</Text>
 				  <Text size="sm" c="dimmed">{monitorWatchLabel(monitor)} · {monitorScheduleLabel(monitor)}</Text>
-                  <Text size="sm" c="dimmed">{executionDescription(monitor)}</Text>
+                  <Text size="sm" c={presentation.reason ? 'orange.4' : 'dimmed'}>{presentation.reason || executionDescription(monitor)}</Text>
                 </Stack>
                 <Group gap="xs">
                   <SecondaryButton size="xs" onClick={() => onOpen(monitor.id)}>상세</SecondaryButton>
@@ -76,10 +70,10 @@ export function MonitorListView({ monitors, deleteId, mutationId, onRetry, onSto
 					disabled={mutationLocked || paymentBlocked}
 					onClick={() => onToggleCancellationWatch?.(monitor.id)}
 				  >
-					{monitor.watchCancellationSeats ? '취소표 끄기' : '취소표 켜기'}
+					{monitor.watchCancellationSeats ? '취소표 제외' : '취소표 포함'}
 				  </SecondaryButton>
 				  {retryable ? (
-                    <PrimaryButton size="xs" loading={mutating} disabled={mutationLocked && !mutating} onClick={() => onRetry(monitor.id)}>
+                    <PrimaryButton size="xs" loading={mutating} disabled={!presentation.canStart || (mutationLocked && !mutating)} onClick={() => onRetry(monitor.id)}>
                       {retryLabel(monitor)}
                     </PrimaryButton>
                   ) : null}

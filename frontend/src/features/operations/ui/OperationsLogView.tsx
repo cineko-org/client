@@ -59,12 +59,13 @@ export function OperationsLogView({
 			<SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing="lg">
 				<Metric label="경고" value={snapshot.warnings} detail="복구했지만 예상과 달랐던 상황" color="yellow" />
 				<Metric label="오류" value={snapshot.errors} detail="해당 시나리오를 중단한 상황" color="red" />
-				<Metric label="CGV 요청 전송" value={network?.statistics.provider_sent ?? 0} detail="실제로 cgv.co.kr로 전송한 요청" color="blue" />
+					<Metric label="CGV 요청 완료" value={network?.statistics.provider_sent ?? 0} detail="이번 실행의 CGV 요청 · 성공·실패 포함, 로컬 차단 제외" color="blue" />
 				<Metric label="HTTP 429" value={network?.statistics.status_429 ?? 0} detail="CGV가 실제로 반환한 요청 제한 응답" color="orange" />
 			</SimpleGrid>
-			<Text size="xs" c="dimmed">
-				로컬에서 전송하지 않은 브라우저 리소스 {network?.statistics.blocked ?? 0}건 · HTTP 응답이나 오류가 아닙니다.
-			</Text>
+				<Text size="xs" c="dimmed">
+					로컬에서 전송하지 않은 브라우저 리소스 {network?.statistics.blocked ?? 0}건 · HTTP 응답이나 오류가 아닙니다.
+				</Text>
+				<Text size="xs" c="dimmed">탐색 변경 등으로 취소된 요청 {network?.statistics.canceled ?? 0}건 · 로컬 차단과 별도 집계합니다.</Text>
 			<Section title="반복되는 예상 불일치" description="이번 실행에서 빈도가 높은 이벤트부터 표시합니다." subtle>
 				{snapshot.aggregates.length === 0 ? <EmptyState>현재 필터에 해당하는 로그가 없습니다.</EmptyState> : (
 					<Stack gap="xs">

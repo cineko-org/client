@@ -58,6 +58,11 @@ func browserApplicationHidden(pid int) (bool, error) {
 	return false, fmt.Errorf("LaunchServices returned no hidden state for Chrome pid %d: %s", pid, strings.TrimSpace(string(output)))
 }
 
+func browserApplicationVisible(pid int) (bool, error) {
+	hidden, err := browserApplicationHidden(pid)
+	return !hidden, err
+}
+
 func runLaunchServices(arguments ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

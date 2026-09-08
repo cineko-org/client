@@ -97,10 +97,13 @@ func (adapter *Adapter) CaptureScheduleWeekdayShard(
 	if err := adapter.providerRateLimitError(bookingCinemaURL); err != nil {
 		return nil, err
 	}
-	if err := adapter.selectCinemaTheater(theater.Region, theater.Name); err != nil {
-		return nil, err
+	// API scans do not depend on rendered date buttons or their refresh timer.
+	if adapter.selectedRegion != theater.Region || adapter.selectedTheater != theater.Name || adapter.selectedTheaterAt.IsZero() {
+		if err := adapter.selectCinemaTheater(theater.Region, theater.Name); err != nil {
+			return nil, err
+		}
 	}
-	dates, err := adapter.availableScheduleDates()
+	dates, err := adapter.requestScheduleDatesFromPage(theater.SourceKey)
 	if err != nil {
 		return nil, err
 	}
@@ -111,10 +114,15 @@ func (adapter *Adapter) CaptureScheduleWeekdayShard(
 	if len(dates) == 0 {
 		return []ScheduleCapture{}, nil
 	}
-	if shard < 0 {
-		shard = 0
+	if adapter.scheduleDates == nil {
+		adapter.scheduleDates = make(map[string]*scheduleDateRotation)
 	}
-	return adapter.captureSelectedSchedules(ctx, theater, []string{dates[shard%len(dates)]})
+	rotation := adapter.scheduleDates[theater.ID]
+	if rotation == nil {
+		rotation = &scheduleDateRotation{}
+		adapter.scheduleDates[theater.ID] = rotation
+	}
+	return adapter.captureSelectedSchedules(ctx, theater, []string{rotation.next(dates, shard)})
 }
 
 func (adapter *Adapter) captureSchedules(
@@ -381,10 +389,12 @@ func (adapter *Adapter) logScheduleCaptureFailure(
 }
 
 func (adapter *Adapter) selectCinemaTheater(region, theaterName string) error {
-	if adapter.selectedRegion == region && adapter.selectedTheater == theaterName {
+	if reusableCinemaSelection(adapter.selectedRegion, adapter.selectedTheater, region, theaterName, adapter.selectedTheaterAt, time.Now()) {
 		adapter.logReusedCinemaTheater(theaterName)
 		return nil
 	}
+	// Do not leave a reusable selection after partial navigation failure.
+	adapter.selectedTheaterAt = time.Time{}
 	if err := adapter.navigate(bookingCinemaURL); err != nil {
 		return fmt.Errorf("open CGV cinema booking: %w", err)
 	}
@@ -412,6 +422,7 @@ func (adapter *Adapter) selectCinemaTheater(region, theaterName string) error {
 	}
 	adapter.selectedTheater = theaterName
 	adapter.selectedRegion = region
+	adapter.selectedTheaterAt = time.Now()
 	return nil
 }
 

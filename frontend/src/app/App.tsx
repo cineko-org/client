@@ -52,8 +52,8 @@ function CinekoApplication() {
         activeSection={activeSection}
         loading={application.loading}
         connection={application.connection}
-        account={application.account}
-        network={network.settings}
+        account={application.runtime.account}
+        soxyStatus={application.runtime.scanner ?? 'checking'}
         desktopAvailable={application.desktopAvailable}
         unreadNotices={unreadNoticeCount(notifications.notices)}
         feedback={notifications.feedback}

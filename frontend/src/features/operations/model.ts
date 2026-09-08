@@ -68,6 +68,7 @@ export interface NetworkCaptureStatistics {
 	captured: number;
 	provider_sent: number;
 	blocked: number;
+	canceled?: number;
 	failed: number;
 	status_429: number;
 	truncated: boolean;
@@ -97,6 +98,8 @@ export function scenarioLabel(value: string): string {
 		network: '네트워크',
 		operations: '관제',
 		system: '시스템',
+		authentication: 'CGV 로그인',
+		lifecycle: '앱 실행·종료',
 	};
 	return labels[value] ?? (value || '분류 없음');
 }

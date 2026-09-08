@@ -1,9 +1,17 @@
 import { create } from '@bufbuild/protobuf';
+import type { IndicatorState } from '../../components/core/StatusIndicator';
 import {
 	DirectNetworkSchema, NetworkSettingsSchema, ProxyNetworkSchema, type NetworkSettings,
 } from '../../api/proto';
 
 export type SettingsLoadState = 'unavailable' | 'idle' | 'loading' | 'ready' | 'error';
+
+export function networkIndicatorState(settings: NetworkSettings, loadState: SettingsLoadState, saving = false, saveFailed = false): IndicatorState {
+  if (saving || loadState === 'idle' || loadState === 'loading') return 'checking';
+  if (saveFailed || loadState === 'error') return 'failed';
+  if (loadState === 'unavailable' || settings.mode.case === 'direct') return 'off';
+  return settings.mode.case === 'proxy' ? 'ready' : 'failed';
+}
 
 export interface NetworkForm {
 	mode: 'direct' | 'proxy';

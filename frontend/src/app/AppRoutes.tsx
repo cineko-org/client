@@ -1,10 +1,11 @@
 import { create } from '@bufbuild/protobuf';
 import { CatalogIndexSchema } from '../api/proto';
-import { monitorStatus, reservationStatus } from '../api/resources';
+import { reservationStatus } from '../api/resources';
 import { HomePage } from './HomePage';
 import { MonitorDetailPageView } from '../features/monitors/ui/MonitorDetailPageView';
 import { useApplicationState } from '../features/application/useApplicationState';
 import { useMonitors } from '../features/monitors/useMonitors';
+import { monitorPresentation, runtimeCanStart } from '../features/monitors/runtime';
 import { usePresets } from '../features/presets/usePresets';
 import { useReservations } from '../features/reservations/useReservations';
 import { useNetworkSettings } from '../features/settings/useNetworkSettings';
@@ -35,6 +36,7 @@ export function AppRoutes({
   route, application, monitors, presets, reservations, network, hooks,
   onNavigate, onMonitors, onPresets,
 }: AppRoutesProps) {
+  const monitoringRuntime = application.runtime;
   const catalog = application.state.catalog ?? create(CatalogIndexSchema);
   const newMonitor = () => {
 		onNavigate({ name: 'monitor-new' });
@@ -56,6 +58,7 @@ export function AppRoutes({
       return (
         <MonitorsPage
           monitors={{
+            runtime: monitoringRuntime,
             monitors: monitors.monitors,
             deleteId: monitors.deleteId,
             mutationId: monitors.mutationId,
@@ -103,6 +106,7 @@ export function AppRoutes({
       const monitor = monitors.monitors.find((item) => item.id === monitorId);
       return (
         <MonitorDetailPageView
+          runtime={monitoringRuntime}
           monitor={monitor}
           mutating={monitors.mutationId === monitorId}
           onBack={onMonitors}
@@ -118,6 +122,7 @@ export function AppRoutes({
         <PresetsPage
           presets={presets.presets}
           deleteId={presets.deleteId}
+          mutating={presets.saving}
           onNew={newPreset}
           onEdit={editPreset}
           onDeleteRequest={presets.setDeleteId}
@@ -149,7 +154,7 @@ export function AppRoutes({
         <SettingsPage
           available={network.bridgeAvailable}
           settings={network.settings}
-          account={application.account}
+          account={monitoringRuntime.account}
           form={network.form}
           loadState={network.loadState}
           saving={network.saving}
@@ -172,7 +177,9 @@ export function AppRoutes({
       return (
         <HomePage
           monitors={monitors.monitors.length}
-          runningMonitors={monitors.monitors.filter((item) => monitorStatus(item) === 'running').length}
+          runningMonitors={monitors.monitors.filter((item) => monitorPresentation(item, monitoringRuntime).active).length}
+          runtimeReason={monitoringRuntime.reason}
+          canStart={runtimeCanStart(monitoringRuntime)}
           presets={presets.presets.length}
           reservations={reservations.reservations.filter((item) => reservationStatus(item) === 'booked').length}
           onMonitors={onMonitors}

@@ -32,6 +32,31 @@ func ShouldCapturePlaywrightRequest(store *networkcapture.Store, request playwri
 	return response != nil && response.Status() >= 400
 }
 
+// PlaywrightRecordForStore keeps all completion counters while avoiding body,
+// header and protocol materialization for routine requests in normal mode.
+func PlaywrightRecordForStore(store *networkcapture.Store, request playwright.Request, failed bool) networkcapture.Record {
+	if ShouldCapturePlaywrightRequest(store, request, failed) || request == nil {
+		return PlaywrightRecord(request, failed)
+	}
+	now := time.Now()
+	started := now
+	if timing := request.Timing(); timing != nil && timing.StartTime > 0 {
+		started = time.UnixMilli(int64(timing.StartTime))
+	}
+	outcome := playwrightExpectedOutcome(request.Failure())
+	if outcome == "" {
+		outcome = "succeeded"
+	}
+	record := networkcapture.Record{Exchange: networkcapture.Exchange{
+		Transport: "chromium", StartedAt: started, CompletedAt: now, Outcome: outcome,
+		Request: networkcapture.Request{Method: request.Method(), URL: request.URL()},
+	}}
+	if response, _ := request.ExistingResponse(); response != nil {
+		record.Response = &networkcapture.Response{Status: response.Status()}
+	}
+	return record
+}
+
 // PlaywrightRecord snapshots a completed browser request. Response.Body is the
 // representation exposed to the page after content decoding; the encoded wire
 // size remains available in Response.Bytes.

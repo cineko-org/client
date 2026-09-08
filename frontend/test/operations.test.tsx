@@ -72,7 +72,7 @@ describe('operations log view', () => {
 		expect(screen.getByText('좌석 선택')).not.toBeNull();
 		expect(screen.getByText('scanner.schedule.partial')).not.toBeNull();
 		expect(screen.getByText('unexpected dialog')).not.toBeNull();
-		expect(screen.getByText('CGV 요청 전송')).not.toBeNull();
+		expect(screen.getByText('CGV 요청 완료')).not.toBeNull();
 		expect(screen.getByText('19')).not.toBeNull();
 		expect(screen.getByText('HTTP 429')).not.toBeNull();
 		expect(screen.getByText(/브라우저 리소스 59건 · HTTP 응답이나 오류가 아닙니다/)).not.toBeNull();

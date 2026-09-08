@@ -71,7 +71,7 @@ export function PresetPageView(props: PresetPageViewProps) {
         title={form.id ? '좌석 프리셋 편집' : '새 좌석 프리셋'}
         description="상영관과 후보 좌석을 정합니다."
         actions={
-          <SecondaryButton leftSection={<IconArrowLeft size={16} />} onClick={onBack}>
+          <SecondaryButton leftSection={<IconArrowLeft size={16} />} onClick={onBack} disabled={saving}>
             좌석 프리셋 목록
           </SecondaryButton>
         }
@@ -83,21 +83,21 @@ export function PresetPageView(props: PresetPageViewProps) {
             {catalog.generation > 0 ? '로컬에서 수집한 목록' : '목록을 먼저 불러오세요.'}
           </Text>
         </Stack>
-        <SecondaryButton onClick={onRefreshCatalog}>목록 새로고침</SecondaryButton>
+        <SecondaryButton onClick={onRefreshCatalog} disabled={saving}>목록 새로고침</SecondaryButton>
       </Group>
 
       <Section title={form.id ? '좌석 프리셋 편집' : '새 좌석 프리셋'} description="지역, 지점, 상영관을 순서대로 선택하세요.">
         <Box component="form" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
           <Stack gap="xl">
             <Columns>
-              <SelectField label="지역" placeholder="지역 선택" data={regions} value={region} onChange={(value) => onRegionChange(value || '')} />
+              <SelectField label="지역" placeholder="지역 선택" data={regions} value={region} onChange={(value) => onRegionChange(value || '')} disabled={saving} />
               <SelectField
                 label="CGV 지점"
                 placeholder="지점 선택"
                 data={theaterOptions}
                 value={theater}
                 onChange={(value) => void onTheaterChange(value || '')}
-                disabled={!region}
+                disabled={!region || saving}
               />
               <SelectField
                 label="상영관"
@@ -108,13 +108,14 @@ export function PresetPageView(props: PresetPageViewProps) {
                 }))}
                 value={auditoriumId}
                 onChange={(value) => void onAuditoriumChange(value || '')}
-                disabled={!theater}
+                disabled={!theater || saving}
               />
               <TextField
                 label="프리셋 제목"
                 placeholder="용산 IMAX 중앙 좌석"
                 required
                 value={form.name}
+                disabled={saving}
                 onChange={(event) => onFormChange({ ...form, name: event.currentTarget.value })}
               />
             </Columns>
@@ -149,7 +150,7 @@ export function PresetPageView(props: PresetPageViewProps) {
               onClear={onClearSeats}
             />
             <Group justify="flex-end">
-              <SecondaryButton type="button" onClick={onReset}>새로 작성</SecondaryButton>
+              <SecondaryButton type="button" onClick={onReset} disabled={saving}>새로 작성</SecondaryButton>
               <PrimaryButton type="submit" loading={saving} disabled={!seatMap || loadingCatalog}>좌석 프리셋 저장</PrimaryButton>
             </Group>
           </Stack>

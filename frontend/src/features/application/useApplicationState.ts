@@ -1,45 +1,46 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { create } from '@bufbuild/protobuf';
-import { api, desktopBridge, errorMessage } from '../../api/client';
+import { api, desktopBridge, errorMessage, logClientEvent } from '../../api/client';
 import {
 	WebUIAccountStateSchema, WebUIActionStatusSchema, WebUIStateSchema,
-	WebUITaskStatusResponseSchema, type WebUIAccountState, type WebUIState,
+	type WebUIState,
 } from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
 import { emptyAppState, initialApplicationConnection, type ApplicationConnection } from './model';
-
-const checkingAccount = create(WebUIAccountStateSchema, { state: { case: 'checking', value: {} } });
+import { failedRuntime, initialRuntime, readApplicationRuntime } from './runtime';
 
 export function useApplicationState(notify: Notify, loadNotices: (userId: string) => Promise<void>) {
 	const [state, setState] = useState<WebUIState>(emptyAppState);
-  const [userId, setUserId] = useState('local-user');
-	const [account, setAccount] = useState<WebUIAccountState>(checkingAccount);
-  const [loading, setLoading] = useState(true);
+  const [runtime, setRuntime] = useState(initialRuntime);
   const [connection, setConnection] = useState<ApplicationConnection>(initialApplicationConnection);
   const userIdRef = useRef('local-user');
   const reportedTasks = useRef(new Set<string>());
   const pollTimer = useRef<number | undefined>(undefined);
   const stateRequest = useRef(0);
   const statusRequest = useRef(0);
-  const lastSuccessfulAt = useRef('');
+  const runtimeFlight = useRef<Promise<void> | null>(null);
+  const runtimePending = useRef(false);
+  const runtimeAbort = useRef<AbortController | null>(null);
+  const runtimeFailureLogged = useRef(false);
+  const lifecycle = useRef(0);
   const bridge = desktopBridge();
   const invalidateRequests = useCallback(() => {
+    lifecycle.current++;
     stateRequest.current++;
     statusRequest.current++;
+    runtimeAbort.current?.abort();
   }, []);
 
   const markConnectionFailure = useCallback((error: unknown) => {
-    setConnection({
-      status: lastSuccessfulAt.current ? 'stale' : 'unavailable',
+    setConnection((current) => ({
+      status: current.lastSuccessfulAt ? 'stale' : 'unavailable',
       message: errorMessage(error),
-      lastSuccessfulAt: lastSuccessfulAt.current,
+      lastSuccessfulAt: current.lastSuccessfulAt,
       retrying: false,
-    });
+    }));
   }, []);
 
   const markConnectionReady = useCallback(() => {
     const synchronizedAt = new Date().toISOString();
-    lastSuccessfulAt.current = synchronizedAt;
     setConnection({ status: 'ready', message: '', lastSuccessfulAt: synchronizedAt, retrying: false });
   }, []);
 
@@ -58,67 +59,86 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
   }, [markConnectionFailure, markConnectionReady]);
 
   const pollStatus = useCallback(async function pollStatusForUser(activeUserId = userIdRef.current) {
+    if (runtimeFlight.current) {
+      runtimePending.current = true;
+      return runtimeFlight.current;
+    }
     const request = ++statusRequest.current;
     window.clearTimeout(pollTimer.current);
-    try {
-      const [tasks, accountState] = await Promise.all([
-			api('/api/status', WebUITaskStatusResponseSchema),
-			api('/api/account', WebUIAccountStateSchema),
-		]);
-      if (request !== statusRequest.current) return;
-		const running = tasks.tasks.filter((task) => task.state.case === 'running').length;
-		setAccount(accountState);
-		for (const task of tasks.tasks) {
-			const reportKey = `${task.id}:${task.state.case}:${task.updatedAt?.seconds ?? 0n}`;
-			if (task.state.case === 'running' || reportedTasks.current.has(reportKey)) continue;
-			reportedTasks.current.add(reportKey);
-			if (task.state.case === 'failed') {
-				notify(task.message || `${task.id} 작업이 실패했습니다.`, { tone: 'error', important: true });
-        }
-      }
-      await Promise.all([loadState(activeUserId), loadNotices(activeUserId)]);
-		if (running > 0 || accountState.state.case === 'checking') {
-        pollTimer.current = window.setTimeout(() => void pollStatusForUser(activeUserId), 2500);
-      }
-    } catch (error) {
-      if (request === statusRequest.current) {
-        markConnectionFailure(error);
-        pollTimer.current = window.setTimeout(() => void pollStatusForUser(activeUserId), 5000);
-      }
+    const run = async () => {
+      do {
+        runtimePending.current = false;
+        const controller = new AbortController();
+        runtimeAbort.current = controller;
+        const deadline = window.setTimeout(() => controller.abort(), 4000);
+        try {
+          // eslint-disable-next-line no-await-in-loop -- Keep refreshes serial; a burst requests only one follow-up.
+          const next = await readApplicationRuntime(controller.signal);
+          if (request !== statusRequest.current) return;
+          setRuntime(next);
+          const recovering = runtimeFailureLogged.current;
+          runtimeFailureLogged.current = false;
+          let changed = false;
+          for (const task of next.tasks) {
+            const reportKey = `${task.id}:${task.state.case}:${task.updatedAt?.seconds ?? 0n}`;
+            if (task.state.case === 'running' || reportedTasks.current.has(reportKey)) continue;
+            reportedTasks.current.add(reportKey);
+            changed = true;
+            if (task.state.case === 'failed') notify(task.message || `${task.id} 작업이 실패했습니다.`, { tone: 'error', important: true });
+          }
+          // eslint-disable-next-line no-await-in-loop -- Publish task-related data before the next runtime refresh.
+          if (changed || recovering) await Promise.all([loadState(activeUserId), loadNotices(activeUserId)]);
+        } catch (error) {
+          if (request === statusRequest.current) {
+            setRuntime(failedRuntime());
+            markConnectionFailure(error);
+            if (!runtimeFailureLogged.current) logClientEvent('warn', 'application.runtime.read.failed', { scenario: 'application_state', operation: 'read_local_runtime', error: String(error) });
+            runtimeFailureLogged.current = true;
+          }
+        } finally { window.clearTimeout(deadline); }
+      } while (runtimePending.current && request === statusRequest.current);
+    };
+    runtimeFlight.current = run();
+    try { await runtimeFlight.current; } finally {
+      runtimeFlight.current = null;
+      if (request === statusRequest.current) pollTimer.current = window.setTimeout(() => void pollStatusForUser(activeUserId), 5000);
     }
   }, [loadNotices, loadState, markConnectionFailure, notify]);
 
   const initialize = useCallback(async () => {
-    const hasCachedState = Boolean(lastSuccessfulAt.current);
-    setLoading(!hasCachedState);
+    const generation = lifecycle.current;
     setConnection((current) => ({ ...current, retrying: current.status !== 'loading' }));
     try {
       const activeUserId = bridge ? await bridge.GetUserID() : 'local-user';
       userIdRef.current = activeUserId;
-      setUserId(activeUserId);
-      await Promise.all([loadState(activeUserId), loadNotices(activeUserId)]);
-      void pollStatus(activeUserId);
+      // Initialize the existing account check, but never keep a second UI
+      // account state. All displays use the combined runtime snapshot.
+      await Promise.all([loadState(activeUserId), loadNotices(activeUserId), api('/api/account', WebUIAccountStateSchema)]);
+      if (generation === lifecycle.current) void pollStatus(activeUserId);
     } catch (error) {
+      if (generation !== lifecycle.current) return;
+      setRuntime(failedRuntime());
       markConnectionFailure(error);
       notify(errorMessage(error), { tone: 'error', important: true });
-    } finally {
-      setLoading(false);
     }
   }, [bridge, loadNotices, loadState, markConnectionFailure, notify, pollStatus]);
 
   useEffect(() => {
     window.__cinekoAppBooted = true;
-    void initialize();
+    let active = true;
+    queueMicrotask(() => { if (active) void initialize(); });
     const eventsOn = window.runtime?.EventsOn;
     if (eventsOn) {
       const unsubscribeData = eventsOn('data:changed', () => void initialize());
       return () => {
+        active = false;
         window.clearTimeout(pollTimer.current);
         invalidateRequests();
         unsubscribeData?.();
       };
     }
     return () => {
+      active = false;
       window.clearTimeout(pollTimer.current);
       invalidateRequests();
     };
@@ -144,7 +164,7 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
   }, [bridge, notify]);
 
   return {
-    state, userId, account, loading, connection, desktopAvailable: Boolean(bridge),
+    state, runtime, userId: state.userId, loading: connection.status === 'loading', connection, desktopAvailable: Boolean(bridge),
     retryConnection: initialize,
     reload: loadState, openAuthentication, exit, pollStatus,
   };

@@ -25,7 +25,7 @@ export function ReservationListView(props: ReservationListViewProps) {
             <Stack key={reservation.id} gap="xs" bg="dark.6" p="md">
 				  <Group justify="space-between"><Text fw={600}>{reservation.bookingNumber || '예약'}</Text><StatusIndicator label={reservationStatusLabel(reservationStatus(reservation))} color={reservationStatus(reservation) === 'booked' ? 'green' : reservationStatus(reservation) === 'cancelled' ? 'yellow' : 'gray'} /></Group>
 				  <Stack gap={2}><Text size="sm" c="dimmed">{reservation.seatLabels.join(' · ') || '좌석 준비 중'}</Text><Text size="sm" c="dimmed">{reservationReference(reservationStatus(reservation), reservation.bookingNumber)}</Text></Stack>
-				  {reservationStatus(reservation) === 'booked' ? <Group gap="xs"><SecondaryButton size="xs" onClick={() => onReviewCancellation(reservation.id)}>취소 검토</SecondaryButton><DangerButton size="xs" onClick={() => onCancelRequest(reservation.id)}>실제 취소</DangerButton></Group> : null}
+				  {reservationStatus(reservation) === 'booked' ? <Group gap="xs"><SecondaryButton size="xs" disabled={cancelling} onClick={() => onReviewCancellation(reservation.id)}>취소 검토</SecondaryButton><DangerButton size="xs" disabled={cancelling} onClick={() => onCancelRequest(reservation.id)}>실제 취소</DangerButton></Group> : null}
             </Stack>
           ))}
         </Stack>

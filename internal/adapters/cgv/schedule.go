@@ -305,6 +305,7 @@ func scheduleEntryFromProviderRow(row providerScheduleRow, theater domain.Theate
 		AuditoriumID:   catalogID(providerCGV, "auditorium", auditoriumSource),
 		AuditoriumName: auditoriumName, ScreenTypes: screenTypes,
 		Date: row.Date, CivilDate: civilDate, StartsAt: startClock, EndsAt: endClock,
+		ProviderStartsAt: providerServiceClockDisplay(row.StartClock), ProviderEndsAt: providerServiceClockDisplay(row.EndClock),
 		AvailableSeats: row.Available, Capacity: row.Capacity,
 		SoldOut: row.Available == 0, ObservedAt: time.Now(),
 		SourceLabel: strings.Join([]string{startClock, endClock, row.MovieTitle, auditoriumName}, " "),
@@ -372,6 +373,14 @@ func providerClockDisplay(raw string) string {
 		return ""
 	}
 	return fmt.Sprintf("%02d:%02d", hour%24, minute)
+}
+
+func providerServiceClockDisplay(raw string) string {
+	hour, minute, err := parseProviderClock(raw)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute)
 }
 
 func providerCivilDate(date, rawClock string) string {

@@ -6,9 +6,11 @@ import { PageHeader } from '../../../components/core/PageHeader';
 import { EmptyState, Section } from '../../../components/core/Section';
 import type { Monitor } from '../../../api/proto';
 import { monitorMovie, monitorStatus } from '../../../api/resources';
-import { monitorBookingLabel, monitorScheduleLabel, monitorStatusLabel, monitorTimeLabel, monitorWatchLabel } from '../model';
+import { monitorBookingLabel, monitorScheduleLabel, monitorTimeLabel, monitorWatchLabel } from '../model';
+import { monitorPresentation, type MonitoringRuntime } from '../runtime';
 
 interface MonitorDetailPageViewProps {
+  runtime?: MonitoringRuntime;
   monitor?: Monitor;
   mutating: boolean;
   onBack: () => void;
@@ -18,7 +20,7 @@ interface MonitorDetailPageViewProps {
   onToggleCancellationWatch?: () => void;
 }
 
-export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRetry, onStop, onToggleCancellationWatch }: MonitorDetailPageViewProps) {
+export function MonitorDetailPageView({ runtime, monitor, mutating, onBack, onEdit, onRetry, onStop, onToggleCancellationWatch }: MonitorDetailPageViewProps) {
   if (!monitor) {
     return (
       <Stack gap="xl">
@@ -28,6 +30,7 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
     );
   }
 	const status = monitorStatus(monitor);
+  const presentation = monitorPresentation(monitor, runtime);
 	const awaitingPayment = status === 'triggered';
 	const paymentUnknown = status === 'payment_unknown';
 	const active = status === 'pending' || status === 'running';
@@ -43,26 +46,27 @@ export function MonitorDetailPageView({ monitor, mutating, onBack, onEdit, onRet
             <SecondaryButton onClick={onBack}>목록</SecondaryButton>
 			<SecondaryButton onClick={onEdit} disabled={mutating || active || awaitingPayment || paymentUnknown}>편집</SecondaryButton>
 			<SecondaryButton onClick={onToggleCancellationWatch} disabled={!onToggleCancellationWatch || mutating || awaitingPayment || paymentUnknown}>
-			  {monitor.watchCancellationSeats ? '취소표 끄기' : '취소표 켜기'}
+			  {monitor.watchCancellationSeats ? '취소표 제외' : '취소표 포함'}
 			</SecondaryButton>
 			{retryable
-              ? <PrimaryButton loading={mutating} onClick={onRetry}>{retryLabel}</PrimaryButton>
+              ? <PrimaryButton disabled={!presentation.canStart} loading={mutating} onClick={onRetry}>{retryLabel}</PrimaryButton>
               : null}
 			{active ? <SecondaryButton loading={mutating} onClick={onStop}>끄기</SecondaryButton> : null}
           </Group>
         )}
       />
+      {runtime && runtime.state !== 'ready' ? <Text c="orange.4">{runtime.reason}</Text> : null}
       <Columns>
         <Metric
           label="상태"
-		  value={monitorStatusLabel(status)}
+		  value={presentation.label}
           detail={paymentUnknown
             ? 'CGV 예매 내역을 확인한 뒤 다시 실행하세요.'
             : awaitingPayment
             ? '결제 화면을 최대 15분 동안 유지합니다.'
 			: monitor.updatedAt ? new Date(Number(monitor.updatedAt.seconds) * 1000).toLocaleString('ko-KR') : '업데이트 기록 없음'}
-		  color={awaitingPayment || paymentUnknown ? 'orange' : active ? 'blue' : 'gray'}
-		  processing={active}
+		  color={presentation.color}
+		  processing={presentation.active}
         />
         <Metric label="진행 범위" value={paymentUnknown ? '결과 확인 필요' : awaitingPayment ? '결제 대기' : '결제 전까지'} detail={monitorTimeLabel(monitor)} color="orange" />
       </Columns>

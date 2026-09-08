@@ -6,14 +6,17 @@ import {
 } from '../../api/proto';
 import { stateReservations } from '../../api/resources';
 import type { Notify } from '../../components/core/feedback';
+import { useExclusiveOperation } from '../../shared/useExclusiveOperation';
+import { refreshAfterMutation } from '../../shared/refreshAfterMutation';
 
 export function useReservations(state: WebUIState, userId: string, reload: () => Promise<WebUIState>, notify: Notify) {
   const [cancelId, setCancelId] = useState<string | null>(null);
-  const [cancelling, setCancelling] = useState(false);
+  const { active, start, isRunning } = useExclusiveOperation();
 
   const cancel = useCallback(async (reservationId: string, commit: boolean) => {
+    const release = start(reservationId);
+    if (!release) return;
     setCancelId(null);
-    setCancelling(true);
     try {
 		const reservation = stateReservations(state).find((item) => item.id === reservationId);
 		if (!reservation) return;
@@ -25,16 +28,16 @@ export function useReservations(state: WebUIState, userId: string, reload: () =>
 		notify(commit ? '예매를 취소했습니다.' : `취소 검토 완료 · ${draft.refundAmount || '환불액 화면 확인'}`, {
         tone: commit ? 'warning' : 'info', important: commit,
       });
-      await reload();
+      await refreshAfterMutation(reload, notify);
     } catch (error) {
       notify(errorMessage(error), { tone: 'error', important: commit });
     } finally {
-      setCancelling(false);
+      release();
     }
-	}, [notify, reload, state]);
+	}, [notify, reload, start, state]);
 
   return {
-		reservations: stateReservations(state), cancelId, setCancelId, cancelling,
+			reservations: stateReservations(state), cancelId, setCancelId: (id: string | null) => { if (!isRunning()) setCancelId(id); }, cancelling: active !== null,
     reviewCancellation: (id: string) => cancel(id, false),
     confirmCancellation: () => cancelId ? cancel(cancelId, true) : undefined,
   };

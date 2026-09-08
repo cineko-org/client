@@ -76,7 +76,7 @@ func TestNetworkLogsExposeManifestAndBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{networkCaptureDir: root}
+	server := &Server{networkCaptureDir: root, networkStatistics: store.SessionStatistics}
 
 	listRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/logs/network?status=429", nil)
 	listResponse := httptest.NewRecorder()
@@ -100,6 +100,32 @@ func TestNetworkLogsExposeManifestAndBody(t *testing.T) {
 	server.networkLogBody(bodyResponse, bodyRequest)
 	if bodyResponse.Code != http.StatusOK || bodyResponse.Body.String() != "response-body" {
 		t.Fatalf("body status/body = %d/%q", bodyResponse.Code, bodyResponse.Body.String())
+	}
+}
+
+func TestNetworkMetricsIncludeUnretainedSuccesses(t *testing.T) {
+	store, err := networkcapture.NewStore(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Save(context.Background(), networkcapture.Record{Exchange: networkcapture.Exchange{
+		Request: networkcapture.Request{URL: "https://cgv.co.kr/test"}, Response: &networkcapture.Response{Status: 200},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{networkCaptureDir: store.Root(), networkStatistics: store.SessionStatistics}
+	response := httptest.NewRecorder()
+	server.networkLogs(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/logs/network", nil))
+	var payload struct {
+		Entries    []networkcapture.Summary  `json:"entries"`
+		Statistics networkcapture.Statistics `json:"statistics"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Statistics.ProviderSent != 1 || len(payload.Entries) != 0 {
+		t.Fatalf("payload=%+v", payload)
 	}
 }
 

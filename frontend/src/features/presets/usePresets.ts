@@ -1,4 +1,6 @@
 import { useCallback, useState } from 'react';
+import { useExclusiveOperation } from '../../shared/useExclusiveOperation';
+import { refreshAfterMutation } from '../../shared/refreshAfterMutation';
 import { create } from '@bufbuild/protobuf';
 import { api, createRequestID, errorMessage, isRevisionConflict, logClientEvent } from '../../api/client';
 import {
@@ -18,7 +20,7 @@ export function usePresets(
   onSaved: () => void,
 ) {
   const [form, setForm] = useState<PresetForm>(initialPresetForm);
-  const [saving, setSaving] = useState(false);
+  const { active, start, isRunning } = useExclusiveOperation();
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const {
     reset: resetCatalog,
@@ -36,6 +38,7 @@ export function usePresets(
   }, [resetCatalog]);
 
   const save = useCallback(async () => {
+    if (isRunning()) return;
     const requestID = createRequestID();
 	const started = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 	const seats = seatMap?.layout?.seats ?? [];
@@ -70,7 +73,8 @@ export function usePresets(
       notify('좌석 배치 분석이 끝난 뒤 좌석 프리셋을 저장할 수 있습니다.', { tone: 'error' });
       return;
     }
-		setSaving(true);
+      const release = start('save');
+      if (!release) return;
 		let requestStarted = false;
 		let requestCompleted = false;
 		try {
@@ -87,7 +91,7 @@ export function usePresets(
 			});
       notify(form.id ? '좌석 프리셋을 수정했습니다.' : '좌석 프리셋을 저장했습니다.', { important: true });
       reset();
-      await reload();
+      await refreshAfterMutation(reload, notify);
       onSaved();
 	} catch (error) {
 		const rawError = error instanceof Error ? error.stack || error.message : String(error);
@@ -108,21 +112,24 @@ export function usePresets(
 			notify(errorMessage(error), { tone: 'error' });
 		}
     } finally {
-      setSaving(false);
+      release();
     }
-  }, [activeTheaterId, auditoriumId, form, notify, onSaved, pickedSeats, reload, reset, seatMap, userId]);
+  }, [activeTheaterId, auditoriumId, form, isRunning, notify, onSaved, pickedSeats, reload, reset, seatMap, start, userId]);
 
   const edit = useCallback((id: string) => {
+    if (isRunning()) return false;
 		const resource = presetResources(state).find((item) => item.resource.case === 'preset' && item.resource.value.id === id);
 		const preset = resource?.resource.case === 'preset' ? resource.resource.value : undefined;
 		if (!preset) return false;
 		setForm({ ...formFromPreset(preset), revision: resourceRevision(resource) });
 		loadPreset(preset);
     return true;
-	}, [loadPreset, state]);
+	}, [isRunning, loadPreset, state]);
 
   const remove = useCallback(async () => {
-	if (!deleteId) return;
+		if (!deleteId) return;
+		const release = start('delete');
+		if (!release) return;
 	try {
 		const resource = presetResources(state).find((item) => item.resource.case === 'preset' && item.resource.value.id === deleteId);
 		const requestID = createRequestID();
@@ -135,8 +142,8 @@ export function usePresets(
 					}),
 					userId, id: deleteId, kind: create(ResourceKindSchema, { kind: { case: 'preset', value: create(PresetResourceSchema) } }),
 				}));
-      await reload();
       notify('좌석 프리셋을 삭제했습니다.');
+      await refreshAfterMutation(reload, notify);
 	} catch (error) {
 		if (isRevisionConflict(error)) {
 			await reload();
@@ -144,11 +151,19 @@ export function usePresets(
 		} else notify(errorMessage(error), { tone: 'error' });
     } finally {
       setDeleteId(null);
+      release();
     }
-	}, [deleteId, notify, reload, state, userId]);
+	}, [deleteId, notify, reload, start, state, userId]);
 
   return {
-		presets: statePresets(state), form, setForm, saving, save, reset, newPreset: reset, edit,
-    deleteId, setDeleteId, remove, activeTheaterId, auditoriumId, pickedSeats, seatMap, ...catalog,
+    ...catalog,
+		presets: statePresets(state), form, setForm: (value: PresetForm) => { if (!isRunning()) setForm(value); }, saving: active !== null, save,
+    reset: () => { if (!isRunning()) reset(); }, newPreset: () => { if (!isRunning()) reset(); }, edit,
+    deleteId, setDeleteId: (id: string | null) => { if (!isRunning()) setDeleteId(id); }, remove, activeTheaterId, auditoriumId, pickedSeats, seatMap,
+    setRegion: (value: string) => { if (!isRunning()) catalog.setRegion(value); },
+    setTheater: (value: string) => { if (!isRunning()) return catalog.setTheater(value); },
+    setAuditorium: (value: string) => { if (!isRunning()) return catalog.setAuditorium(value); },
+    toggleSeat: (value: string) => { if (!isRunning()) catalog.toggleSeat(value); },
+    clearSeats: () => { if (!isRunning()) catalog.clearSeats(); },
   };
 }

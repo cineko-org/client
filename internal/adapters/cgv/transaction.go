@@ -51,6 +51,9 @@ func (adapter *Adapter) PreparePayment(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := adapter.sessionAuthenticationError(); err != nil {
+		return fail("verify_authentication", err)
+	}
 	if err := adapter.selectBookingSeats(seatLabels); err != nil {
 		return fail("select_seats", err)
 	}

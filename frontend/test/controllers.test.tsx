@@ -1,4 +1,5 @@
 import { create, toJson, type Message } from '@bufbuild/protobuf';
+import { TimestampSchema } from '@bufbuild/protobuf/wkt';
 import type { GenMessage } from '@bufbuild/protobuf/codegenv2';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,7 +10,7 @@ import {
 	CgvAuditoriumIdentitySchema, CgvTheaterIdentitySchema, DirectNetworkSchema,
 	MonitorSchema, MonitorStateSchema, NetworkSettingsSchema, ResolutionSchema,
 	ResourceSchema, SettingsSchema, StateSchema as CollectionStateSchema, TheaterIdentitySchema, TheaterSchema, WebUIAccountStateSchema,
-	WebUISeatMapResponseSchema, WebUIActionStatusSchema, WebUIResourceListSchema, WebUIStateSchema, WebUITaskStatusResponseSchema,
+	WebUISeatMapResponseSchema, WebUIActionStatusSchema, WebUIResourceListSchema, WebUIStateSchema,
 } from '../src/api/proto';
 import type { WebUIState } from '../src/api/proto';
 import { emptyAppState } from '../src/features/application/model';
@@ -116,7 +117,7 @@ describe('application connection controller', () => {
 		fetchMock.mockImplementation((input) => {
 			const path = String(input);
 			if (path.startsWith('/api/state')) return Promise.resolve(protoResponse(WebUIStateSchema, emptyAppState));
-			if (path === '/api/status') return Promise.resolve(protoResponse(WebUITaskStatusResponseSchema, create(WebUITaskStatusResponseSchema)));
+			if (path === '/api/runtime') return Promise.resolve(response({ state: 'login_required', reason: 'login required', account: { unauthenticated: {} }, tasks: { tasks: [] } }));
 			if (path === '/api/account') return Promise.resolve(protoResponse(WebUIAccountStateSchema, create(WebUIAccountStateSchema, { state: { case: 'unauthenticated', value: {} } })));
 			return Promise.resolve(response([]));
 		});
@@ -223,18 +224,21 @@ describe('notification controller', () => {
 		});
 		const fetchMock = vi.fn<typeof fetch>()
 			.mockResolvedValueOnce(protoResponse(WebUIResourceListSchema, events))
-			.mockResolvedValue(protoResponse(WebUIActionStatusSchema, create(WebUIActionStatusSchema, { result: { case: 'completed', value: {} } })));
+			.mockResolvedValueOnce(protoResponse(WebUIActionStatusSchema, create(WebUIActionStatusSchema, { result: { case: 'completed', value: {} } })))
+      .mockResolvedValueOnce(protoResponse(WebUIResourceListSchema, create(WebUIResourceListSchema, { resources: [create(ResourceSchema, { resource: { case: 'appEvent', value: { ...event, readAt: create(TimestampSchema, { seconds: 1n }) } } })] })))
+      .mockResolvedValueOnce(protoResponse(WebUIActionStatusSchema, create(WebUIActionStatusSchema, { result: { case: 'completed', value: {} } })))
+      .mockResolvedValueOnce(protoResponse(WebUIResourceListSchema, create(WebUIResourceListSchema)));
 		vi.stubGlobal('fetch', fetchMock);
 		const { result } = renderHook(() => useNotifications());
 
 		await act(async () => result.current.load('user'));
 		expect(result.current.notices).toEqual([expect.objectContaining({ id: 'event', read: false })]);
-		act(() => result.current.markRead());
+		await act(async () => result.current.markRead());
 		expect(result.current.notices[0].read).toBe(true);
-		act(() => result.current.clear());
+		await act(async () => result.current.clear());
 		expect(result.current.notices).toEqual([]);
 		expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
-			'/api/events?user=user', '/api/events/read', '/api/events',
+			'/api/events?user=user', '/api/events/read', '/api/events?user=user', '/api/events', '/api/events?user=user',
 		]);
 	});
 });

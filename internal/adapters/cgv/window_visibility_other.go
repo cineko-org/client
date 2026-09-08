@@ -7,3 +7,6 @@ func hideBrowserApplication(int) error { return nil }
 func showBrowserApplication(int) error { return nil }
 
 func browserApplicationHidden(int) (bool, error) { return true, nil }
+
+// Other platforms are verified through native Chrome window bounds/state.
+func browserApplicationVisible(int) (bool, error) { return true, nil }

@@ -21,7 +21,7 @@ export function ProxySettingsView({
   const editable = available && loadState === 'ready' && !saving;
   return (
     <Stack gap="md">
-        <Text fw={600}>프록시</Text>
+        <Text fw={600}>예매용 프록시</Text>
         <Text size="sm" c="dimmed">현재: {networkUsageDescription(settings)} · 저장 전에 실제 연결을 확인합니다.</Text>
         {!available ? <Text c="yellow" size="sm">데스크톱 앱에서만 설정할 수 있습니다.</Text> : null}
         {loadState === 'loading' || loadState === 'idle' ? <Text c="dimmed" size="sm">저장된 연결 설정을 불러오는 중입니다.</Text> : null}
