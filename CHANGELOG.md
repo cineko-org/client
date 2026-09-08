@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.7](https://github.com/cineko-org/client/compare/v2.8.6...v2.8.7) (2026-09-08)
+
+
+### Bug Fixes
+
+* remove the duplicate exit action from the app header ([#55](https://github.com/cineko-org/client/issues/55)) ([c2be17e](https://github.com/cineko-org/client/commit/c2be17ea3c34ea0e6d6aeba78d9804b73acba28d))
+
 ## [2.8.6](https://github.com/cineko-org/client/compare/v2.8.5...v2.8.6) (2026-09-08)
 
 
