@@ -12,7 +12,6 @@ export interface DesktopBridge {
 	RecordClientLog(payload: string): Promise<void>;
 	WatchSeatMap(auditoriumId: string): Promise<void>;
 	StopSeatMapWatch(): Promise<void>;
-	Exit(): Promise<void>;
 }
 
 export function decodeDesktopProto<T extends Message>(schema: GenMessage<T>, payload: string): T {

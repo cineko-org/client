@@ -54,11 +54,9 @@ function CinekoApplication() {
         connection={application.connection}
         account={application.runtime.account}
         soxyStatus={application.runtime.scanner ?? 'checking'}
-        desktopAvailable={application.desktopAvailable}
         unreadNotices={unreadNoticeCount(notifications.notices)}
         feedback={notifications.feedback}
         onNavigate={navigateSection}
-        onExit={application.exit}
         onOpenNotifications={showNotifications}
         onOpenSettings={openSettings}
         onDismissFeedback={notifications.dismissFeedback}

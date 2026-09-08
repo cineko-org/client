@@ -3,7 +3,6 @@ import { ActionIcon, Alert, AppShell, Box, Center, Divider, Group, Indicator, Lo
 import {
   IconBell,
   IconBookmark,
-  IconDoorExit,
   IconHome,
   IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarRightCollapse,
@@ -27,12 +26,10 @@ export interface AppShellViewProps {
   connection: ApplicationConnection;
 	account: WebUIAccountState;
   soxyStatus: IndicatorState;
-  desktopAvailable: boolean;
   unreadNotices: number;
   feedback: ShellFeedback | null;
   children: ReactNode;
   onNavigate: (section: MainSection) => void;
-  onExit: () => void;
   onOpenNotifications: () => void;
   onOpenSettings: () => void;
   onDismissFeedback: () => void;
@@ -131,8 +128,8 @@ function MobileNavigation({ activeSection, onNavigate }: Omit<ShellNavigationPro
 
 export function AppShellView(props: AppShellViewProps) {
   const {
-    activeSection, loading, connection, account, soxyStatus, desktopAvailable, unreadNotices, feedback,
-    children, onNavigate, onExit,
+    activeSection, loading, connection, account, soxyStatus, unreadNotices, feedback,
+    children, onNavigate,
     onOpenNotifications, onOpenSettings, onDismissFeedback, onRetryConnection,
   } = props;
   const [navigationCollapsed, setNavigationCollapsed] = useState(false);
@@ -172,7 +169,6 @@ export function AppShellView(props: AppShellViewProps) {
                 <IconAction label="알림" icon={<IconBell size={19} />} onClick={onOpenNotifications} />
               </Indicator>
               <IconAction label="설정" icon={<IconSettings size={19} />} onClick={onOpenSettings} />
-              {desktopAvailable ? <IconAction label="나가기" icon={<IconDoorExit size={19} />} onClick={onExit} /> : null}
             </Group>
           </Group>
         </Group>

@@ -154,18 +154,9 @@ export function useApplicationState(notify: Notify, loadNotices: (userId: string
     }
   }, [notify, pollStatus]);
 
-  const exit = useCallback(async () => {
-    if (!bridge) return;
-    try {
-      await bridge.Exit();
-    } catch (error) {
-      notify(errorMessage(error), { tone: 'error' });
-    }
-  }, [bridge, notify]);
-
   return {
-    state, runtime, userId: state.userId, loading: connection.status === 'loading', connection, desktopAvailable: Boolean(bridge),
+    state, runtime, userId: state.userId, loading: connection.status === 'loading', connection,
     retryConnection: initialize,
-    reload: loadState, openAuthentication, exit, pollStatus,
+    reload: loadState, openAuthentication, pollStatus,
   };
 }
