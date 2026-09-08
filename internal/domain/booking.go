@@ -25,14 +25,18 @@ type Showtime struct {
 	Date string
 	// CivilDate is the local calendar date of the start instant. It differs
 	// from Date when CGV uses an extended service-day clock such as 25:30.
-	CivilDate      string
-	StartsAt       string
-	EndsAt         string
-	AvailableSeats int
-	Capacity       int
-	SoldOut        bool
-	ObservedAt     time.Time
-	SourceLabel    string
+	CivilDate string
+	StartsAt  string
+	EndsAt    string
+	// Provider clocks preserve service-day display hours (e.g. 25:00).
+	// StartsAt/EndsAt remain civil clocks for schedule-window evaluation.
+	ProviderStartsAt string
+	ProviderEndsAt   string
+	AvailableSeats   int
+	Capacity         int
+	SoldOut          bool
+	ObservedAt       time.Time
+	SourceLabel      string
 }
 
 type LiveSeat struct {

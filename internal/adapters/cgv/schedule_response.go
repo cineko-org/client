@@ -147,6 +147,9 @@ func parseScheduleResponse(payload []byte) ([]providerScheduleRow, error) {
 		return nil, err
 	}
 	if statusCode != 0 {
+		if statusCode == -1001 {
+			return nil, ErrAuthenticationRequired
+		}
 		message := strings.TrimSpace(envelope.StatusMessage)
 		if message == "" {
 			message = "provider returned a non-zero status"

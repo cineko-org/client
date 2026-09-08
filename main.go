@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/cineko-org/client/internal/adapters/browserfactory"
 	"github.com/cineko-org/client/internal/adapters/cgv"
@@ -62,12 +64,14 @@ func runDesktop() (runErr error) {
 	if err != nil {
 		return err
 	}
-	defer func() { runErr = errors.Join(runErr, closeLog()) }()
+	defer finishDesktopRun(&runErr, closeLog)
 	logging.Info(context.Background(), "Client startup", "event", "client.startup", "data_dir", dataDir, "version", desktopVersion, "debug", debugMode)
 	networkCapture, err := networkcapture.NewStore(filepath.Join(dataDir, "artifacts", "network"), logging.Logger(), networkcapture.WithDebug(debugMode))
 	if err != nil {
 		return err
 	}
+	stopNetworkSummary := logging.StartNetworkSummary(networkCapture, 5*time.Minute)
+	defer stopNetworkSummary()
 	restoreNetworkCapture := logging.SetNetworkCapture(networkCapture)
 	defer restoreNetworkCapture()
 	store, launchContext, startupReadyNonce, err := openDesktopStore(context.Background(), dataDir, os.Stdin)
@@ -89,7 +93,10 @@ func runDesktop() (runErr error) {
 	}
 	defer func() { runErr = errors.Join(runErr, warmPool.Close()) }()
 	scheduleChanged := make(chan struct{}, 1)
-	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, scheduleChanged, networkCapture)
+	monitoringSummary := newMonitoringSummary(time.Now())
+	stopMonitoringSummary := monitoringSummary.start(5 * time.Minute)
+	defer stopMonitoringSummary()
+	embeddedProbe, err := startEmbeddedProbe(context.Background(), store, dataDir, scheduleChanged, networkCapture, monitoringSummary)
 	if err != nil {
 		return err
 	}
@@ -100,12 +107,14 @@ func runDesktop() (runErr error) {
 	defer hooks.Close()
 
 	server, err := webui.New(webui.Dependencies{
-		Repository: store,
-		Factory:    newAutomationFactory(browsers, bookingHost, embeddedProbe, store.UserID()),
-		IDs:        platform.IDGenerator{}, Clock: platform.Clock{}, Waiter: platform.Waiter{}, Events: hooks,
+		ScannerStatus: embeddedProbe.ScanStatus,
+		Repository:    store,
+		Factory:       newAutomationFactory(browsers, bookingHost, embeddedProbe, store.UserID()),
+		IDs:           platform.IDGenerator{}, Clock: platform.Clock{}, Waiter: platform.Waiter{}, Events: hooks,
 		UserID: store.UserID(), PosterCacheDir: filepath.Join(dataDir, "posters"),
 		LogPath:           filepath.Join(dataDir, "client.log"),
 		NetworkCaptureDir: networkCapture.Root(),
+		NetworkStatistics: networkCapture.SessionStatistics,
 		ClearLogs: func(context.Context) error {
 			if err := networkCapture.Clear(); err != nil {
 				return err
@@ -116,11 +125,18 @@ func runDesktop() (runErr error) {
 			bookingHost.SetDemand(active)
 		},
 		BookingCapacityAvailable: bookingHost.CanAccept,
+		MonitoringChanged:        embeddedProbe.CancelMonitorScan,
+		MonitoringBlockReason: func() string {
+			return providerMonitoringBlockReason(networkCapture)
+		},
 	})
 	if err != nil {
 		return err
 	}
 	warmPool.SetReadyNotifier(server.NotifyBookingCapacityChanged)
+	warmPool.SetStartupFailureNotifier(func(err error) {
+		server.NotifyBookingPreparationFailed(err, errors.Is(err, cgv.ErrAuthenticationRequired) || errors.Is(err, cgv.ErrAuthenticationUnverified))
+	})
 	hooks.SetFailureHandler(func(failure eventhook.Failure) {
 		server.RecordLocalSystemEvent(desktopErrorEvent(
 			store.UserID(), "hook.delivery_failed",
@@ -128,13 +144,35 @@ func runDesktop() (runErr error) {
 		))
 	})
 	app := newDesktopApp(server, store, browsers, hooks)
+	app.scanner = embeddedProbe.scanner
 	app.setUserID(store.UserID())
-	app.monitor = &desktopMonitorWorker{store: store, server: server, scheduleChanged: scheduleChanged}
+	app.monitor = &desktopMonitorWorker{store: store, server: server, scheduleChanged: scheduleChanged, summary: monitoringSummary}
 	err = runDesktopWindow(app, server, store, embeddedProbe, dataDir, startupReadyNonce)
 	if app.updateNeeded.Load() {
 		return errors.Join(err, errUpdateRequired)
 	}
 	return err
+}
+
+func providerMonitoringBlockReason(capture *networkcapture.Store) string {
+	if blocked, decision := capture.RateLimit().Blocked("cgv.co.kr"); blocked {
+		if time.Until(decision.BlockedUntil) > 0 {
+			return fmt.Sprintf("CGV 요청 제한(429)으로 조회를 쉬고 있습니다. 재시도 가능 시각: %s", decision.BlockedUntil.Local().Format("01/02 15:04:05"))
+		}
+		return "CGV 요청 제한(429) 복구를 확인하고 있습니다. 추가 조회는 대기합니다."
+	}
+	return ""
+}
+
+func finishDesktopRun(runErr *error, closeLog func() error) {
+	panicked := recover()
+	if panicked != nil {
+		*runErr = errors.Join(*runErr, fmt.Errorf("client panic: %v\n%s", panicked, debug.Stack()))
+	}
+	*runErr = logging.FinishPersistentRun(context.Background(), *runErr, closeLog)
+	if panicked != nil {
+		panic(panicked)
+	}
 }
 
 func desktopDebugMode() bool {
@@ -184,6 +222,9 @@ func newWarmBookingPool(
 		func(ctx context.Context, adapter *cgv.Adapter) error {
 			authenticated, err := adapter.IsAuthenticated(ctx)
 			if err != nil {
+				if errors.Is(err, cgv.ErrAuthenticationUnverified) {
+					return errors.Join(booking.ErrPermanent, err)
+				}
 				return err
 			}
 			if !authenticated {

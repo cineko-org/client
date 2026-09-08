@@ -2,6 +2,8 @@ import { fromJson, toJson, type JsonValue, type Message } from '@bufbuild/protob
 import type { GenMessage } from '@bufbuild/protobuf/codegenv2';
 
 export interface DesktopBridge {
+	GetScannerSettings?(): Promise<string>;
+	SaveScannerSettings?(input: string): Promise<string>;
 	GetNetworkSettings(): Promise<string>;
 	SaveNetworkSettings(input: string): Promise<string>;
 	GetHookSettings(): Promise<string>;

@@ -105,6 +105,9 @@ func parseSeatSnapshot(body []byte, auditoriumID string, now time.Time) (parsedS
 		return parsedSeatSnapshot{}, fmt.Errorf("decode CGV seat snapshot: %w", err)
 	}
 	if envelope.StatusCode != 0 {
+		if envelope.StatusCode == -1001 {
+			return parsedSeatSnapshot{}, ErrAuthenticationRequired
+		}
 		return parsedSeatSnapshot{}, fmt.Errorf("CGV seat snapshot failed: %s", envelope.ResultMsg)
 	}
 	if len(envelope.Data.Items) == 0 {

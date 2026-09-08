@@ -292,7 +292,7 @@ if [[ " $* " == *" s3api head-object "* ]]; then
   object="$FAKE_OBJECTS/$(printf '%s' "$*" | sed -E 's/.* --key ([^ ]+).*/\\1/' | tr '/' '_')"
   test -f "$object"
   checksum="$(openssl dgst -sha256 -binary "$object" | openssl base64 -A)"
-  checksum_hex="$(sha256sum "$object" | awk '{print $1}')"
+  checksum_hex="$(openssl dgst -sha256 "$object" | awk '{print $NF}')"
   printf '{"ContentLength":%s,"ChecksumSHA256":"%s","Metadata":{"sha256":"%s"}}\\n' \
     "$(wc -c < "$object" | tr -d ' ')" "$checksum" "$checksum_hex"
   exit 0

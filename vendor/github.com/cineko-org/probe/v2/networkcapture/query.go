@@ -55,6 +55,7 @@ type Statistics struct {
 	Captured     int  `json:"captured"`
 	ProviderSent int  `json:"provider_sent"`
 	Blocked      int  `json:"blocked"`
+	Canceled     int  `json:"canceled"`
 	Failed       int  `json:"failed"`
 	Status429    int  `json:"status_429"`
 	Truncated    bool `json:"truncated"`
@@ -104,15 +105,20 @@ func Stats(root string, query Query) (Statistics, error) {
 
 func addSummaryStats(statistics *Statistics, summary Summary) {
 	statistics.Captured++
-	if strings.EqualFold(summary.Outcome, "blocked") || strings.EqualFold(summary.Outcome, "canceled") {
+	if strings.EqualFold(summary.Outcome, "blocked") {
 		statistics.Blocked++
+	} else if strings.EqualFold(summary.Outcome, "canceled") {
+		statistics.Canceled++
+		if summary.Status > 0 && isCGVURL(summary.URL) {
+			statistics.ProviderSent++
+		}
 	} else if isCGVURL(summary.URL) {
 		statistics.ProviderSent++
 	}
 	if strings.EqualFold(summary.Outcome, "failed") || summary.Status >= 400 {
 		statistics.Failed++
 	}
-	if summary.Status == 429 {
+	if summary.Status == 429 && isCGVURL(summary.URL) {
 		statistics.Status429++
 	}
 }
@@ -123,7 +129,7 @@ func isCGVURL(raw string) bool {
 		return false
 	}
 	host := strings.ToLower(parsed.Hostname())
-	return host == "cgv.co.kr" || host == "www.cgv.co.kr"
+	return host == "cgv.co.kr" || strings.HasSuffix(host, ".cgv.co.kr")
 }
 
 func List(root string, query Query) ([]Summary, error) {

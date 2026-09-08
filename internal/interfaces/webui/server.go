@@ -21,6 +21,7 @@ import (
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	"github.com/cineko-org/probe/v2/networkcapture"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -89,19 +90,30 @@ func (automation *lifetimeAutomation) PaymentFailure() <-chan struct{} {
 	return notifier.PaymentFailure()
 }
 
+func (automation *lifetimeAutomation) PaymentPresentationError() error {
+	if reporter, ok := automation.Automation.(interface{ PaymentPresentationError() error }); ok {
+		return reporter.PaymentPresentationError()
+	}
+	return nil
+}
+
 type Dependencies struct {
-	Repository          Repository
-	Factory             AutomationFactory
-	IDs                 application.IDGenerator
-	Clock               application.Clock
-	Waiter              application.Waiter
-	Events              application.EventPublisher
-	AccountStateChanged func(bool)
-	UserID              string
-	PosterCacheDir      string
-	LogPath             string
-	NetworkCaptureDir   string
-	ClearLogs           func(context.Context) error
+	ScannerStatus         func() string
+	MonitoringBlockReason func() string
+	MonitoringChanged     func()
+	Repository            Repository
+	Factory               AutomationFactory
+	IDs                   application.IDGenerator
+	Clock                 application.Clock
+	Waiter                application.Waiter
+	Events                application.EventPublisher
+	AccountStateChanged   func(bool)
+	UserID                string
+	PosterCacheDir        string
+	LogPath               string
+	NetworkCaptureDir     string
+	NetworkStatistics     func() networkcapture.Statistics
+	ClearLogs             func(context.Context) error
 	// BookingDemandChanged tells the Client runtime whether authenticated
 	// active monitors need warm booking capacity.
 	BookingDemandChanged func(bool)
@@ -110,6 +122,10 @@ type Dependencies struct {
 }
 
 type Server struct {
+	scannerStatus            func() string
+	monitoringBlockReason    func() string
+	monitoringChanged        func()
+	monitoringRunning        bool // protected by tasksMu
 	repository               Repository
 	factory                  AutomationFactory
 	ids                      application.IDGenerator
@@ -123,6 +139,8 @@ type Server struct {
 	posterCache              *posterCache
 	logPath                  string
 	networkCaptureDir        string
+	networkStatistics        func() networkcapture.Statistics
+	bookingPreparationError  string // protected by tasksMu
 	clearLogs                func(context.Context) error
 	observabilityMu          sync.RWMutex
 	observabilityStartedAt   time.Time
@@ -153,7 +171,10 @@ func New(dependencies Dependencies) (*Server, error) {
 		}
 	}
 	return &Server{
-		repository: dependencies.Repository, factory: dependencies.Factory,
+		scannerStatus:         dependencies.ScannerStatus,
+		monitoringBlockReason: dependencies.MonitoringBlockReason,
+		monitoringChanged:     dependencies.MonitoringChanged,
+		repository:            dependencies.Repository, factory: dependencies.Factory,
 		ids: dependencies.IDs, clock: dependencies.Clock, waiter: dependencies.Waiter,
 		eventPublisher: dependencies.Events, accountStateChanged: dependencies.AccountStateChanged,
 		userID:                   strings.TrimSpace(dependencies.UserID),
@@ -162,6 +183,7 @@ func New(dependencies Dependencies) (*Server, error) {
 		posterCache:              posters,
 		logPath:                  strings.TrimSpace(dependencies.LogPath),
 		networkCaptureDir:        strings.TrimSpace(dependencies.NetworkCaptureDir),
+		networkStatistics:        dependencies.NetworkStatistics,
 		clearLogs:                dependencies.ClearLogs,
 		observabilityStartedAt:   dependencies.Clock.Now(),
 		executionReady:           make(chan struct{}, 1),
@@ -222,8 +244,8 @@ func (server *Server) routes() http.Handler {
 func (server *Server) apiRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", server.state)
-	mux.HandleFunc("GET /api/status", server.status)
 	mux.HandleFunc("GET /api/account", server.accountStatus)
+	mux.HandleFunc("GET /api/runtime", server.monitoringRuntime)
 	mux.HandleFunc("POST /api/auth/open", server.openAuthentication)
 	mux.HandleFunc("POST /api/catalog/seat-map", server.resolveAuditoriumSeatMap)
 	mux.HandleFunc("GET /api/catalog/seat-map:watch", server.watchAuditoriumSeatMap)
@@ -286,6 +308,48 @@ func (server *Server) Start(ctx context.Context) {
 // NotifyBookingCapacityChanged wakes the desktop execution worker after a
 // warm browser becomes ready or a retained payment session is released.
 func (server *Server) NotifyBookingCapacityChanged() {
+	if server.CanAcceptExecution() {
+		server.tasksMu.Lock()
+		_, recovering := server.tasks["booking-browser"]
+		delete(server.tasks, "booking-browser")
+		server.bookingPreparationError = ""
+		server.tasksMu.Unlock()
+		if recovering {
+			logging.Info(server.lifetimeContext(), "booking.browser.ready", "event", "booking.browser.ready", "scenario", "booking_monitoring", "outcome", "recovered")
+		}
+	}
+	server.signalExecutionAvailable()
+}
+
+// NotifyBookingPreparationFailed makes startup failures visible without
+// changing the monitor's pending intent or retrying invalid credentials.
+func (server *Server) NotifyBookingPreparationFailed(err error, authenticationFailure bool) {
+	if err == nil {
+		return
+	}
+	server.tasksMu.Lock()
+	previous := server.bookingPreparationError
+	server.bookingPreparationError = err.Error()
+	message := publicErrorMessage(err)
+	server.tasks["booking-browser"] = taskStateMessage("booking-browser", "failed", message, server.clock.Now())
+	server.tasksMu.Unlock()
+	if previous != err.Error() {
+		logging.ErrorUnexpected(server.lifetimeContext(), "booking.browser.prepare.failed", "booking_monitoring", "prepare_booking_browser",
+			"an authenticated browser ready for seat selection", "booking is waiting for browser preparation", err)
+	}
+	if authenticationFailure {
+		server.accountMu.RLock()
+		authenticated := server.account == nil || server.account.GetAuthenticated() != nil
+		server.accountMu.RUnlock()
+		if authenticated {
+			server.setAccountState(false, err)
+		}
+	}
+	if previous != err.Error() {
+		// Persist after the account state changes: this wakes the App's
+		// data:changed listener, which must not see stale authenticated=true.
+		server.RecordLocalSystemEvent(appErrorEvent(server.userID, "booking.browser.prepare.failed", "예매 브라우저를 준비하지 못했습니다. "+publicErrorMessage(err)))
+	}
 	server.signalExecutionAvailable()
 }
 
@@ -511,28 +575,21 @@ func (server *Server) state(writer http.ResponseWriter, request *http.Request) {
 	}.Build())
 }
 
-func (server *Server) status(writer http.ResponseWriter, _ *http.Request) {
-	server.tasksMu.RLock()
-	defer server.tasksMu.RUnlock()
-	tasks := make([]*clientpb.WebUITaskState, 0, len(server.tasks))
-	for _, value := range server.tasks {
-		tasks = append(tasks, value)
-	}
-	writeProtoJSON(writer, http.StatusOK, clientpb.WebUITaskStatusResponse_builder{Tasks: tasks}.Build())
-}
-
 func (server *Server) accountStatus(writer http.ResponseWriter, _ *http.Request) {
 	server.accountMu.Lock()
 	if server.account == nil {
 		server.account = accountStateMessage("checking", "", server.clock.Now())
-		go server.checkAuthentication()
+		go func() { _, _ = server.checkAuthentication() }()
 	}
 	value := server.account
 	server.accountMu.Unlock()
 	writeProtoJSON(writer, http.StatusOK, value)
 }
 
-func (server *Server) checkAuthentication() {
+func (server *Server) checkAuthentication() (bool, error) {
+	server.accountMu.Lock()
+	server.account = accountStateMessage("checking", "", server.clock.Now())
+	server.accountMu.Unlock()
 	ctx, cancel := context.WithTimeout(server.rootContext, 45*time.Second)
 	defer cancel()
 	automation, err := server.factory(ctx, true, AutomationSession, "account")
@@ -542,6 +599,7 @@ func (server *Server) checkAuthentication() {
 		authenticated, err = automation.IsAuthenticated(ctx)
 	}
 	server.setAccountState(authenticated, err)
+	return authenticated, err
 }
 
 func (server *Server) setAccountState(authenticated bool, err error) {
@@ -580,6 +638,9 @@ func (server *Server) openAuthentication(writer http.ResponseWriter, _ *http.Req
 		server.writeAPIError(writer, nil, http.StatusConflict, "authentication_in_progress", "CGV 로그인 브라우저가 이미 열려 있습니다.", true)
 		return
 	}
+	server.accountMu.Lock()
+	server.account = accountStateMessage("checking", "", server.clock.Now())
+	server.accountMu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(server.rootContext, 6*time.Minute)
 		defer cancel()
@@ -588,7 +649,18 @@ func (server *Server) openAuthentication(writer http.ResponseWriter, _ *http.Req
 			defer automation.Close()
 			err = automation.AuthenticateManuallyUntil(ctx, 5*time.Minute)
 		}
-		server.setAccountState(err == nil, err)
+		if err == nil {
+			// Closing a manual window is not proof of login. Verify the saved
+			// session in a fresh background browser before enabling booking.
+			automation.Close()
+			var authenticated bool
+			authenticated, err = server.checkAuthentication()
+			if err == nil && !authenticated {
+				err = errors.New("CGV authentication is required")
+			}
+		} else {
+			server.setAccountState(false, err)
+		}
 		server.finishTask("authentication", err)
 	}()
 	writeProtoJSON(writer, http.StatusAccepted, actionStatus(true))
@@ -705,7 +777,7 @@ func (server *Server) ExecuteAvailability(
 		return err
 	}
 	if monitorExecutionUnavailable(job.GetMonitor()) {
-		return nil
+		return application.ErrSeatUnavailable
 	}
 	monitor, preset, theater, auditorium, err := server.claimedBooking(ctx, monitorID)
 	if err != nil {
@@ -750,6 +822,9 @@ func (server *Server) ExecuteAvailability(
 	}
 	if err == nil && reservation.GetReservation().GetPrepared() != nil {
 		retained = server.retainPaymentSession(monitorID, reservation, automation)
+	}
+	if err == nil && !retained {
+		return errors.New("booking finished without a retained payment session")
 	}
 	return err
 }
@@ -906,6 +981,10 @@ func publicErrorMessage(err error) string {
 	}
 	message := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(message, "authentication could not be verified"):
+		return "CGV의 인증 응답을 확인하지 못했습니다. 로그인 창에서 로그인 상태를 확인한 뒤 다시 시도하세요."
+	case strings.Contains(message, "authentication is required"):
+		return "CGV 로그인이 필요합니다. 다시 로그인한 뒤 예매 찾기를 계속하세요."
 	case strings.Contains(message, "proxy"), strings.Contains(message, "soxy"), strings.Contains(message, "socks"):
 		return "프록시 설정이나 연결 상태를 확인하세요."
 	case strings.Contains(message, "credential"), strings.Contains(message, "authenticate"), strings.Contains(message, "authentication"), strings.Contains(message, "login"):

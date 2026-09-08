@@ -3,6 +3,8 @@ import { PageHeader } from '../../components/core/PageHeader';
 import { AccountSettingsView } from '../../features/settings/ui/AccountSettingsView';
 import { ProxySettingsView, type ProxySettingsViewProps } from '../../features/settings/ui/ProxySettingsView';
 import { HookSettingsView } from '../../features/settings/ui/HookSettingsView';
+import { ScannerSettingsView } from '../../features/settings/ui/ScannerSettingsView';
+import { useScannerSettings } from '../../features/settings/useScannerSettings';
 import type { HookTargetForm } from '../../features/settings/hookModel';
 import type { WebUIAccountState } from '../../api/proto';
 
@@ -24,10 +26,13 @@ export function SettingsPage({
   account, onAuthenticate, hookAvailable, hookForms, hookLoadState, hookSaving,
   onHookAdd, onHookReload, onHookChange, onHookRemove, onHookSave, ...proxy
 }: SettingsPageProps) {
+	const scanner = useScannerSettings();
   return (
     <Stack gap="xl">
       <PageHeader title="설정" description="CGV 로그인, 네트워크, 외부 알림을 관리합니다." />
       <AccountSettingsView account={account} onAuthenticate={onAuthenticate} />
+      <Divider />
+      <ScannerSettingsView controller={scanner} />
       <Divider />
       <ProxySettingsView {...proxy} />
       <Divider />

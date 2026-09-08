@@ -83,58 +83,62 @@ func DefaultBrowserConfig() BrowserConfig {
 }
 
 type Adapter struct {
-	ctx                context.Context
-	cancelContext      context.CancelFunc
-	owner              *Adapter
-	browserContext     playwright.BrowserContext
-	page               playwright.Page
-	identitySession    playwright.CDPSession
-	stopPlaywright     func() error
-	processPID         int
-	browserProcessPID  int
-	hideUntilPayment   bool
-	profileDir         string
-	sessionStatePath   string
-	processCrashed     chan error
-	processDone        chan struct{}
-	processDoneOnce    sync.Once
-	processCrashOnce   sync.Once
-	closeAttemptDone   chan struct{}
-	closeAttemptOnce   sync.Once
-	forceWait          chan struct{}
-	forceWaitOnce      sync.Once
-	processWaitOnce    sync.Once
-	processWaitDone    chan struct{}
-	processWaitErr     error
-	fallbackWait       bool
-	closing            atomic.Bool
-	closeOnce          sync.Once
-	lifecycleMu        sync.Mutex
-	windowVisibilityMu sync.Mutex
-	closeHooks         []func()
-	closed             bool
-	closeErr           error
-	artifactsDir       string
-	mu                 sync.Mutex
-	selectedRegion     string
-	selectedTheater    string
-	preparedPayment    bool
-	preparedCancel     bool
-	blockedRequests    atomic.Uint64
-	continuedRequests  atomic.Uint64
-	blockResources     bool
-	seatResponses      chan seatNetworkResponse
-	scheduleResponseMu sync.Mutex
-	providerResponses  []capturedProviderResponse
-	networkStarts      sync.Map
-	networkCompleted   sync.Map
-	networkCapture     *networkcapture.Store
-	rateLimit          *networkcapture.RateLimitGate
-	rateLimitAutomated bool
-	paymentHandoff     atomic.Bool
-	userAgent          browserUserAgent
-	userAgentMetadata  userAgentBootstrapIdentity
-	webGLIdentity      webGLIdentity
+	ctx                   context.Context
+	cancelContext         context.CancelFunc
+	owner                 *Adapter
+	browserContext        playwright.BrowserContext
+	page                  playwright.Page
+	identitySession       playwright.CDPSession
+	stopPlaywright        func() error
+	processPID            int
+	browserProcessPID     int
+	hideUntilPayment      bool
+	profileDir            string
+	sessionStatePath      string
+	processCrashed        chan error
+	processDone           chan struct{}
+	processDoneOnce       sync.Once
+	processCrashOnce      sync.Once
+	closeAttemptDone      chan struct{}
+	closeAttemptOnce      sync.Once
+	forceWait             chan struct{}
+	forceWaitOnce         sync.Once
+	processWaitOnce       sync.Once
+	processWaitDone       chan struct{}
+	processWaitErr        error
+	fallbackWait          bool
+	closing               atomic.Bool
+	closeOnce             sync.Once
+	lifecycleMu           sync.Mutex
+	windowVisibilityMu    sync.Mutex
+	backgroundHide        coalescedWindowWork
+	tabCreation           tabCreationGate
+	windowPresentationErr error // protected by root windowVisibilityMu
+	closeHooks            []func()
+	closed                bool
+	closeErr              error
+	artifactsDir          string
+	mu                    sync.Mutex
+	selectedRegion        string
+	selectedTheater       string
+	preparedPayment       bool
+	preparedCancel        bool
+	blockedRequests       atomic.Uint64
+	continuedRequests     atomic.Uint64
+	blockResources        bool
+	seatResponses         chan seatNetworkResponse
+	scheduleResponseMu    sync.Mutex
+	providerResponses     []capturedProviderResponse
+	networkStarts         sync.Map
+	networkCompleted      sync.Map
+	networkCapture        *networkcapture.Store
+	rateLimit             *networkcapture.RateLimitGate
+	rateLimitAutomated    bool
+	paymentHandoff        atomic.Bool
+	userAgent             browserUserAgent
+	userAgentMetadata     userAgentBootstrapIdentity
+	webGLIdentity         webGLIdentity
+	authEvidence          authenticationEvidence
 }
 
 type BrowserPool struct {
@@ -363,7 +367,7 @@ func newAdapter(
 		userAgent:         selectedUserAgent,
 		userAgentMetadata: identity.metadata, webGLIdentity: identity.webGL,
 		blockResources: config.BlockResources, networkCapture: config.NetworkCapture,
-		rateLimit: networkcapture.NewRateLimitGate(), rateLimitAutomated: config.Headless || config.StartMinimized,
+		rateLimit: config.NetworkCapture.RateLimit(), rateLimitAutomated: config.Headless || config.StartMinimized,
 	}
 	if adapter.networkCapture == nil {
 		adapter.networkCapture, err = networkcapture.NewStore(filepath.Join(config.ArtifactsDir, "network"), logging.Logger(), networkcapture.WithDebug(logging.DebugEnabled()))
@@ -500,8 +504,9 @@ func (adapter *Adapter) installBrowserHooks(scripts []string) error {
 	if err := adapter.browserContext.Route("**/*", adapter.routeRequest); err != nil {
 		return fmt.Errorf("install browser resource routing: %w", err)
 	}
-	adapter.browserContext.OnResponse(adapter.handleResponse)
 	adapter.browserContext.OnResponse(adapter.observeRateLimitResponse)
+	adapter.browserContext.OnResponse(adapter.handleResponse)
+	adapter.browserContext.OnResponse(adapter.observeAuthenticationResponse)
 	adapter.browserContext.OnRequestFinished(func(request playwright.Request) {
 		adapter.captureNetworkExchange(request, false)
 	})
@@ -512,12 +517,7 @@ func (adapter *Adapter) installBrowserHooks(scripts []string) error {
 	adapter.browserContext.OnRequestFailed(adapter.handleRequestFailed)
 	if adapter.hideUntilPayment {
 		adapter.browserContext.OnPage(func(playwright.Page) {
-			if err := adapter.ensureBackgroundBrowserHidden(); err != nil {
-				logging.ErrorUnexpected(adapter.ctx, "cgv.booking.window.repark.failed",
-					"booking_monitoring", "repark_booking_window",
-					"new background tabs remain minimized and off-screen until payment",
-					"a new browser tab may have become visible", err)
-			}
+			adapter.rehideAfterBrowserEvent("page_created")
 		})
 	}
 	adapter.installPageHooks()
@@ -544,7 +544,12 @@ func (adapter *Adapter) OpenTab(parent context.Context) (*Adapter, error) {
 	if adapter == nil || adapter.owner != nil || adapter.browserContext == nil || parent == nil {
 		return nil, errors.New("booking tab owner and context are required")
 	}
-	if adapter.closing.Load() {
+	release, err := adapter.tabCreation.acquire(parent)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if adapter.closing.Load() || adapter.paymentHandoff.Load() {
 		return nil, errors.New("booking browser is closing")
 	}
 	ctx, cancel := context.WithCancel(parent)
@@ -552,6 +557,11 @@ func (adapter *Adapter) OpenTab(parent context.Context) (*Adapter, error) {
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("create booking tab: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = page.Close()
+		cancel()
+		return nil, err
 	}
 	identitySession, err := openBrowserIdentitySession(page, adapter.userAgent, adapter.userAgentMetadata)
 	if err != nil {
@@ -611,14 +621,17 @@ func (adapter *Adapter) rehideAfterBrowserEvent(operation string) {
 	if root == nil || root.closing.Load() || root.paymentHandoff.Load() {
 		return
 	}
-	go func() {
+	root.backgroundHide.request(func() {
+		if root.closing.Load() || root.paymentHandoff.Load() {
+			return
+		}
 		if err := root.ensureBackgroundBrowserHidden(); err != nil && !root.closing.Load() {
 			logging.ErrorUnexpected(root.ctx, "cgv.booking.window.repark.failed",
 				"booking_monitoring", operation,
 				"background Chrome remains hidden until payment",
 				"browser navigation may have made Chrome visible", err)
 		}
-	}()
+	})
 }
 
 func (adapter *Adapter) handleSeatResponse(response playwright.Response) {
@@ -713,9 +726,6 @@ func persistentContextOptions(
 	locale string,
 ) playwright.BrowserTypeLaunchPersistentContextOptions {
 	position := "--window-position=80,80"
-	if config.StartMinimized && !config.Headless {
-		position = "--window-position=-32000,-32000"
-	}
 	options := playwright.BrowserTypeLaunchPersistentContextOptions{
 		ExecutablePath:    playwright.String(config.ChromePath),
 		Headless:          playwright.Bool(config.Headless),
@@ -732,6 +742,12 @@ func persistentContextOptions(
 		ServiceWorkers: playwright.ServiceWorkerPolicyBlock,
 		Screen:         &playwright.Size{Width: 1440, Height: 1100},
 		Viewport:       &playwright.Size{Width: 1440, Height: 1100},
+	}
+	if !config.Headless {
+		// A headed payment window must use the real monitor's work area,
+		// not an emulated 1440x1100 screen that may exceed the user's display.
+		options.Screen, options.Viewport = nil, nil
+		options.NoViewport = playwright.Bool(true)
 	}
 	if config.StartMinimized && !config.Headless {
 		options.Args = append(options.Args, "--start-minimized")
@@ -865,10 +881,7 @@ func (adapter *Adapter) captureNetworkExchange(request playwright.Request, faile
 	if adapter == nil || adapter.networkCapture == nil || request == nil {
 		return
 	}
-	if !playwrightcapture.ShouldCapturePlaywrightRequest(adapter.networkCapture, request, failed) {
-		return
-	}
-	record := playwrightcapture.PlaywrightRecord(request, failed)
+	record := playwrightcapture.PlaywrightRecordForStore(adapter.networkCapture, request, failed)
 	record.Service = "client"
 	record.Scenario = "booking_browser"
 	record.CorrelationID = browserRequestID(request)
@@ -902,6 +915,11 @@ func (adapter *Adapter) observeRateLimitResponse(response playwright.Response) {
 
 func (adapter *Adapter) observeRateLimitFailure(request playwright.Request) {
 	if adapter == nil || adapter.rateLimit == nil || request == nil || !adapter.rateLimitAutomated || adapter.paymentHandoff.Load() {
+		return
+	}
+	if err := request.Failure(); err != nil && expectedBrowserRequestOutcome([]any{"error", err.Error()}) == "blocked" {
+		// A sibling rejected by our circuit never reached the provider. It is
+		// not the half-open request whose transport outcome we are awaiting.
 		return
 	}
 	decision, observed := adapter.rateLimit.ObserveFailure(browserRequestHost(request.URL()))
@@ -1068,7 +1086,7 @@ func expectedBrowserRequestOutcome(fields []any) string {
 		}
 		reason := strings.ToUpper(strings.TrimSpace(fmt.Sprint(fields[index+1])))
 		switch {
-		case strings.Contains(reason, "BLOCKEDBYCLIENT"), strings.Contains(reason, "ERR_BLOCKED_BY_CLIENT"):
+		case strings.Contains(reason, "BLOCKEDBYCLIENT"), strings.Contains(reason, "ERR_BLOCKED_BY_CLIENT"), strings.Contains(reason, "PROVIDER RATE LIMIT CIRCUIT IS OPEN"):
 			return "blocked"
 		case strings.Contains(reason, "ERR_ABORTED"):
 			return "canceled"
@@ -1110,6 +1128,8 @@ func replaceBrowserDuration(fields []any, duration float64) []any {
 
 func providerHTTPError(status int) error {
 	switch status {
+	case 401:
+		return fmt.Errorf("%w: HTTP %d", ErrAuthenticationRequired, status)
 	case 403:
 		return fmt.Errorf("%w: HTTP %d", ErrProviderAccessBlocked, status)
 	case 429:

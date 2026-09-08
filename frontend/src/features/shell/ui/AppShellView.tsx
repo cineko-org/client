@@ -12,11 +12,9 @@ import {
   IconSettings,
 } from '@tabler/icons-react';
 import { IconAction, SecondaryButton } from '../../../components/core/Actions';
-import { StatusIndicator } from '../../../components/core/StatusIndicator';
+import { StatusIndicator, type IndicatorState } from '../../../components/core/StatusIndicator';
 import type { WebUIAccountState } from '../../../api/proto';
-import { accountAuthenticated } from '../../../api/resources';
-import type { ApplicationConnection } from '../../../shared/application';
-import type { NetworkSettings } from '../../../api/proto';
+import { accountIndicatorState, type ApplicationConnection } from '../../../shared/application';
 
 interface ShellFeedback {
   message: string;
@@ -28,7 +26,7 @@ export interface AppShellViewProps {
   loading: boolean;
   connection: ApplicationConnection;
 	account: WebUIAccountState;
-  network: NetworkSettings;
+  soxyStatus: IndicatorState;
   desktopAvailable: boolean;
   unreadNotices: number;
   feedback: ShellFeedback | null;
@@ -133,7 +131,7 @@ function MobileNavigation({ activeSection, onNavigate }: Omit<ShellNavigationPro
 
 export function AppShellView(props: AppShellViewProps) {
   const {
-    activeSection, loading, connection, account, network, desktopAvailable, unreadNotices, feedback,
+    activeSection, loading, connection, account, soxyStatus, desktopAvailable, unreadNotices, feedback,
     children, onNavigate, onExit,
     onOpenNotifications, onOpenSettings, onDismissFeedback, onRetryConnection,
   } = props;
@@ -159,8 +157,8 @@ export function AppShellView(props: AppShellViewProps) {
           </Group>
           <Group gap="md" wrap="nowrap">
             <Group gap="md" wrap="nowrap" visibleFrom="md">
-			  <StatusIndicator label="프록시" color={network.mode.case === 'proxy' ? 'green' : 'gray'} muted={network.mode.case !== 'proxy'} />
-			  <StatusIndicator label="CGV" color={accountAuthenticated(account) ? 'green' : 'gray'} muted={!accountAuthenticated(account)} />
+			  <StatusIndicator label="SOXY" state={soxyStatus} />
+			  <StatusIndicator label="CGV" state={accountIndicatorState(account)} />
             </Group>
             <Group gap={4} wrap="nowrap">
               <Indicator

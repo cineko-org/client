@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/cineko-org/client/internal/application"
+	"github.com/cineko-org/client/internal/logging"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	"google.golang.org/protobuf/proto"
 )
@@ -31,7 +32,8 @@ func (server *Server) stopMonitor(writer http.ResponseWriter, request *http.Requ
 		server.writeError(writer, err)
 		return
 	}
-	server.refreshBookingDemand(request.Context())
+	server.monitorConfigurationChanged(request.Context())
+	logging.Info(request.Context(), "monitor.control.changed", "event", "monitor.control.changed", "scenario", "booking_monitoring", "monitor_id", monitor.GetId(), "enabled", false)
 	writeProtoJSON(writer, http.StatusOK, actionStatus(false))
 }
 
@@ -62,7 +64,8 @@ func (server *Server) startMonitorRetry(input *clientpb.WebUIMonitorRetryRequest
 	// The durable monitor mutation is the wake-up. The local supervisor starts
 	// it when a warm browser is available.
 	server.finishTask(taskID, nil)
-	server.refreshBookingDemand(ctx)
+	server.monitorConfigurationChanged(ctx)
+	logging.Info(ctx, "monitor.control.changed", "event", "monitor.control.changed", "scenario", "booking_monitoring", "monitor_id", monitor.GetId(), "enabled", true)
 	return nil
 }
 
@@ -107,7 +110,7 @@ func (server *Server) createMonitor(writer http.ResponseWriter, request *http.Re
 		server.writeError(writer, err)
 		return
 	}
-	server.refreshBookingDemand(request.Context())
+	server.monitorConfigurationChanged(request.Context())
 	writeProtoJSON(writer, http.StatusCreated, job)
 }
 
@@ -121,7 +124,7 @@ func (server *Server) updateMonitor(writer http.ResponseWriter, request *http.Re
 		server.writeError(writer, err)
 		return
 	}
-	server.refreshBookingDemand(request.Context())
+	server.monitorConfigurationChanged(request.Context())
 	writeProtoJSON(writer, http.StatusOK, job)
 }
 
@@ -146,6 +149,6 @@ func (server *Server) deleteMonitor(writer http.ResponseWriter, request *http.Re
 		server.writeError(writer, err)
 		return
 	}
-	server.refreshBookingDemand(request.Context())
+	server.monitorConfigurationChanged(request.Context())
 	writeProtoJSON(writer, http.StatusOK, actionStatus(false))
 }

@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,25 @@ func TestOpenPersistentWritesClientLog(t *testing.T) {
 	}
 	if !strings.Contains(string(contents), `"event":"test.persistent"`) {
 		t.Fatalf("persistent log = %s", contents)
+	}
+}
+
+func TestFinishPersistentRunRecordsCleanupErrorBeforeClosing(t *testing.T) {
+	dir := t.TempDir()
+	_, closeLog, err := OpenPersistentJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("owned browser cleanup failed")
+	if err := FinishPersistentRun(context.Background(), failure, closeLog); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "client.log")) // #nosec G304 -- Fixed filename in the owned test TempDir.
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "client.shutdown.failed") || !strings.Contains(string(body), failure.Error()) {
+		t.Fatalf("missing terminal cause: %s", body)
 	}
 }
 

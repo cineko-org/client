@@ -57,6 +57,12 @@ func (server *Server) retainPaymentSession(
 	server.paymentMu.Unlock()
 	closePaymentSession(previous)
 	server.watchPaymentFailure(monitorID, session)
+	if reporter, ok := automation.(interface{ PaymentPresentationError() error }); ok {
+		if err := reporter.PaymentPresentationError(); err != nil {
+			server.RecordLocalSystemEvent(appWarningEvent(session.userID, "payment.window_not_visible",
+				"좌석은 확보했지만 결제 창을 표시하지 못했습니다. Chrome의 결제 탭을 직접 열어 주세요. 좌석 점유와 브라우저는 유지 중입니다."))
+		}
+	}
 	return true
 }
 

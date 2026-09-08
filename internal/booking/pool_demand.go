@@ -72,7 +72,13 @@ func validProcess(process Process) bool {
 func (pool *Pool) failStartup(startupErr error, closed bool) {
 	pool.mu.Lock()
 	desired := pool.desired
+	changed := pool.startupError == nil || pool.startupError.Error() != startupErr.Error()
+	pool.startupError = startupErr
+	notifier := pool.startupFailureNotifier
 	pool.mu.Unlock()
+	if !closed && desired > 0 && changed && notifier != nil {
+		notifier(startupErr)
+	}
 	if !closed && desired > 0 && !errors.Is(startupErr, ErrPermanent) {
 		pool.scheduleRetry()
 	}
@@ -86,6 +92,7 @@ func (pool *Pool) admit(sequence uint64, process Process) bool {
 		return false
 	}
 	pool.failures = 0
+	pool.startupError = nil
 	current := &slot{id: sequence, process: process, state: slotReady, done: make(chan struct{})}
 	pool.processes[sequence] = current
 	go pool.observe(current)

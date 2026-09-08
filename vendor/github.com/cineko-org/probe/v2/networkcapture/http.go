@@ -187,9 +187,6 @@ func (transport *httpTransport) save(
 	if transport == nil || transport.store == nil || request == nil {
 		return
 	}
-	if !transport.store.DebugEnabled() && rawErr == nil && response != nil && response.StatusCode < http.StatusBadRequest {
-		return
-	}
 	captureErr := errors.Join(rawErr, requestStage.writeError, responseStage.writeError)
 	if response != nil && response.StatusCode >= http.StatusBadRequest {
 		captureErr = errors.Join(captureErr, fmt.Errorf("HTTP %d", response.StatusCode))

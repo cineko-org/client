@@ -1,44 +1,57 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { create } from '@bufbuild/protobuf';
 import { desktopBridge, errorMessage } from '../../api/client';
 import { decodeDesktopProto, encodeDesktopProto } from '../../api/desktop';
 import { DirectNetworkSchema, NetworkSettingsSchema, type NetworkSettings } from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
+import { useExclusiveOperation } from '../../shared/useExclusiveOperation';
 import {
-  networkForm, networkSettingsInput, type NetworkForm, type SettingsLoadState,
+  networkForm, networkIndicatorState, networkSettingsInput, type NetworkForm, type SettingsLoadState,
 } from './model';
 
+type NetworkPhase = 'unavailable' | 'idle' | 'loading' | 'ready' | 'load_error' | 'saving' | 'save_error';
+interface NetworkState { phase: NetworkPhase; settings: NetworkSettings }
+
 export function useNetworkSettings(opened: boolean, notify: Notify) {
-  const [settings, setSettings] = useState<NetworkSettings>(() => create(NetworkSettingsSchema, {
-	  mode: { case: 'direct', value: create(DirectNetworkSchema) },
-  }));
-  const [form, setForm] = useState<NetworkForm>(networkForm());
-  const [saving, setSaving] = useState(false);
   const bridge = desktopBridge();
-  const [loadState, setLoadState] = useState<SettingsLoadState>(bridge ? 'idle' : 'unavailable');
+  const [state, setState] = useState<NetworkState>(() => ({
+    phase: bridge ? 'idle' : 'unavailable',
+    settings: create(NetworkSettingsSchema, { mode: { case: 'direct', value: create(DirectNetworkSchema) } }),
+  }));
+  const [form, updateForm] = useState<NetworkForm>(networkForm());
+  const { start, isRunning } = useExclusiveOperation();
+  const setForm = useCallback((next: NetworkForm) => { if (!isRunning()) updateForm(next); }, [isRunning]);
+  const initialized = useRef(false);
+  const saving = state.phase === 'saving';
+  const loadState: SettingsLoadState = state.phase === 'load_error' ? 'error'
+    : state.phase === 'saving' || state.phase === 'save_error' ? 'ready' : state.phase;
 
   const load = useCallback(async () => {
     if (!bridge) {
-      setLoadState('unavailable');
+      setState((current) => ({ ...current, phase: 'unavailable' }));
       return;
     }
-    setLoadState('loading');
+    const release = start('load');
+    if (!release) return;
+    setState((current) => ({ ...current, phase: 'loading' }));
     try {
 	  const value = decodeDesktopProto(NetworkSettingsSchema, await bridge.GetNetworkSettings());
-      setSettings(value);
-      setForm(networkForm(value));
-      setLoadState('ready');
+      setState({ settings: value, phase: 'ready' });
+      updateForm(networkForm(value));
     } catch (error) {
-      setLoadState('error');
+      setState((current) => ({ ...current, phase: 'load_error' }));
       notify(errorMessage(error), { tone: 'error' });
-    }
-  }, [bridge, notify]);
+    } finally { release(); }
+  }, [bridge, notify, start]);
 
   useEffect(() => {
-    if (!opened) return undefined;
+    if (!opened && initialized.current) return undefined;
     let active = true;
     queueMicrotask(() => {
-      if (active) void load();
+      if (active) {
+        initialized.current = true;
+        void load();
+      }
     });
     return () => { active = false; };
   }, [load, opened]);
@@ -48,28 +61,30 @@ export function useNetworkSettings(opened: boolean, notify: Notify) {
       notify('데스크톱 앱에서만 연결 설정을 저장할 수 있습니다.', { tone: 'error' });
       return false;
     }
-    if (loadState !== 'ready') {
+    if (loadState !== 'ready' || saving) {
       notify('저장된 연결 설정을 먼저 불러오세요.', { tone: 'error' });
       return false;
     }
-    setSaving(true);
+    const release = start('save');
+    if (!release) return false;
+    setState((current) => ({ ...current, phase: 'saving' }));
     try {
 	  const input = networkSettingsInput(next);
 	  const value = decodeDesktopProto(
 	    NetworkSettingsSchema,
 	    await bridge.SaveNetworkSettings(encodeDesktopProto(NetworkSettingsSchema, input)),
 	  );
-      setSettings(value);
-      setForm(networkForm(value));
+      setState({ settings: value, phase: 'ready' });
+      updateForm(networkForm(value));
       notify(value.mode.case === 'direct' ? '프록시를 사용하지 않습니다.' : '프록시 연결을 확인하고 저장했습니다.');
       return true;
     } catch (error) {
+      setState((current) => ({ ...current, phase: 'save_error' }));
       notify(errorMessage(error), { tone: 'error' });
       return false;
-    } finally {
-      setSaving(false);
-    }
-  }, [bridge, form, loadState, notify]);
+    } finally { release(); }
+  }, [bridge, form, loadState, notify, saving, start]);
 
-  return { bridgeAvailable: Boolean(bridge), settings, form, setForm, loadState, saving, load, save };
+  return { bridgeAvailable: Boolean(bridge), settings: state.settings, form, setForm, loadState, saving, load, save,
+    indicatorState: networkIndicatorState(state.settings, loadState, saving, state.phase === 'save_error') };
 }

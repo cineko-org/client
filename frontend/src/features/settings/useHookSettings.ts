@@ -4,12 +4,14 @@ import { desktopBridge, errorMessage } from '../../api/client';
 import { decodeDesktopProto, encodeDesktopProto } from '../../api/desktop';
 import { SettingsSchema } from '../../api/proto';
 import type { Notify } from '../../components/core/feedback';
+import { useExclusiveOperation } from '../../shared/useExclusiveOperation';
 import { hookForms, hookSettingsInput, newHookForm, type HookTargetForm } from './hookModel';
 import type { SettingsLoadState } from './model';
 
 export function useHookSettings(opened: boolean, notify: Notify) {
   const [forms, setForms] = useState<HookTargetForm[]>([]);
-  const [saving, setSaving] = useState(false);
+  const { active, start, isRunning } = useExclusiveOperation();
+  const saving = active === 'save';
   const bridge = desktopBridge();
   const [loadState, setLoadState] = useState<SettingsLoadState>(bridge ? 'idle' : 'unavailable');
 
@@ -18,6 +20,8 @@ export function useHookSettings(opened: boolean, notify: Notify) {
       setLoadState('unavailable');
       return;
     }
+    const release = start('load');
+    if (!release) return;
     setLoadState('loading');
     try {
 	  const settings = decodeDesktopProto(SettingsSchema, await bridge.GetHookSettings());
@@ -26,16 +30,16 @@ export function useHookSettings(opened: boolean, notify: Notify) {
     } catch {
       setLoadState('error');
       notify('외부 알림 설정을 불러오지 못했습니다.', { tone: 'error' });
-    }
-  }, [bridge, notify]);
+    } finally { release(); }
+  }, [bridge, notify, start]);
 
   useEffect(() => {
     if (!opened) return undefined;
-    let active = true;
+    let mounted = true;
     queueMicrotask(() => {
-      if (active) void load();
+      if (mounted) void load();
     });
-    return () => { active = false; };
+    return () => { mounted = false; };
   }, [load, opened]);
 
   const save = useCallback(async () => {
@@ -47,7 +51,8 @@ export function useHookSettings(opened: boolean, notify: Notify) {
       notify('저장된 외부 알림 설정을 먼저 불러오세요.', { tone: 'error' });
       return;
     }
-    setSaving(true);
+    const release = start('save');
+    if (!release) return;
     try {
 	  const input = create(SettingsSchema, { webhooks: hookSettingsInput(forms) });
 	  const saved = decodeDesktopProto(
@@ -70,17 +75,19 @@ export function useHookSettings(opened: boolean, notify: Notify) {
         notify('외부 알림 설정을 저장하지 못했습니다.', { tone: 'error' });
       }
     } finally {
-      setSaving(false);
+      release();
     }
-  }, [bridge, forms, loadState, notify]);
+  }, [bridge, forms, loadState, notify, start]);
 
-  const add = useCallback(() => setForms((current) => [...current, newHookForm()]), []);
+  const add = useCallback(() => { if (!isRunning()) setForms((current) => [...current, newHookForm()]); }, [isRunning]);
   const change = useCallback((index: number, value: HookTargetForm) => {
+    if (isRunning()) return;
     setForms((current) => current.map((item, itemIndex) => itemIndex === index ? value : item));
-  }, []);
+  }, [isRunning]);
   const remove = useCallback((index: number) => {
+    if (isRunning()) return;
     setForms((current) => current.filter((_item, itemIndex) => itemIndex !== index));
-  }, []);
+  }, [isRunning]);
 
   return { forms, loadState, saving, available: Boolean(bridge), load, add, change, remove, save };
 }

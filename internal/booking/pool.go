@@ -73,20 +73,22 @@ type Pool struct {
 	cancel  context.CancelFunc
 	config  Config
 
-	mu            sync.Mutex
-	closed        bool
-	desired       int
-	creating      int
-	sequence      uint64
-	processes     map[uint64]*slot
-	reaping       int
-	failures      int
-	wake          chan struct{}
-	creatingWake  chan struct{}
-	reapingWake   chan struct{}
-	readyNotifier func()
-	reapErr       error
-	closeErr      error
+	mu                     sync.Mutex
+	closed                 bool
+	desired                int
+	creating               int
+	sequence               uint64
+	processes              map[uint64]*slot
+	reaping                int
+	failures               int
+	wake                   chan struct{}
+	creatingWake           chan struct{}
+	reapingWake            chan struct{}
+	readyNotifier          func()
+	startupFailureNotifier func(error)
+	startupError           error
+	reapErr                error
+	closeErr               error
 
 	closeOnce sync.Once
 	closeDone chan struct{}
@@ -177,6 +179,9 @@ func (pool *Pool) SetDesired(desired int) {
 	}
 	pool.mu.Lock()
 	if !pool.closed {
+		if pool.desired == 0 && desired > 0 {
+			pool.startupError = nil
+		}
 		pool.desired = clampDesired(desired, pool.config.MaxCapacity)
 		pool.retireIdleLocked()
 	}
@@ -203,6 +208,19 @@ func (pool *Pool) SetReadyNotifier(notifier func()) {
 	pool.mu.Lock()
 	pool.readyNotifier = notifier
 	pool.mu.Unlock()
+}
+
+// SetStartupFailureNotifier reports a changed failure once, not every retry.
+func (pool *Pool) SetStartupFailureNotifier(notifier func(error)) {
+	pool.mu.Lock()
+	pool.startupFailureNotifier = notifier
+	pool.mu.Unlock()
+}
+
+func (pool *Pool) StartupError() error {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	return pool.startupError
 }
 
 // Stats returns a synchronized point-in-time capacity view.

@@ -48,6 +48,9 @@ func TestExpectedBrowserRequestOutcomeRecognizesFiltersAndNavigationCancellation
 	if got := expectedBrowserRequestOutcome([]any{"error", "blockedbyclient"}); got != "blocked" {
 		t.Fatalf("blocked outcome = %q", got)
 	}
+	if got := expectedBrowserRequestOutcome([]any{"error", "provider rate limit circuit is open"}); got != "blocked" {
+		t.Fatalf("local cooldown should not flood error logs: %q", got)
+	}
 	if got := expectedBrowserRequestOutcome([]any{"error", "net::ERR_ABORTED"}); got != "canceled" {
 		t.Fatalf("canceled outcome = %q", got)
 	}

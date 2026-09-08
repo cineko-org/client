@@ -49,6 +49,7 @@ type localScannerStore interface {
 // embeddedProbe is an in-process anonymous scanner. It has no remote identity,
 // registration, assignment polling, lease, or result transport.
 type embeddedProbe struct {
+	summary         *monitoringSummary
 	scanner         *probe.LocalScanner
 	store           localScannerStore
 	scheduleChanged chan<- struct{}
@@ -58,6 +59,7 @@ type embeddedProbe struct {
 	failure chan error
 
 	activityMu         sync.Mutex
+	scanStatus         string
 	closing            bool
 	scanCancel         context.CancelFunc
 	shutdownOnce       sync.Once
@@ -65,6 +67,8 @@ type embeddedProbe struct {
 	scheduleCursor     map[string]int
 	catalogRefreshPath string
 	clock              func() time.Time
+	monitorScanMu      sync.Mutex
+	monitorScanCancel  context.CancelFunc
 }
 
 func startEmbeddedProbe(
@@ -73,21 +77,26 @@ func startEmbeddedProbe(
 	dataDir string,
 	scheduleChanged chan<- struct{},
 	networkCapture *networkcapture.Store,
+	summary *monitoringSummary,
 ) (*embeddedProbe, error) {
 	if parent == nil || store == nil {
 		return nil, errors.New("embedded scanner dependencies are incomplete")
 	}
 	scanner, err := probe.NewLocalScanner(probe.LocalScannerConfig{
-		DataDir:        filepath.Join(dataDir, "scanner"),
-		Logger:         logging.Logger(),
-		NetworkCapture: networkCapture,
+		EgressConfigPath: filepath.Join(dataDir, "scanner", "egress.json"),
+		DataDir:          filepath.Join(dataDir, "scanner"),
+		Logger:           logging.Logger(),
+		NetworkCapture:   networkCapture,
 	})
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
+	scannerSettings, settingsErr := scanner.GetSoxySettings()
 	embedded := &embeddedProbe{
-		scanner: scanner, store: store, scheduleChanged: scheduleChanged, cancel: cancel,
+		scanStatus: initialScannerStatus(scannerSettings, settingsErr),
+		summary:    summary,
+		scanner:    scanner, store: store, scheduleChanged: scheduleChanged, cancel: cancel,
 		done: make(chan struct{}), failure: make(chan error, 1),
 		scheduleCursor:     make(map[string]int),
 		catalogRefreshPath: filepath.Join(dataDir, "scanner", catalogRefreshMarker),
@@ -95,6 +104,16 @@ func startEmbeddedProbe(
 	}
 	go embedded.run(ctx)
 	return embedded, nil
+}
+
+func initialScannerStatus(settings probe.ScannerSettings, err error) string {
+	if err != nil {
+		return "failed"
+	}
+	if settings.URL != "" && settings.HasToken {
+		return "checking"
+	}
+	return "off"
 }
 
 func (embedded *embeddedProbe) run(ctx context.Context) {
@@ -285,6 +304,8 @@ func (embedded *embeddedProbe) bootstrapYongsan(ctx context.Context) {
 }
 
 func (embedded *embeddedProbe) captureActiveSchedules(ctx context.Context) {
+	ctx, finish := embedded.beginMonitorScan(ctx)
+	defer finish()
 	monitors, err := embedded.store.ListMonitorsByUser(ctx, embedded.store.UserID())
 	if err != nil {
 		embedded.logFailure(ctx, "list-monitors", err)
@@ -321,6 +342,9 @@ func (embedded *embeddedProbe) captureActiveSchedules(ctx context.Context) {
 	}
 	sort.Strings(theaterIDs)
 	for _, theaterID := range theaterIDs {
+		if ctx.Err() != nil {
+			return
+		}
 		weekdays := make([]int32, 0, len(targets[theaterID]))
 		for weekday := range targets[theaterID] {
 			weekdays = append(weekdays, weekday)
@@ -347,6 +371,29 @@ func addMonitorProviderWeekdays(result map[int32]struct{}, targetWeekdays []int3
 	}
 }
 
+// Cancel only monitor-driven schedule work, not the independent six-hour
+// catalog refresh or a user-requested seat-map collection.
+func (embedded *embeddedProbe) CancelMonitorScan() {
+	embedded.monitorScanMu.Lock()
+	defer embedded.monitorScanMu.Unlock()
+	if embedded.monitorScanCancel != nil {
+		embedded.monitorScanCancel()
+	}
+}
+
+func (embedded *embeddedProbe) beginMonitorScan(parent context.Context) (context.Context, func()) {
+	embedded.monitorScanMu.Lock()
+	ctx, cancel := context.WithCancel(parent)
+	embedded.monitorScanCancel = cancel
+	embedded.monitorScanMu.Unlock()
+	return ctx, func() {
+		cancel()
+		embedded.monitorScanMu.Lock()
+		embedded.monitorScanCancel = nil
+		embedded.monitorScanMu.Unlock()
+	}
+}
+
 func (embedded *embeddedProbe) captureTheaterSchedules(ctx context.Context, theaterID string) {
 	embedded.captureTheaterSchedulesFor(ctx, theaterID, nil, nil)
 }
@@ -356,14 +403,16 @@ func (embedded *embeddedProbe) captureTheaterScheduleWeekdayShard(ctx context.Co
 }
 
 func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, theaterID string, weekdays []int32, shard *int) {
+	startedAt := time.Now()
+	embedded.summary.scanStarted(theaterID, startedAt)
+	var captures []*observationpb.Capture
 	theater, err := embedded.store.GetTheater(ctx, theaterID)
+	defer func() { embedded.summary.scanFinished(theaterID, startedAt, time.Now(), captures, err) }()
 	if err != nil {
 		embedded.logFailure(ctx, "schedule-theater", err)
 		return
 	}
-	startedAt := time.Now()
 	err = embedded.withScan(ctx, func(scanContext context.Context) error {
-		var captures []*observationpb.Capture
 		var captureErr error
 		switch {
 		case len(weekdays) > 0 && shard != nil:
@@ -377,16 +426,13 @@ func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, t
 			return captureErr
 		}
 		complete, showtimes, auditoriums := scheduleCaptureCounts(captures)
-		if complete != len(captures) {
-			logging.WarnUnexpected(scanContext, "scanner.schedule.partial", "schedule_collection", "capture_theater_schedule",
-				fmt.Sprintf("%d complete dates", len(captures)), fmt.Sprintf("%d complete dates", complete),
-				"theater_id", theater.GetId(), "capture_count", len(captures), "complete_count", complete)
+		dates := make([]string, 0, len(captures))
+		for _, capture := range captures {
+			if date := capture.GetTargetDate(); date != nil {
+				dates = append(dates, fmt.Sprintf("%04d-%02d-%02d", date.GetYear(), date.GetMonth(), date.GetDay()))
+			}
 		}
-		if showtimes == 0 || auditoriums == 0 {
-			logging.WarnUnexpected(scanContext, "scanner.schedule.empty", "auditorium_collection", "capture_theater_schedule",
-				"at least one showtime and auditorium", fmt.Sprintf("%d showtimes and %d auditoriums", showtimes, auditoriums),
-				"theater_id", theater.GetId())
-		}
+		logScheduleCaptureHealth(scanContext, theater.GetId(), len(captures), complete, showtimes, auditoriums, weekdays, shard, dates...)
 		if err := embedded.store.PutScheduleCaptures(scanContext, theater, captures); err != nil {
 			return err
 		}
@@ -396,11 +442,24 @@ func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, t
 			"operation", "capture_theater_schedule", "outcome", "succeeded",
 			"theater_id", theater.GetId(), "capture_count", len(captures),
 			"complete_count", complete, "showtime_count", showtimes, "auditorium_count", auditoriums,
-			"target_weekdays", weekdays, "duration_ms", time.Since(startedAt).Milliseconds())
+			"target_weekdays", weekdays, "target_dates", dates, "duration_ms", time.Since(startedAt).Milliseconds())
 		return nil
 	})
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, probe.ErrProviderThrottled) {
 		embedded.logFailure(ctx, "schedule", err)
+	}
+}
+
+func logScheduleCaptureHealth(ctx context.Context, theaterID string, count, complete, showtimes, auditoriums int, weekdays []int32, shard *int, dates ...string) {
+	fields := []any{"theater_id", theaterID, "target_weekdays", weekdays, "shard", shard,
+		"capture_count", count, "complete_count", complete, "target_dates", dates}
+	if complete != count {
+		logging.WarnUnexpected(ctx, "scanner.schedule.partial", "schedule_collection", "capture_theater_schedule",
+			fmt.Sprintf("%d complete dates", count), fmt.Sprintf("%d complete dates", complete), fields...)
+	}
+	if showtimes > 0 && auditoriums == 0 {
+		logging.WarnUnexpected(ctx, "scanner.schedule.auditoriums.missing", "schedule_collection", "capture_theater_schedule",
+			"auditoriums for captured showtimes", fmt.Sprintf("%d showtimes without auditoriums", showtimes), fields...)
 	}
 }
 
@@ -470,7 +529,16 @@ func (embedded *embeddedProbe) captureSeatMap(ctx context.Context, auditoriumID 
 	}
 }
 
-func (embedded *embeddedProbe) withScan(ctx context.Context, scan func(context.Context) error) error {
+func (embedded *embeddedProbe) ScanStatus() string {
+	embedded.activityMu.Lock()
+	defer embedded.activityMu.Unlock()
+	if embedded.closing || embedded.scanStatus == "" {
+		return "off"
+	}
+	return embedded.scanStatus
+}
+
+func (embedded *embeddedProbe) withScan(ctx context.Context, scan func(context.Context) error) (err error) {
 	embedded.activityMu.Lock()
 	if embedded.closing {
 		embedded.activityMu.Unlock()
@@ -478,11 +546,21 @@ func (embedded *embeddedProbe) withScan(ctx context.Context, scan func(context.C
 	}
 	scanContext, cancel := context.WithCancel(ctx)
 	embedded.scanCancel = cancel
+	previousStatus := embedded.scanStatus
+	embedded.scanStatus = "checking"
 	embedded.activityMu.Unlock()
 	defer func() {
 		cancel()
 		embedded.activityMu.Lock()
 		embedded.scanCancel = nil
+		switch {
+		case errors.Is(err, context.Canceled):
+			embedded.scanStatus = previousStatus
+		case err != nil:
+			embedded.scanStatus = "failed"
+		default:
+			embedded.scanStatus = "ready"
+		}
 		embedded.activityMu.Unlock()
 	}()
 	return scan(scanContext)

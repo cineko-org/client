@@ -49,9 +49,11 @@ func showtimeDomainFromProto(value *catalogpb.Showtime) domain.Showtime {
 		localStart := startsAt.AsTime().In(domain.KoreaLocation)
 		result.StartsAt = localStart.Format("15:04")
 		result.CivilDate = localStart.Format(time.DateOnly)
+		result.ProviderStartsAt = serviceClockFromInstant(scheduleDate, localStart)
 	}
 	if endsAt := value.GetEndsAt(); endsAt != nil && endsAt.IsValid() {
 		result.EndsAt = endsAt.AsTime().In(domain.KoreaLocation).Format("15:04")
+		result.ProviderEndsAt = serviceClockFromInstant(scheduleDate, endsAt.AsTime())
 	}
 	if movie := value.GetMovie(); movie != nil {
 		result.MovieID, result.Movie, result.PosterURL = movie.GetId(), movie.GetTitle(), movie.GetPosterUrl()
@@ -61,6 +63,20 @@ func showtimeDomainFromProto(value *catalogpb.Showtime) domain.Showtime {
 		result.ScreenTypes = append([]string(nil), auditorium.GetScreenTypes()...)
 	}
 	return result
+}
+
+// Reconstruct the provider display on refreshed seat observations, which carry
+// service date plus absolute instants rather than the original schedule row.
+func serviceClockFromInstant(serviceDate string, instant time.Time) string {
+	base, err := time.ParseInLocation(time.DateOnly, serviceDate, domain.KoreaLocation)
+	if err != nil || instant.Before(base) {
+		return ""
+	}
+	minutes := int(instant.Sub(base) / time.Minute)
+	if minutes < 0 || minutes >= 48*60 {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", minutes/60, minutes%60)
 }
 
 // boundedInt32 preserves provider counts at the Proto boundary without an

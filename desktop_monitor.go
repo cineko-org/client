@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/cineko-org/client/internal/adapters/cgv"
 	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/logging"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
@@ -38,6 +39,7 @@ type localExecutionServer interface {
 // desktopMonitorWorker prioritizes newly opened schedules and rotates short
 // cancellation-seat rounds across the existing matching showtimes.
 type desktopMonitorWorker struct {
+	summary         *monitoringSummary
 	store           localMonitorStore
 	server          localExecutionServer
 	scheduleChanged <-chan struct{}
@@ -79,6 +81,10 @@ func (worker *desktopMonitorWorker) Run(ctx context.Context) error {
 	}
 	ticker := time.NewTicker(localMonitorTick)
 	defer ticker.Stop()
+	var executionChanged <-chan struct{}
+	if notifier, ok := worker.server.(interface{ ExecutionAvailable() <-chan struct{} }); ok {
+		executionChanged = notifier.ExecutionAvailable()
+	}
 	runtime := &localMonitorRuntime{
 		worker: worker,
 		active: make(map[string]*localMonitorExecution),
@@ -94,15 +100,23 @@ func (worker *desktopMonitorWorker) Run(ctx context.Context) error {
 			continue
 		case <-ticker.C:
 		case <-worker.scheduleChanged:
+		case <-executionChanged:
 		}
 		runtime.refresh(ctx)
 	}
 }
 
 type localMonitorRuntime struct {
-	worker *desktopMonitorWorker
-	active map[string]*localMonitorExecution
-	done   chan localMonitorResult
+	worker            *desktopMonitorWorker
+	active            map[string]*localMonitorExecution
+	done              chan localMonitorResult
+	waitingForBrowser bool
+	retries           map[string]localMonitorRetry
+}
+
+type localMonitorRetry struct {
+	after    time.Time
+	failures int
 }
 
 func (runtime *localMonitorRuntime) cancelAll(except *localMonitorExecution) {
@@ -111,6 +125,7 @@ func (runtime *localMonitorRuntime) cancelAll(except *localMonitorExecution) {
 			continue
 		}
 		execution.cancel()
+		logMonitorCancellation(execution.target, "monitor_stopped_or_other_tab_won")
 		delete(runtime.active, key)
 	}
 }
@@ -123,6 +138,7 @@ func (runtime *localMonitorRuntime) handleResult(ctx context.Context, result loc
 	result.execution.cancel()
 	delete(runtime.active, key)
 	if result.err == nil {
+		delete(runtime.retries, key)
 		logging.Info(ctx, "monitor.execution.completed",
 			"event", "monitor.execution.completed", "scenario", "booking_monitoring",
 			"operation", "watch_showtime_tab", "outcome", "succeeded",
@@ -130,14 +146,44 @@ func (runtime *localMonitorRuntime) handleResult(ctx context.Context, result loc
 		runtime.cancelAll(nil)
 		return
 	}
-	if !errors.Is(result.err, context.Canceled) {
+	if errors.Is(result.err, context.Canceled) {
+		logMonitorCancellation(result.execution.target, "execution_context_canceled")
+	} else {
 		logLocalMonitorFailure(ctx, result)
+		if !result.execution.target.watchCancellations &&
+			(errors.Is(result.err, application.ErrSeatUnavailable) || errors.Is(result.err, application.ErrBookingNotOpen)) {
+			delete(runtime.retries, key)
+			return
+		}
+		if runtime.retries == nil {
+			runtime.retries = make(map[string]localMonitorRetry)
+		}
+		retry := runtime.retries[key]
+		retry.failures++
+		delay := min(30*time.Second*time.Duration(1<<min(retry.failures-1, 5)), 15*time.Minute)
+		retry.after = time.Now().Add(delay)
+		runtime.retries[key] = retry
+		// Infrastructure failures must not consume a newly opened schedule.
+		// A completed no-seat round remains one-shot when cancellation watching is off.
+		if result.signal == localMonitorSignalNewSchedule &&
+			!errors.Is(result.err, application.ErrSeatUnavailable) && !errors.Is(result.err, application.ErrBookingNotOpen) {
+			runtime.worker.ensureTargetState()
+			runtime.worker.newTargets[key] = time.Now()
+		}
+		logging.Info(ctx, "monitor.execution.retry.scheduled", "event", "monitor.execution.retry.scheduled",
+			"scenario", "booking_monitoring", "monitor_id", result.monitorID, "showtime_id", result.showtimeID,
+			"retry_at", retry.after, "retry_after_ms", delay.Milliseconds(), "failures", retry.failures)
+		if errors.Is(result.err, cgv.ErrAuthenticationRequired) {
+			if reporter, ok := runtime.worker.server.(interface{ NotifyBookingPreparationFailed(error, bool) }); ok {
+				reporter.NotifyBookingPreparationFailed(result.err, true)
+			}
+		}
 	}
 }
 
 func logLocalMonitorFailure(ctx context.Context, result localMonitorResult) {
 	if errors.Is(result.err, application.ErrSeatUnavailable) || errors.Is(result.err, application.ErrBookingNotOpen) {
-		logging.Debug(ctx, "monitor.execution.completed",
+		logging.Info(ctx, "monitor.execution.completed",
 			"event", "monitor.execution.completed", "scenario", "booking_monitoring",
 			"operation", "watch_showtime_tab", "outcome", "unavailable",
 			"monitor_id", result.monitorID, "showtime_id", result.showtimeID,
@@ -174,18 +220,41 @@ func (runtime *localMonitorRuntime) removeStaleExecutions(targets []*localMonito
 			continue
 		}
 		execution.cancel()
+		logMonitorCancellation(execution.target, "target_removed")
 		delete(runtime.active, key)
 	}
 }
 
 func (runtime *localMonitorRuntime) startExecutions(ctx context.Context, targets []*localMonitorTarget) {
+	waiting := false
 	for _, target := range targets {
 		key := localMonitorTargetKey(target)
-		if key == "" || runtime.active[key] != nil || !localMonitorTargetRunnable(target) || !runtime.worker.server.CanAcceptExecution() {
+		if key == "" || runtime.active[key] != nil || !localMonitorTargetRunnable(target) {
+			continue
+		}
+		if time.Now().Before(runtime.retries[key].after) {
+			continue
+		}
+		if !runtime.worker.server.CanAcceptExecution() {
+			waiting = true
 			continue
 		}
 		runtime.startExecution(ctx, key, target)
 	}
+	if waiting && !runtime.waitingForBrowser {
+		logging.WarnUnexpected(ctx, "monitor.execution.waiting", "booking_monitoring", "wait_for_booking_browser",
+			"browser capacity available for discovered schedules", "seat selection has not started; browser is not ready",
+			"target_count", len(targets))
+	} else if !waiting && runtime.waitingForBrowser {
+		logging.Info(ctx, "monitor.execution.waiting.ended", "event", "monitor.execution.waiting.ended", "scenario", "booking_monitoring", "outcome", "no_waiting_targets")
+	}
+	runtime.waitingForBrowser = waiting
+}
+
+func logMonitorCancellation(target *localMonitorTarget, reason string) {
+	logging.Info(context.Background(), "monitor.execution.completed", "event", "monitor.execution.completed",
+		"scenario", "booking_monitoring", "operation", "watch_showtime_tab", "outcome", "canceled",
+		"monitor_id", target.monitorID, "showtime_id", target.showtime.GetId(), "signal_kind", target.signal, "reason", reason)
 }
 
 func localMonitorTargetRunnable(target *localMonitorTarget) bool {
@@ -197,11 +266,11 @@ func (runtime *localMonitorRuntime) startExecution(ctx context.Context, key stri
 	executionContext, cancel := context.WithCancel(ctx)
 	execution := &localMonitorExecution{target: target, cancel: cancel}
 	runtime.active[key] = execution
-	logging.Debug(ctx, "monitor.execution.started",
+	logging.Info(ctx, "monitor.execution.started",
 		"event", "monitor.execution.started", "scenario", "booking_monitoring",
 		"operation", "watch_showtime_tab", "outcome", "started",
 		"monitor_id", target.monitorID, "showtime_id", target.showtime.GetId(), "signal_kind", target.signal,
-		"active_tabs", len(runtime.active))
+		"active_executions", len(runtime.active))
 	go func() {
 		err := runtime.worker.server.ExecuteAvailability(
 			executionContext, target.monitorID, target.showtime, target.watchCancellations,
@@ -278,6 +347,7 @@ func (worker *desktopMonitorWorker) observeInventory(
 		return nil
 	}
 	wasInitialized := make(map[string]bool, len(inventory.activeMonitorIDs))
+	worker.summary.inventory(inventory.activeMonitorIDs, discoveredAt)
 	for _, monitorID := range inventory.activeMonitorIDs {
 		_, wasInitialized[monitorID] = worker.initializedMonitors[monitorID]
 		worker.initializedMonitors[monitorID] = struct{}{}
@@ -300,6 +370,7 @@ func (worker *desktopMonitorWorker) observeInventory(
 			continue
 		}
 		worker.newTargets[key] = discoveredAt
+		worker.summary.discovery(target.monitorID)
 		target.signal = localMonitorSignalNewSchedule
 		newTargets = append(newTargets, target)
 		logging.Info(ctx, "monitor.schedule.discovered",

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/probe/v2/internal/telemetry"
+	"github.com/cineko-org/probe/v2/networkcapture"
 	"github.com/cineko-org/probe/v2/networkcapture/playwrightcapture"
 	"github.com/mxschmitt/playwright-go"
 )
@@ -28,6 +29,9 @@ func (adapter *Adapter) observeRateLimitFailure(request playwright.Request) {
 	if adapter == nil || adapter.rateLimit == nil || request == nil {
 		return
 	}
+	if expectedBrowserRequestOutcome(request.Failure()) == "blocked" {
+		return
+	}
 	decision, observed := adapter.rateLimit.ObserveFailure(rateLimitKey(request.URL()))
 	if !observed || adapter.logger == nil {
 		return
@@ -43,14 +47,11 @@ func (adapter *Adapter) captureNetworkExchange(request playwright.Request, faile
 	if adapter == nil || adapter.networkCapture == nil || request == nil {
 		return
 	}
-	if !playwrightcapture.ShouldCapturePlaywrightRequest(adapter.networkCapture, request, failed) {
-		return
-	}
 	if !adapter.beginNetworkCapture() {
 		return
 	}
 	defer adapter.networkCaptureWG.Done()
-	record := playwrightcapture.PlaywrightRecord(request, failed)
+	record := playwrightcapture.PlaywrightRecordForStore(adapter.networkCapture, request, failed)
 	record.Service = "probe"
 	record.Scenario = "cgv_browser"
 	record.CorrelationID = adapter.browserRequestID(request)
@@ -91,8 +92,14 @@ func (adapter *Adapter) observeRateLimitResponse(response playwright.Response) {
 		}
 		return
 	}
-	headers, _ := response.HeadersArray()
-	decision := adapter.rateLimit.Observe429(key, playwrightcapture.PlaywrightHeaders(headers))
+	// Response-event headers are already available. An extra browser RPC here
+	// can let the caller start another scan before the circuit is opened.
+	headers := response.Headers()
+	rateHeaders := make([]networkcapture.Header, 0, len(headers))
+	for name, value := range headers {
+		rateHeaders = append(rateHeaders, networkcapture.Header{Name: name, Value: value})
+	}
+	decision := adapter.rateLimit.Observe429(key, rateHeaders)
 	if adapter.logger != nil {
 		adapter.logger.ErrorContext(adapter.ctx, "Provider rate limit circuit opened",
 			"event", "browser.network.rate_limit.opened", "scenario", "schedule_collection",

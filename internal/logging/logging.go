@@ -94,6 +94,18 @@ type PersistentJournal struct {
 	closed bool
 }
 
+// FinishPersistentRun must run after component cleanup, but before closing the
+// journal. Returning an error to main alone loses its cause in GUI launches.
+func FinishPersistentRun(ctx context.Context, runErr error, closeLog func() error) error {
+	if runErr != nil {
+		ErrorUnexpected(ctx, "client.shutdown.failed", "lifecycle", "shutdown_client",
+			"Client and owned components stop cleanly", "Client exits with an error", runErr)
+	} else {
+		Info(ctx, "client.shutdown.completed", "event", "client.shutdown.completed", "scenario", "lifecycle", "outcome", "succeeded")
+	}
+	return errors.Join(runErr, closeLog())
+}
+
 func (journal *PersistentJournal) Write(payload []byte) (int, error) {
 	if journal == nil {
 		return 0, errors.New("persistent journal is nil")

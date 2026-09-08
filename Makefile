@@ -61,7 +61,7 @@ test: install-playwright
 		PLAYWRIGHT_DRIVER_PATH="$(PLAYWRIGHT_DRIVER_DIR)" \
 		PLAYWRIGHT_BROWSERS_PATH="$(PLAYWRIGHT_BROWSERS_DIR)" \
 		TMPDIR="$(CINEKO_TMP_DIR)" \
-		$(GO) test -mod=vendor -race ./...
+		$(GO) test -mod=vendor -race ./... github.com/cineko-org/probe/v2/internal/provider/cgv github.com/cineko-org/probe/v2/internal/egress github.com/cineko-org/probe/v2/probe
 
 frontend-check:
 	$(NPM) --prefix frontend run check

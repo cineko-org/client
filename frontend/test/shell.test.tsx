@@ -3,7 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShellView } from '../src/features/shell/ui/AppShellView';
 import { cinekoTheme } from '../src/app/theme';
-import { directNetwork, unauthenticatedAccount } from '../src/stories/fixtures';
+import { unauthenticatedAccount } from '../src/stories/fixtures';
 
 beforeEach(() => {
 	vi.stubGlobal('matchMedia', vi.fn<(query: string) => MediaQueryList>().mockImplementation((query) => ({
@@ -29,7 +29,7 @@ describe('application shell', () => {
 					loading={false}
 					connection={{ status: 'ready', message: '', lastSuccessfulAt: '', retrying: false }}
 					account={unauthenticatedAccount}
-					network={directNetwork}
+					soxyStatus="ready"
 					desktopAvailable={false}
 					unreadNotices={0}
 					feedback={null}
@@ -46,6 +46,9 @@ describe('application shell', () => {
 		);
 
 		expect(screen.getByRole('navigation')).not.toBeNull();
+		expect(screen.queryByText('신규 조회')).toBeNull();
+		expect(screen.getByRole('img', { name: 'SOXY: 정상' })).not.toBeNull();
+		expect(screen.queryByText('예매 프록시')).toBeNull();
 		expect(container.querySelector('footer')?.classList.contains('mantine-hidden-from-sm')).toBe(true);
 		expect(screen.getAllByRole('button', { name: '홈' })).toHaveLength(2);
 		expect(screen.getAllByRole('button', { name: '예매 찾기' })).toHaveLength(2);

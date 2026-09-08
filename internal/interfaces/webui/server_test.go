@@ -71,12 +71,51 @@ func TestAccountCheckUsesStableAccountSession(t *testing.T) {
 			return &webProbeAutomation{probes: &atomic.Int32{}}, nil
 		},
 	}
-	server.checkAuthentication()
+	_, _ = server.checkAuthentication()
 	if gotPurpose != AutomationSession || gotSessionKey != "account" {
 		t.Fatalf("account check browser = %q/%q", gotPurpose, gotSessionKey)
 	}
 	if server.account.GetAuthenticated() == nil {
 		t.Fatalf("account state = %+v", server.account)
+	}
+}
+
+func TestManualLoginCompletionRequiresFreshBackgroundVerification(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(fmt.Sprint(valid), func(t *testing.T) {
+			modes := make(chan bool, 2)
+			server := &Server{rootContext: t.Context(), clock: webTestClock{time.Now()}, tasks: make(map[string]*clientpb.WebUITaskState),
+				factory: func(_ context.Context, background bool, _ AutomationPurpose, _ string) (Automation, error) {
+					modes <- background
+					return &webProbeAutomation{authenticated: &valid}, nil
+				},
+			}
+			response := httptest.NewRecorder()
+			server.openAuthentication(response, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/auth/open", nil))
+			deadline := time.Now().Add(time.Second)
+			for {
+				server.tasksMu.RLock()
+				task := server.tasks["authentication"]
+				done := task != nil && task.GetRunning() == nil
+				server.tasksMu.RUnlock()
+				if done {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("manual authentication did not finish")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if response.Code != http.StatusAccepted || len(modes) != 2 || <-modes || !<-modes {
+				t.Fatal("manual login did not use a fresh background verifier")
+			}
+			server.accountMu.RLock()
+			got := server.account.GetAuthenticated() != nil
+			server.accountMu.RUnlock()
+			if got != valid {
+				t.Fatalf("closing manual browser marked an invalid session authenticated: %v", got)
+			}
+		})
 	}
 }
 
@@ -107,6 +146,45 @@ func TestRefreshBookingDemandRequiresAuthenticatedActiveMonitor(t *testing.T) {
 	server.refreshBookingDemand(ctx)
 	if active := <-demands; !active {
 		t.Fatal("authenticated active monitor did not create warm booking demand")
+	}
+}
+
+func TestBookingPreparationFailureInvalidatesAuthenticationAndRecovers(t *testing.T) {
+	ready := false
+	var activeDemand bool
+	server := &Server{
+		repository: memoryrepo.New(), userID: "user", ids: &webAtomicIDs{},
+		clock: webTestClock{time.Now()}, tasks: make(map[string]*clientpb.WebUITaskState),
+		bookingDemandChanged:     func(active bool) { activeDemand = active },
+		bookingCapacityAvailable: func() bool { return ready },
+	}
+	server.account = accountStateMessage("authenticated", "", time.Now())
+	failure := errors.New("CGV authentication is required")
+	server.NotifyBookingPreparationFailed(failure, true)
+	server.NotifyBookingPreparationFailed(failure, true)
+	if server.account.GetAuthenticated() != nil || activeDemand {
+		t.Fatal("failed authentication still permits booking")
+	}
+	server.account = accountStateMessage("authenticated", "", time.Now())
+	server.NotifyBookingPreparationFailed(failure, true)
+	if server.account.GetAuthenticated() != nil {
+		t.Fatal("deduplicating the error skipped authentication invalidation")
+	}
+	if server.tasks["booking-browser"].GetFailed() == nil {
+		t.Fatal("preparation failure missing from App task state")
+	}
+	repository, ok := server.repository.(appEventRepository)
+	if !ok {
+		t.Fatal("repository cannot read app events")
+	}
+	events, err := repository.ListAppEvents(t.Context(), "user", 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("deduplicated events=%d, error=%v", len(events), err)
+	}
+	ready = true
+	server.NotifyBookingCapacityChanged()
+	if server.tasks["booking-browser"] != nil || server.bookingPreparationError != "" {
+		t.Fatal("recovered browser retained stale error")
 	}
 }
 

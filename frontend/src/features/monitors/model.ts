@@ -125,12 +125,12 @@ export function monitorWatchLabel(monitor: Partial<Monitor>): string {
 
 export function monitorStatusLabel(status: string): string {
   return ({
-    pending: '대기',
-    running: '실행 중',
+    pending: '감시 예약됨',
+    running: '좌석 확인 중',
     triggered: '결제 확인 필요',
     payment_unknown: '결제 결과 확인 필요',
     booked: '예매 완료',
     failed: '실패',
-    stopped: '중지',
+    stopped: '중지됨',
   })[status] ?? status;
 }

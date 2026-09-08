@@ -27,6 +27,7 @@ import (
 )
 
 const localUserID = "local"
+const scheduleBootstrapRetryInterval = 5 * time.Minute
 
 // Store is the single-user durable Client database. Every record remains a
 // generated protobuf message on disk so the application does not gain a second
@@ -34,16 +35,17 @@ const localUserID = "local"
 type Store struct {
 	mu sync.RWMutex
 
-	root             string
-	settings         *clientpb.Resource
-	resources        map[string]map[string]*clientpb.Resource
-	catalog          *catalogpb.CatalogIndex
-	seatMaps         map[string]*seatmappb.Snapshot
-	posters          map[string]*catalogpb.MoviePoster
-	changed          chan struct{}
-	seatChanged      chan struct{}
-	seatRequests     chan string
-	scheduleRequests chan string
+	root                string
+	settings            *clientpb.Resource
+	resources           map[string]map[string]*clientpb.Resource
+	catalog             *catalogpb.CatalogIndex
+	seatMaps            map[string]*seatmappb.Snapshot
+	posters             map[string]*catalogpb.MoviePoster
+	changed             chan struct{}
+	seatChanged         chan struct{}
+	seatRequests        chan string
+	scheduleRequests    chan string
+	scheduleRequestedAt map[string]time.Time
 }
 
 func Open(dataDir string) (*Store, error) {
@@ -373,6 +375,9 @@ func (store *Store) PutScheduleCaptures(
 	for _, capture := range captures {
 		applyScheduleCapture(index, theater.GetId(), capture)
 	}
+	if proto.Equal(index, store.catalog) {
+		return nil
+	}
 	index.SetGeneration(index.GetGeneration() + 1)
 	if err := writeProtoAtomic(filepath.Join(store.root, "catalog.json"), index); err != nil {
 		return err
@@ -474,8 +479,8 @@ func (store *Store) GetAuditorium(_ context.Context, id string) (*catalogpb.Audi
 }
 
 func (store *Store) ListAuditoriumsByTheater(_ context.Context, theaterID string) ([]*catalogpb.Auditorium, error) {
-	store.mu.RLock()
-	defer store.mu.RUnlock()
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	values := make([]*catalogpb.Auditorium, 0)
 	for _, value := range store.catalog.GetAuditoriums() {
 		if value.GetTheaterId() == theaterID {
@@ -484,10 +489,20 @@ func (store *Store) ListAuditoriumsByTheater(_ context.Context, theaterID string
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].GetName() < values[j].GetName() })
 	if len(values) == 0 {
+		if store.scheduleRequestedAt == nil {
+			store.scheduleRequestedAt = make(map[string]time.Time)
+		}
+		now := time.Now()
+		if last := store.scheduleRequestedAt[theaterID]; !last.IsZero() && now.Sub(last) >= 0 && now.Sub(last) < scheduleBootstrapRetryInterval {
+			return values, nil
+		}
 		select {
 		case store.scheduleRequests <- theaterID:
+			store.scheduleRequestedAt[theaterID] = now
 		default:
 		}
+	} else {
+		delete(store.scheduleRequestedAt, theaterID)
 	}
 	return values, nil
 }

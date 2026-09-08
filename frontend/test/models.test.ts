@@ -117,7 +117,7 @@ describe('monitor model', () => {
 		expect(monitorWatchLabel({ watchCancellationSeats: true })).toBe('신규 오픈 + 취소표 감시');
 		expect(monitorWatchLabel({ watchCancellationSeats: false })).toBe('신규 오픈만 감시');
 	expect(['pending', 'running', 'triggered', 'payment_unknown', 'booked', 'failed', 'stopped'].map((status) => monitorStatusLabel(status))).toEqual([
-			'대기', '실행 중', '결제 확인 필요', '결제 결과 확인 필요', '예매 완료', '실패', '중지',
+   '감시 예약됨', '좌석 확인 중', '결제 확인 필요', '결제 결과 확인 필요', '예매 완료', '실패', '중지됨',
 		]);
 		const stored = create(MonitorSchema, {
 			id: 'monitor', movieId: 'movie', movieTitle: '영화', presetId: 'preset', userId: 'user', seatCount: 2, seatType: 'recliner',
