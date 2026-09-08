@@ -5,6 +5,7 @@
 
 static id windowActivationObserver;
 static id quitObserver;
+static id activationRequestObserver;
 
 static void onMainThread(dispatch_block_t action) {
     if (pthread_main_np()) action();
@@ -45,6 +46,21 @@ int cineko_configure_activation_policy(int foreground) {
             quitObserver = [[[NSDistributedNotificationCenter defaultCenter]
                 addObserverForName:quitName object:nil queue:[NSOperationQueue mainQueue]
                 usingBlock:^(NSNotification *note) { [NSApp terminate:nil]; }] retain];
+            NSString *activateName = [NSString stringWithFormat:@"io.cineko.client.activate.%d", NSProcessInfo.processInfo.processIdentifier];
+            activationRequestObserver = [[[NSDistributedNotificationCenter defaultCenter]
+                addObserverForName:activateName object:nil queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+                    if (![note.object isKindOfClass:[NSString class]]) return;
+                    NSRunningApplication *launcher = [NSRunningApplication runningApplicationWithProcessIdentifier:[note.object intValue]];
+                    if (launcher == nil || launcher.terminated) return;
+                    [NSApp unhideWithoutActivation];
+                    restoreClientWindow();
+                    if (@available(macOS 14.0, *)) {
+                        [[NSRunningApplication currentApplication] activateFromApplication:launcher options:NSApplicationActivateAllWindows];
+                    } else {
+                        [NSApp activateIgnoringOtherApps:YES];
+                    }
+                }] retain];
         }
         if (foreground) [NSApp activateIgnoringOtherApps:YES];
         applied = NSApp.activationPolicy == policy;
@@ -61,5 +77,8 @@ void cineko_remove_window_activation_observer(void) {
         [[NSDistributedNotificationCenter defaultCenter] removeObserver:quitObserver];
         [quitObserver release];
         quitObserver = nil;
+        [[NSDistributedNotificationCenter defaultCenter] removeObserver:activationRequestObserver];
+        [activationRequestObserver release];
+        activationRequestObserver = nil;
     });
 }
