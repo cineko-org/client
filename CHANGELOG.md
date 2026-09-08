@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.5](https://github.com/cineko-org/client/compare/v2.8.4...v2.8.5) (2026-09-08)
+
+
+### Bug Fixes
+
+* serve complete runtime updates from GitHub Releases ([#50](https://github.com/cineko-org/client/issues/50)) ([50c7fa0](https://github.com/cineko-org/client/commit/50c7fa0e942049a229da0b2149527c0595f2c533))
+
 ## [2.8.4](https://github.com/cineko-org/client/compare/v2.8.3...v2.8.4) (2026-09-08)
 
 
