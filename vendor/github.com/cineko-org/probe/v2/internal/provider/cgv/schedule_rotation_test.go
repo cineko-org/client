@@ -1,9 +1,83 @@
 package cgv
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
+
+func TestMovieCalendarDetailBudgetAndCoverage(t *testing.T) {
+	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
+	dates := []string{"2026-09-10", "2026-09-11", "2026-09-12", "2026-09-13"}
+	var rotation scheduleDateRotation
+	// Warm up initial discovery, then measure identical one-hour windows.
+	for i := range len(dates) {
+		rotation.nextDue(dates, i, now.Add(time.Duration(i)*30*time.Second), time.Minute)
+	}
+	start := now.Add(3 * time.Minute)
+	reads := 0
+	last := make(map[string]time.Time)
+	maxGap := time.Duration(0)
+	for tick := range 120 {
+		at := start.Add(time.Duration(tick) * 30 * time.Second)
+		date := rotation.nextDue(dates, tick, at, time.Minute)
+		if date == "" {
+			continue
+		}
+		reads++
+		if previous, ok := last[date]; ok && at.Sub(previous) > maxGap {
+			maxGap = at.Sub(previous)
+		}
+		last[date] = at
+	}
+	if reads != 60 || len(last) != 4 || maxGap != 4*time.Minute {
+		t.Fatal("detail coverage/budget", reads, len(last), maxGap)
+	}
+	// Baseline: the same four relevant dates in a 16-date theater inventory.
+	var baseline scheduleDateRotation
+	broad := append([]string(nil), dates...)
+	for i := range 12 {
+		broad = append(broad, fmt.Sprintf("unrelated-%02d", i))
+	}
+	baselineLast := make(map[string]time.Time)
+	baselineGap := time.Duration(0)
+	for tick := range 120 {
+		at := start.Add(time.Duration(tick) * 30 * time.Second)
+		date := baseline.next(broad, tick)
+		if previous, ok := baselineLast[date]; ok && at.Sub(previous) > baselineGap {
+			baselineGap = at.Sub(previous)
+		}
+		baselineLast[date] = at
+	}
+	if baselineGap != 8*time.Minute {
+		t.Fatal("baseline changed", baselineGap)
+	}
+	t.Logf("warm 1h, same movie/weekdays: inventory+detail 240 -> %d; relevant detail revisit %v -> %v; new-date inventory 30s unchanged", 120+reads, baselineGap, maxGap)
+}
+
+func TestMovieCalendarNewDatesAndEmptyInventory(t *testing.T) {
+	now := time.Now()
+	var rotation scheduleDateRotation
+	if rotation.nextDue([]string{"a"}, 0, now, time.Minute) != "a" {
+		t.Fatal("initial date not read")
+	}
+	if rotation.nextDue([]string{"a"}, 1, now.Add(30*time.Second), time.Minute) != "" {
+		t.Fatal("unchanged inventory caused early detail read")
+	}
+	if rotation.nextDue([]string{"a", "b"}, 2, now.Add(30*time.Second), time.Minute) != "b" {
+		t.Fatal("new date delayed by known-date interval")
+	}
+	if rotation.nextDue(nil, 3, now.Add(45*time.Second), time.Minute) != "" {
+		t.Fatal("empty inventory triggered detail")
+	}
+	if len(rotation.lastAttempt) != 0 || rotation.nextDue([]string{"a"}, 4, now.Add(50*time.Second), time.Minute) != "a" {
+		t.Fatal("reappearing date was not rediscovered")
+	}
+	if rotation.nextDue([]string{"a"}, 5, now.Add(24*time.Hour), time.Minute) != "a" ||
+		rotation.nextDue([]string{"a"}, 6, now.Add(24*time.Hour), time.Minute) != "" {
+		t.Fatal("long pause caused catch-up burst")
+	}
+}
 
 func TestScheduleRotationPrioritizesNewDateWithoutMoreRequests(t *testing.T) {
 	before := []string{"01", "02", "03", "04", "05", "06", "07"}

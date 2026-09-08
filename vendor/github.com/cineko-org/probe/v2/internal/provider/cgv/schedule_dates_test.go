@@ -26,12 +26,54 @@ func TestProviderDateInventoryUsesExactDates(t *testing.T) {
 	}
 }
 
+func TestScheduleMovieInventoryDoesNotFilterCompleteDetails(t *testing.T) {
+	for _, movie := range []string{"", "30001323"} {
+		path, err := scheduleInventoryPath("0013", movie)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := url.Parse(path)
+		if err != nil || parsed.IsAbs() || parsed.Host != "" {
+			t.Fatal("inventory must remain on the CGV browser origin", path, err)
+		}
+		want := scheduleDatesResponsePath
+		if movie != "" {
+			want = movieScheduleDatesResponsePath
+		}
+		if parsed.Path != want || parsed.Query().Get("movNo") != movie || parsed.Query().Get("siteNo") != "0013" {
+			t.Fatal(path)
+		}
+	}
+	if _, err := scheduleInventoryPath("0013", "not-a-movie"); err == nil {
+		t.Fatal("accepted invalid movie identity")
+	}
+	path, err := scheduleRequestPath("2026-09-11", "0013")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(path)
+	if err != nil || parsed.Path != scheduleResponsePath || parsed.Query().Has("movNo") || parsed.Query().Has("attrCd") {
+		t.Fatal("complete theater/date snapshot became movie-filtered", path, err)
+	}
+}
+
 // Every URL is fulfilled locally. This exercises the real browser boundary
 // without sending any requests to CGV or using the user's browser profile.
 func TestScheduleInventoryBrowserRequestBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires installed Chromium; all responses are local fixtures")
 	}
+	for _, movieNo := range []string{"", "30001323"} {
+		name := "theater"
+		if movieNo != "" {
+			name = "movie"
+		}
+		t.Run(name, func(t *testing.T) { testScheduleInventoryBrowserRequestBudget(t, movieNo) })
+	}
+}
+
+func testScheduleInventoryBrowserRequestBudget(t *testing.T, movieNo string) {
+	t.Helper()
 	config := DefaultBrowserConfig()
 	config.ChromePath = os.Getenv("CINEKO_CHROME_PATH")
 	config.ProfileDir = t.TempDir()
@@ -62,15 +104,22 @@ func TestScheduleInventoryBrowserRequestBudget(t *testing.T) {
 		case "/cnm/movieBook/cinema":
 			options.ContentType = playwright.String("text/html")
 			options.Body = "<html><body>local fixture</body></html>"
-		case scheduleDatesResponsePath:
-			if parsed.Query().Get("siteNo") != "0013" {
-				t.Error("wrong inventory theater")
+		case scheduleDatesResponsePath, movieScheduleDatesResponsePath:
+			wantPath := scheduleDatesResponsePath
+			if movieNo != "" {
+				wantPath = movieScheduleDatesResponsePath
+			}
+			if parsed.Path != wantPath || parsed.Query().Get("siteNo") != "0013" || parsed.Query().Get("movNo") != movieNo {
+				t.Error("wrong inventory scope", parsed.RequestURI())
 			}
 			options.Body, options.Status = responseBody, playwright.Int(responseStatus)
 			if responseStatus == 429 {
 				options.Headers = map[string]string{"Retry-After": "60"}
 			}
 		case scheduleResponsePath:
+			if parsed.Query().Has("movNo") || parsed.Query().Has("attrCd") {
+				t.Error("complete detail request was filtered", parsed.RequestURI())
+			}
 			options.Body = `{"statusCode":0,"data":[]}`
 		default:
 			t.Errorf("unexpected request: %s", parsed.RequestURI())
@@ -96,7 +145,7 @@ func TestScheduleInventoryBrowserRequestBudget(t *testing.T) {
 			body = `{"statusCode":0,"data":[{"scnYmd":"20260911"},{"scnYmd":"20260912"},{"scnYmd":"20260913"},{"scnYmd":"20260918"}]}`
 			mu.Unlock()
 		}
-		captures, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, slot)
+		captures, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, slot, movieNo)
 		if err != nil || len(captures) != 1 || !captures[0].Complete {
 			t.Fatalf("slot %d: %+v, %v", slot, captures, err)
 		}
@@ -106,12 +155,27 @@ func TestScheduleInventoryBrowserRequestBudget(t *testing.T) {
 	}
 	mu.Lock()
 	count := len(requests)
-	body = `{"statusCode":0,"data":[]}`
 	mu.Unlock()
 	if count != 9 {
 		t.Fatalf("four slots: got %d requests, want 1 bootstrap + 4 inventory + 4 detail", count)
 	}
-	captures, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 4)
+	if movieNo != "" {
+		captures, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 4, movieNo)
+		if err != nil || len(captures) != 0 {
+			t.Fatal("unchanged movie inventory triggered an early detail", captures, err)
+		}
+		mu.Lock()
+		count = len(requests)
+		mu.Unlock()
+		if count != 10 {
+			t.Fatalf("inventory-only round: got %d requests, want 10 total", count)
+		}
+	}
+	mu.Lock()
+	requests = nil
+	body = `{"statusCode":0,"data":[]}`
+	mu.Unlock()
+	captures, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 5, movieNo)
 	if err != nil || len(captures) != 0 {
 		t.Fatal(captures, err)
 	}
@@ -119,21 +183,21 @@ func TestScheduleInventoryBrowserRequestBudget(t *testing.T) {
 	count = len(requests)
 	status = 429
 	mu.Unlock()
-	if count != 10 {
+	if count != 1 {
 		t.Fatalf("empty inventory triggered extra requests: %d", count)
 	}
-	if _, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 5); !errors.Is(err, ErrProviderThrottled) {
+	if _, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 6, movieNo); !errors.Is(err, ErrProviderThrottled) {
 		t.Fatalf("429: %v", err)
 	}
 	for range 3 {
-		if _, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 6); !errors.Is(err, ErrProviderThrottled) {
+		if _, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 7, movieNo); !errors.Is(err, ErrProviderThrottled) {
 			t.Fatalf("cooldown: %v", err)
 		}
 	}
 	mu.Lock()
 	count = len(requests)
 	mu.Unlock()
-	if count != 11 {
+	if count != 2 {
 		t.Fatalf("429 must stop details and later requests, got %d", count)
 	}
 	t.Log("4 scan slots: 4 inventories + 4 details, 0 reloads despite expired DOM age; empty inventory: 1 request; 429 + 3 retries: 1 request total")

@@ -57,3 +57,24 @@ func TestMonitorProviderWeekdaysIncludeExtendedHourSourceDay(t *testing.T) {
 		t.Fatalf("provider weekdays = %v, want four unique days", weekdays)
 	}
 }
+
+func TestSingleScheduleMovieDoesNotFanOut(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		movies map[string]struct{}
+		want   string
+	}{
+		{"no movie", nil, ""},
+		{"shared movie", map[string]struct{}{"30001323": {}}, "30001323"},
+		{"multiple movies", map[string]struct{}{"30001323": {}, "30001359": {}}, ""},
+		{"unknown identity", map[string]struct{}{"": {}}, ""},
+		{"invalid identity", map[string]struct{}{"invalid": {}}, ""},
+		{"one unknown monitor", map[string]struct{}{"30001323": {}, "": {}}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := singleScheduleMovie(test.movies); got != test.want {
+				t.Fatalf("scope = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
