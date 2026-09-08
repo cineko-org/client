@@ -68,9 +68,13 @@ func desktopWindowOptions(
 			}
 			startDesktopWindow(ctx, app, server, store, embeddedProbe, dataDir, startupReadyNonce, startupFailure)
 		},
-		Bind: []interface{}{app},
+		OnShutdown: func(context.Context) { removeDesktopActivationHandler() },
+		Bind:       []interface{}{app},
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId: "io.cineko.desktop",
+			OnSecondInstanceLaunch: func(options.SecondInstanceData) {
+				app.showWindow()
+			},
 		},
 		Mac: &mac.Options{
 			Appearance: mac.NSAppearanceNameDarkAqua,
@@ -102,5 +106,12 @@ func startDesktopWindow(
 		default:
 		}
 		wailsruntime.Quit(ctx)
+	}
+}
+
+func (app *DesktopApp) showWindow() {
+	if ctx := app.context(); ctx != nil {
+		wailsruntime.WindowUnminimise(ctx)
+		wailsruntime.WindowShow(ctx)
 	}
 }
