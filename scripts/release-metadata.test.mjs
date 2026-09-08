@@ -123,9 +123,11 @@ const args = process.argv.slice(2);
 let state = fs.existsSync(path) ? JSON.parse(fs.readFileSync(path, 'utf8')) : null;
 if (args[0] === 'api') {
   if (!state) process.exit(1);
+  if (args[1] !== 'repos/cineko-org/client/releases/123') process.exit(1);
   process.stdout.write(JSON.stringify(state));
 } else if (args[1] === 'view') {
   if (!state) process.exit(1);
+  if (args.includes('--json')) process.stdout.write('123');
 } else if (args[1] === 'create') {
   if (!args.includes('--draft') || !args.includes('--latest=false')) process.exit(2);
   state = { draft: true, assets: [], uploads: 0 };

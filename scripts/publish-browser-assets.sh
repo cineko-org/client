@@ -21,7 +21,11 @@ if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
     --notes "Unmodified official Chrome for Testing archives used by Cineko." --latest=false
 fi
 
-release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+# GitHub's tag endpoint only resolves published releases. Resolve the draft
+# through gh first, then read uploaded asset digests using its numeric ID.
+release_id="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)"
+readonly release_id
+release="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")"
 for filename in "${filenames[@]}"; do
   asset="$(jq -c --arg name "$filename" '.assets[] | select(.name == $name)' <<<"$release")"
   if [[ -z "$asset" ]]; then
@@ -35,7 +39,7 @@ done
 
 # GitHub calculates the digest from the uploaded bytes. Never overwrite an
 # existing archive, including when resuming an interrupted draft publication.
-release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+release="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")"
 for filename in "${filenames[@]}"; do
   digest="sha256:$(sha256sum "$assets_dir/$filename" | awk '{print $1}')"
   size="$(wc -c <"$assets_dir/$filename" | tr -d '[:space:]')"
