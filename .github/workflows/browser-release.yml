@@ -78,6 +78,7 @@ jobs:
     env:
       CINEKO_RELEASE_PUBLISHED_AT: ${{ needs.prepare.outputs.published_at }}
       CINEKO_BROWSER_RELEASE_PAYLOAD_OUT: build/release/browser-release-set.json
+      CINEKO_BROWSER_ASSETS_DIR: build/release/browser
     steps:
       - uses: actions/checkout@v7
         with:
@@ -103,6 +104,12 @@ jobs:
           name: browser-release-set
           path: build/release/browser-release-set.json
           if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: browser-archives
+          path: build/release/browser/*.zip
+          if-no-files-found: error
+          compression-level: 0
 
   publish:
     if: >-
@@ -130,6 +137,14 @@ jobs:
         with:
           name: browser-release-set
           path: release-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: browser-archives
+          path: release-assets/browser
+      - name: Publish or verify the immutable browser archives
+        env:
+          CINEKO_RELEASE_TARGET_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: bash scripts/publish-browser-assets.sh '${{ needs.prepare.outputs.chrome_version }}' release-assets/browser
       - name: Publish or verify the immutable browser manifest
         run: |
           if gh release view "$BROWSER_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
