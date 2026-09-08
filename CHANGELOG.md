@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.8](https://github.com/cineko-org/client/compare/v2.8.7...v2.8.8) (2026-09-08)
+
+
+### Bug Fixes
+
+* share movie calendars and pace schedule detail scans ([#57](https://github.com/cineko-org/client/issues/57)) ([f64df10](https://github.com/cineko-org/client/commit/f64df10f6b5d682d38419e8916f958c5120e8747))
+
 ## [2.8.7](https://github.com/cineko-org/client/compare/v2.8.6...v2.8.7) (2026-09-08)
 
 
