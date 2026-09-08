@@ -88,6 +88,7 @@ func (adapter *Adapter) CaptureScheduleWeekdayShard(
 	theater ScheduleTheater,
 	weekdays []time.Weekday,
 	shard int,
+	movieNo ...string,
 ) ([]ScheduleCapture, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
@@ -103,7 +104,7 @@ func (adapter *Adapter) CaptureScheduleWeekdayShard(
 			return nil, err
 		}
 	}
-	dates, err := adapter.requestScheduleDatesFromPage(theater.SourceKey)
+	dates, err := adapter.requestScheduleDatesFromPage(theater.SourceKey, movieNo...)
 	if err != nil {
 		return nil, err
 	}
@@ -111,18 +112,38 @@ func (adapter *Adapter) CaptureScheduleWeekdayShard(
 	if err != nil {
 		return nil, err
 	}
-	if len(dates) == 0 {
-		return []ScheduleCapture{}, nil
-	}
 	if adapter.scheduleDates == nil {
 		adapter.scheduleDates = make(map[string]*scheduleDateRotation)
 	}
-	rotation := adapter.scheduleDates[theater.ID]
+	movie := ""
+	if len(movieNo) == 1 {
+		movie = movieNo[0]
+	}
+	rotationKey := theater.ID + ":" + movie
+	rotation := adapter.scheduleDates[rotationKey]
 	if rotation == nil {
 		rotation = &scheduleDateRotation{}
-		adapter.scheduleDates[theater.ID] = rotation
+		adapter.scheduleDates[rotationKey] = rotation
 	}
-	return adapter.captureSelectedSchedules(ctx, theater, []string{rotation.next(dates, shard)})
+	interval := time.Duration(0)
+	if movie != "" {
+		interval = time.Minute
+	}
+	date := rotation.nextDue(dates, shard, time.Now(), interval)
+	if adapter.logger != nil {
+		adapter.logger.DebugContext(ctx, "CGV schedule scan planned",
+			"event", "cgv.schedule.plan", "scenario", "schedule_collection",
+			"operation", "plan_schedule_detail", "theater_id", theater.ID,
+			"movie_no", movie, "candidate_date_count", len(dates),
+			"inventory_requests", 1, "detail_due", date != "", "target_date", date,
+			"detail_interval_ms", interval.Milliseconds())
+	}
+	if date == "" {
+		return []ScheduleCapture{}, nil
+	}
+	// Only the inventory is movie-scoped. Complete observations remain full
+	// theater/day snapshots so storage cannot erase another movie's showtimes.
+	return adapter.captureSelectedSchedules(ctx, theater, []string{date})
 }
 
 func (adapter *Adapter) captureSchedules(

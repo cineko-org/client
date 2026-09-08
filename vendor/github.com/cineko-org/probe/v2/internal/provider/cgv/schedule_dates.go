@@ -10,16 +10,39 @@ import (
 )
 
 const scheduleDatesResponsePath = "/api/v1/booking/searchSiteScnscYmdListBySite"
+const movieScheduleDatesResponsePath = "/api/v1/booking/searchSiteScnscYmdListByMov"
+
+func scheduleInventoryPath(siteNo, movieNo string) (string, error) {
+	siteNo = strings.TrimSpace(siteNo)
+	if !providerSiteIdentifier(siteNo) {
+		return "", fmt.Errorf("%w: invalid theater siteNo", ErrIdentityMismatch)
+	}
+	query := url.Values{"coCd": {"A420"}, "siteNo": {siteNo}}
+	path := scheduleDatesResponsePath
+	if movieNo != "" {
+		if !numericIdentifier(movieNo) {
+			return "", fmt.Errorf("%w: invalid movie number", ErrIdentityMismatch)
+		}
+		query.Set("movNo", movieNo)
+		path = movieScheduleDatesResponsePath
+	}
+	return path + "?" + query.Encode(), nil
+}
 
 // Use CGV's cinema date-inventory request on the existing scan slot: one
 // inventory plus at most one date-detail request, with no reload or fan-out.
-func (adapter *Adapter) requestScheduleDatesFromPage(siteNo string) ([]string, error) {
-	siteNo = strings.TrimSpace(siteNo)
-	if !providerSiteIdentifier(siteNo) {
-		return nil, fmt.Errorf("%w: invalid theater siteNo", ErrIdentityMismatch)
+func (adapter *Adapter) requestScheduleDatesFromPage(siteNo string, movieNo ...string) ([]string, error) {
+	if len(movieNo) > 1 {
+		return nil, fmt.Errorf("%w: expected at most one schedule movie", ErrIdentityMismatch)
 	}
-	query := url.Values{"coCd": {"A420"}, "siteNo": {siteNo}}
-	path := scheduleDatesResponsePath + "?" + query.Encode()
+	movie := ""
+	if len(movieNo) == 1 {
+		movie = movieNo[0]
+	}
+	path, err := scheduleInventoryPath(siteNo, movie)
+	if err != nil {
+		return nil, err
+	}
 	if err := adapter.providerRateLimitError("https://cgv.co.kr" + path); err != nil {
 		return nil, err
 	}

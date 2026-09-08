@@ -312,6 +312,18 @@ func (embedded *embeddedProbe) captureActiveSchedules(ctx context.Context) {
 		return
 	}
 	targets := make(map[string]map[int32]struct{})
+	// Resolve provider movie identities once. Unknown identities retain the
+	// broader theater scan; they must never silently exclude an active monitor.
+	catalog, err := embedded.store.GetCatalog(ctx)
+	if err != nil {
+		embedded.logFailure(ctx, "schedule-movie-catalog", err)
+		return
+	}
+	movieNumbers := make(map[string]string)
+	for _, movie := range catalog.GetMovies() {
+		movieNumbers[movie.GetId()] = movie.GetIdentity().GetCgv().GetMovieNo()
+	}
+	targetMovies := make(map[string]map[string]struct{})
 	for _, resource := range monitors {
 		monitor := resource.GetMonitor()
 		if monitor == nil || monitor.GetState() == nil ||
@@ -335,6 +347,10 @@ func (embedded *embeddedProbe) captureActiveSchedules(ctx context.Context) {
 			targets[theaterID] = weekdays
 		}
 		addMonitorProviderWeekdays(weekdays, monitor.GetTargetWeekdays())
+		if targetMovies[theaterID] == nil {
+			targetMovies[theaterID] = make(map[string]struct{})
+		}
+		targetMovies[theaterID][movieNumbers[monitor.GetMovieId()]] = struct{}{}
 	}
 	theaterIDs := make([]string, 0, len(targets))
 	for theaterID := range targets {
@@ -351,9 +367,25 @@ func (embedded *embeddedProbe) captureActiveSchedules(ctx context.Context) {
 		}
 		sort.Slice(weekdays, func(i, j int) bool { return weekdays[i] < weekdays[j] })
 		shard := embedded.scheduleCursor[theaterID]
-		embedded.captureTheaterScheduleWeekdayShard(ctx, theaterID, weekdays, shard)
+		embedded.captureTheaterSchedulesFor(ctx, theaterID, weekdays, &shard, singleScheduleMovie(targetMovies[theaterID]))
 		embedded.scheduleCursor[theaterID] = shard + 1
 	}
+}
+
+// One movie calendar replaces (not supplements) the theater calendar. Multiple
+// movies share the broad calendar instead of creating per-monitor request fans.
+func singleScheduleMovie(movies map[string]struct{}) string {
+	if len(movies) == 1 {
+		for movie := range movies {
+			for _, digit := range movie {
+				if digit < '0' || digit > '9' {
+					return ""
+				}
+			}
+			return movie
+		}
+	}
+	return ""
 }
 
 func addMonitorProviderWeekdays(result map[int32]struct{}, targetWeekdays []int32) {
@@ -398,11 +430,7 @@ func (embedded *embeddedProbe) captureTheaterSchedules(ctx context.Context, thea
 	embedded.captureTheaterSchedulesFor(ctx, theaterID, nil, nil)
 }
 
-func (embedded *embeddedProbe) captureTheaterScheduleWeekdayShard(ctx context.Context, theaterID string, weekdays []int32, shard int) {
-	embedded.captureTheaterSchedulesFor(ctx, theaterID, weekdays, &shard)
-}
-
-func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, theaterID string, weekdays []int32, shard *int) {
+func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, theaterID string, weekdays []int32, shard *int, movieNo ...string) {
 	startedAt := time.Now()
 	embedded.summary.scanStarted(theaterID, startedAt)
 	var captures []*observationpb.Capture
@@ -416,7 +444,7 @@ func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, t
 		var captureErr error
 		switch {
 		case len(weekdays) > 0 && shard != nil:
-			captures, captureErr = embedded.scanner.CaptureScheduleWeekdayShard(scanContext, theater, weekdays, *shard)
+			captures, captureErr = embedded.scanner.CaptureScheduleWeekdayShard(scanContext, theater, weekdays, *shard, movieNo...)
 		case len(weekdays) > 0:
 			captures, captureErr = embedded.scanner.CaptureScheduleWeekdays(scanContext, theater, weekdays)
 		default:
@@ -424,6 +452,10 @@ func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, t
 		}
 		if captureErr != nil {
 			return captureErr
+		}
+		if len(captures) == 0 {
+			// Inventory-only rounds are not changed schedule observations.
+			return nil
 		}
 		complete, showtimes, auditoriums := scheduleCaptureCounts(captures)
 		dates := make([]string, 0, len(captures))

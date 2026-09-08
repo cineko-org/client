@@ -26,7 +26,7 @@ type theaterScanSummary struct {
 	Partial             int                        `json:"partial"`
 	Canceled            int                        `json:"canceled"`
 	Throttled           int                        `json:"throttled"`
-	NoDates             int                        `json:"no_matching_dates"`
+	NoDetailCapture     int                        `json:"no_detail_capture"`
 	UnknownDateFailures int                        `json:"failures_without_target_date"`
 	InFlight            int                        `json:"in_flight"`
 	DurationMS          int64                      `json:"completed_duration_ms"`
@@ -112,7 +112,9 @@ func (summary *monitoringSummary) scanFinished(theaterID string, started, now ti
 		current.Succeeded++
 		current.LastSuccessAt = current.LastCompletedAt
 		if len(captures) == 0 {
-			current.NoDates++
+			// This includes unchanged-calendar rounds with no detail due.
+			// It is not evidence that the movie has no matching dates.
+			current.NoDetailCapture++
 		}
 	}
 	knownDates := 0

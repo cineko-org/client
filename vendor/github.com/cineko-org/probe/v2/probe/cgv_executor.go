@@ -29,7 +29,7 @@ type weekdayScheduleBrowser interface {
 }
 
 type weekdayShardScheduleBrowser interface {
-	CaptureScheduleWeekdayShard(context.Context, cgv.ScheduleTheater, []time.Weekday, int) ([]cgv.ScheduleCapture, error)
+	CaptureScheduleWeekdayShard(context.Context, cgv.ScheduleTheater, []time.Weekday, int, ...string) ([]cgv.ScheduleCapture, error)
 }
 
 type catalogBrowser interface {
@@ -176,6 +176,7 @@ func (session *ScheduleSession) CaptureWeekdayShard(
 	task *observationpb.AssignmentTask,
 	weekdayValues []int32,
 	shard int,
+	movieNo ...string,
 ) ([]*observationpb.Capture, error) {
 	weekdays, err := scheduleWeekdays(weekdayValues)
 	if err != nil {
@@ -189,7 +190,7 @@ func (session *ScheduleSession) CaptureWeekdayShard(
 	if session.browser == nil {
 		return nil, errors.New("probe schedule session is closed")
 	}
-	return session.executor.captureScheduleWeekdayShardInBrowser(ctx, task, weekdays, shard, session.browser)
+	return session.executor.captureScheduleWeekdayShardInBrowser(ctx, task, weekdays, shard, session.browser, movieNo...)
 }
 
 func (executor *CGVExecutor) captureScheduleWeekdayShardInBrowser(
@@ -198,6 +199,7 @@ func (executor *CGVExecutor) captureScheduleWeekdayShardInBrowser(
 	weekdays []time.Weekday,
 	shard int,
 	browserSession scheduleBrowser,
+	movieNo ...string,
 ) ([]*observationpb.Capture, error) {
 	if err := validateScheduleTask(task); err != nil {
 		return nil, err
@@ -211,7 +213,7 @@ func (executor *CGVExecutor) captureScheduleWeekdayShardInBrowser(
 	if err != nil {
 		return nil, fmt.Errorf("%w: load assignment time zone: %w", errLocalExecution, err)
 	}
-	values, err := shardBrowser.CaptureScheduleWeekdayShard(ctx, scheduleTheater(schedule.GetTheater()), weekdays, shard)
+	values, err := shardBrowser.CaptureScheduleWeekdayShard(ctx, scheduleTheater(schedule.GetTheater()), weekdays, shard, movieNo...)
 	if err != nil {
 		return nil, fmt.Errorf("capture CGV schedule shard: %w", err)
 	}

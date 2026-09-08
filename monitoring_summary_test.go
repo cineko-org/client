@@ -37,7 +37,7 @@ func TestMonitoringSummaryAttributesOutcomes(t *testing.T) {
 		summary.scanFinished("theater", now, now.Add(time.Second), c.captures, c.err)
 	}
 	s := summary.take(now.Add(5*time.Minute), false).Theaters["theater"]
-	if s.Started != 7 || s.Completed != 7 || s.InFlight != 0 || s.Succeeded != 2 || s.Partial != 1 || s.Failed != 2 || s.Canceled != 1 || s.Throttled != 1 || s.NoDates != 1 || s.UnknownDateFailures != 1 || s.DurationMS != 7000 {
+	if s.Started != 7 || s.Completed != 7 || s.InFlight != 0 || s.Succeeded != 2 || s.Partial != 1 || s.Failed != 2 || s.Canceled != 1 || s.Throttled != 1 || s.NoDetailCapture != 1 || s.UnknownDateFailures != 1 || s.DurationMS != 7000 {
 		t.Fatalf("counts=%+v", s)
 	}
 	if s.Dates["2026-09-11"] != (dateScanSummary{Succeeded: 1, Failed: 1, Partial: 1}) {
