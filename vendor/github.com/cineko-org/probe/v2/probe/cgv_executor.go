@@ -28,8 +28,8 @@ type weekdayScheduleBrowser interface {
 	CaptureSchedulesForWeekdays(context.Context, cgv.ScheduleTheater, []time.Weekday) ([]cgv.ScheduleCapture, error)
 }
 
-type weekdayCycleScheduleBrowser interface {
-	CaptureScheduleWeekdayCycle(context.Context, cgv.ScheduleTheater, []time.Weekday, cgv.ScheduleCycle) error
+type weekdayShardScheduleBrowser interface {
+	CaptureScheduleWeekdayShard(context.Context, cgv.ScheduleTheater, []time.Weekday, int) ([]cgv.ScheduleCapture, error)
 }
 
 type catalogBrowser interface {
@@ -171,19 +171,11 @@ func (session *ScheduleSession) CaptureWeekdays(
 	return session.capture(ctx, task, weekdays)
 }
 
-// ScheduleCycle publishes complete or partial day observations immediately;
-// returned captures also retain completed work if a later request is throttled.
-type ScheduleCycle struct {
-	Window  time.Duration
-	MovieNo string
-	Publish func(*observationpb.Capture) error
-}
-
-func (session *ScheduleSession) CaptureWeekdayCycle(
+func (session *ScheduleSession) CaptureWeekdayShard(
 	ctx context.Context,
 	task *observationpb.AssignmentTask,
 	weekdayValues []int32,
-	cycle ScheduleCycle,
+	shard int,
 ) ([]*observationpb.Capture, error) {
 	weekdays, err := scheduleWeekdays(weekdayValues)
 	if err != nil {
@@ -197,48 +189,39 @@ func (session *ScheduleSession) CaptureWeekdayCycle(
 	if session.browser == nil {
 		return nil, errors.New("probe schedule session is closed")
 	}
-	return session.executor.captureScheduleWeekdayCycleInBrowser(ctx, task, weekdays, session.browser, cycle)
+	return session.executor.captureScheduleWeekdayShardInBrowser(ctx, task, weekdays, shard, session.browser)
 }
 
-func (executor *CGVExecutor) captureScheduleWeekdayCycleInBrowser(
+func (executor *CGVExecutor) captureScheduleWeekdayShardInBrowser(
 	ctx context.Context,
 	task *observationpb.AssignmentTask,
 	weekdays []time.Weekday,
+	shard int,
 	browserSession scheduleBrowser,
-	cycle ScheduleCycle,
 ) ([]*observationpb.Capture, error) {
 	if err := validateScheduleTask(task); err != nil {
 		return nil, err
 	}
-	cycleBrowser, supported := browserSession.(weekdayCycleScheduleBrowser)
+	shardBrowser, supported := browserSession.(weekdayShardScheduleBrowser)
 	if !supported {
-		return nil, errors.New("schedule browser does not support full cycles")
-	}
-	if cycle.Publish == nil {
-		return nil, errors.New("schedule cycle publisher missing")
+		return executor.captureSchedulesInBrowser(ctx, task, weekdays, browserSession)
 	}
 	schedule := task.GetSchedule()
 	location, err := time.LoadLocation(schedule.GetTimeZone())
 	if err != nil {
 		return nil, fmt.Errorf("%w: load assignment time zone: %w", errLocalExecution, err)
 	}
-	var result []*observationpb.Capture
-	err = cycleBrowser.CaptureScheduleWeekdayCycle(ctx, scheduleTheater(schedule.GetTheater()), weekdays, cgv.ScheduleCycle{
-		Window: cycle.Window, MovieNo: cycle.MovieNo,
-		Publish: func(value cgv.ScheduleCapture) error {
-			capture, err := executor.convertCapture(value, location)
-			if err != nil {
-				return err
-			}
-			if err := cycle.Publish(capture); err != nil {
-				return err
-			}
-			result = append(result, capture)
-			return nil
-		},
-	})
+	values, err := shardBrowser.CaptureScheduleWeekdayShard(ctx, scheduleTheater(schedule.GetTheater()), weekdays, shard)
 	if err != nil {
-		return result, fmt.Errorf("capture CGV schedule cycle: %w", err)
+		return nil, fmt.Errorf("capture CGV schedule shard: %w", err)
+	}
+	result := make([]*observationpb.Capture, 0, len(values))
+	for _, value := range values {
+		capture, err := executor.convertCapture(value, location)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, capture)
 	}
 	return result, nil
 }
