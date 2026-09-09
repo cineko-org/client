@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.10](https://github.com/cineko-org/client/compare/v2.8.9...v2.8.10) (2026-09-09)
+
+
+### Bug Fixes
+
+* keep booking windows inactive and share query failure backoff ([#61](https://github.com/cineko-org/client/issues/61)) ([0297d71](https://github.com/cineko-org/client/commit/0297d71287d4d401c6749edf3661f4ab52f61324))
+
 ## [2.8.9](https://github.com/cineko-org/client/compare/v2.8.8...v2.8.9) (2026-09-09)
 
 
