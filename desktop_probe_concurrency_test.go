@@ -8,6 +8,17 @@ import (
 	"github.com/cineko-org/client/internal/interfaces/webui"
 )
 
+func TestScheduleCycleDoesNotReplayMissedTicks(t *testing.T) {
+	for _, test := range []struct{ elapsed, want time.Duration }{
+		{0, 30 * time.Second}, {24 * time.Second, 6 * time.Second},
+		{30 * time.Second, 30 * time.Second}, {time.Hour, 30 * time.Second},
+	} {
+		if got := nextScheduleCycleDelay(test.elapsed); got != test.want {
+			t.Fatalf("elapsed %v: got %v, want %v", test.elapsed, got, test.want)
+		}
+	}
+}
+
 func TestEmbeddedProbeKeepsScanningWhileBookingOpens(t *testing.T) {
 	t.Parallel()
 	embedded := &embeddedProbe{}

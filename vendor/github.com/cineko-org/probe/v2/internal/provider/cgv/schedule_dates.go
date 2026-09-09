@@ -30,7 +30,7 @@ func scheduleInventoryPath(siteNo, movieNo string) (string, error) {
 }
 
 // Use CGV's cinema date-inventory request on the existing scan slot: one
-// inventory plus at most one date-detail request, with no reload or fan-out.
+// inventory shared by all matching date-detail requests, with no page reload.
 func (adapter *Adapter) requestScheduleDatesFromPage(siteNo string, movieNo ...string) ([]string, error) {
 	if len(movieNo) > 1 {
 		return nil, fmt.Errorf("%w: expected at most one schedule movie", ErrIdentityMismatch)

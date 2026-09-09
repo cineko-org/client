@@ -21,14 +21,14 @@ func TestNormalEmptySchedulesDoNotFloodWarnings(t *testing.T) {
 	disableDebug := logging.SetDebug(false)
 	defer disableDebug()
 	for range 1595 {
-		logScheduleCaptureHealth(context.Background(), "yongsan", 1, 1, 0, 0, []int32{5, 6, 0}, nil)
+		logScheduleCaptureHealth(context.Background(), "yongsan", 1, 1, 0, 0, []int32{5, 6, 0})
 	}
 	if output.Len() != 0 {
 		t.Fatalf("normal empties produced logs: %s", output.String())
 	}
 	t.Log("same 1595 complete empty captures: previous WARN=1595, current WARN=0")
-	logScheduleCaptureHealth(context.Background(), "yongsan", 1, 0, 0, 0, []int32{5}, nil)
-	logScheduleCaptureHealth(context.Background(), "yongsan", 1, 1, 3, 0, []int32{5}, nil)
+	logScheduleCaptureHealth(context.Background(), "yongsan", 1, 0, 0, 0, []int32{5})
+	logScheduleCaptureHealth(context.Background(), "yongsan", 1, 1, 3, 0, []int32{5})
 	if strings.Count(output.String(), `"level":"WARN"`) != 2 {
 		t.Fatalf("unexpected captures not reported: %s", output.String())
 	}

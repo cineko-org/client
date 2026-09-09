@@ -140,22 +140,20 @@ func (scanner *LocalScanner) CaptureScheduleWeekdays(
 	return scanner.captureSchedules(ctx, theater, weekdays, nil)
 }
 
-func (scanner *LocalScanner) CaptureScheduleWeekdayShard(
+func (scanner *LocalScanner) CaptureScheduleWeekdayCycle(
 	ctx context.Context,
 	theater *catalogpb.Theater,
 	weekdays []int32,
-	shard int,
-	movieNo ...string,
+	cycle ScheduleCycle,
 ) ([]*observationpb.Capture, error) {
-	return scanner.captureSchedules(ctx, theater, weekdays, &shard, movieNo...)
+	return scanner.captureSchedules(ctx, theater, weekdays, &cycle)
 }
 
 func (scanner *LocalScanner) captureSchedules(
 	ctx context.Context,
 	theater *catalogpb.Theater,
 	weekdays []int32,
-	shard *int,
-	movieNo ...string,
+	cycle *ScheduleCycle,
 ) ([]*observationpb.Capture, error) {
 	if scanner == nil || scanner.executor == nil {
 		return nil, errors.New("local scanner is closed")
@@ -185,8 +183,8 @@ func (scanner *LocalScanner) captureSchedules(
 		err      error
 	)
 	switch {
-	case len(weekdays) > 0 && shard != nil:
-		captures, err = scanner.scheduleSession.CaptureWeekdayShard(ctx, task, weekdays, *shard, movieNo...)
+	case cycle != nil:
+		captures, err = scanner.scheduleSession.CaptureWeekdayCycle(ctx, task, weekdays, *cycle)
 	case len(weekdays) > 0:
 		captures, err = scanner.scheduleSession.CaptureWeekdays(ctx, task, weekdays)
 	default:
@@ -203,7 +201,7 @@ func (scanner *LocalScanner) captureSchedules(
 			"operation", "capture_theater_schedule",
 			"outcome", outcome,
 			"browser_reused", reused,
-			"date_sharded", shard != nil,
+			"full_date_cycle", cycle != nil,
 			"duration_ms", time.Since(startedAt).Milliseconds(),
 		)
 	}

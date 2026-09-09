@@ -1,7 +1,9 @@
 package cgv
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"sync"
@@ -88,6 +90,8 @@ func testScheduleInventoryBrowserRequestBudget(t *testing.T, movieNo string) {
 	var requests []string
 	body := `{"statusCode":0,"data":[{"scnYmd":"20260911"},{"scnYmd":"20260912"},{"scnYmd":"20260913"}]}`
 	status := 200
+	rounds := 1
+	detailStatus := 200
 	if err := adapter.page.Route("**/*", func(route playwright.Route) {
 		parsed, parseErr := url.Parse(route.Request().URL())
 		if parseErr != nil {
@@ -98,6 +102,7 @@ func testScheduleInventoryBrowserRequestBudget(t *testing.T, movieNo string) {
 		mu.Lock()
 		requests = append(requests, parsed.RequestURI())
 		responseBody, responseStatus := body, status
+		responseRounds, responseDetailStatus := rounds, detailStatus
 		mu.Unlock()
 		options := playwright.RouteFulfillOptions{Status: playwright.Int(200), ContentType: playwright.String("application/json")}
 		switch parsed.Path {
@@ -120,7 +125,11 @@ func testScheduleInventoryBrowserRequestBudget(t *testing.T, movieNo string) {
 			if parsed.Query().Has("movNo") || parsed.Query().Has("attrCd") {
 				t.Error("complete detail request was filtered", parsed.RequestURI())
 			}
-			options.Body = `{"statusCode":0,"data":[]}`
+			options.Body = cycleScheduleFixture(parsed.Query().Get("scnYmd"), responseRounds)
+			options.Status = playwright.Int(responseDetailStatus)
+			if responseDetailStatus == 429 {
+				options.Headers = map[string]string{"Retry-After": "60"}
+			}
 		default:
 			t.Errorf("unexpected request: %s", parsed.RequestURI())
 			_ = route.Abort()
@@ -137,45 +146,80 @@ func testScheduleInventoryBrowserRequestBudget(t *testing.T, movieNo string) {
 	}
 	adapter.selectedRegion, adapter.selectedTheater = "서울", "용산"
 	adapter.selectedTheaterAt = time.Now().Add(-6 * time.Minute)
-	theater := ScheduleTheater{ID: "yongsan", SourceKey: "0013", Region: "서울", Name: "용산"}
+	theater := ScheduleTheater{ID: CatalogID(ProviderCGV, "theater", "0013"), ProviderID: ProviderCGV, SourceKey: "0013", Region: "서울", Name: "용산"}
 	weekdays := []time.Weekday{time.Friday, time.Saturday, time.Sunday}
+	var captures []ScheduleCapture
+	cycle := ScheduleCycle{MovieNo: movieNo, Publish: func(capture ScheduleCapture) error {
+		captures = append(captures, capture)
+		return nil
+	}}
 	for slot := range 4 {
 		if slot == 3 {
 			mu.Lock()
 			body = `{"statusCode":0,"data":[{"scnYmd":"20260911"},{"scnYmd":"20260912"},{"scnYmd":"20260913"},{"scnYmd":"20260918"}]}`
 			mu.Unlock()
 		}
-		captures, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, slot, movieNo)
-		if err != nil || len(captures) != 1 || !captures[0].Complete {
+		captures = nil
+		err := adapter.CaptureScheduleWeekdayCycle(t.Context(), theater, weekdays, cycle)
+		want := 3
+		if slot == 3 {
+			want = 4
+		}
+		if err != nil || len(captures) != want || !captures[0].Complete {
 			t.Fatalf("slot %d: %+v, %v", slot, captures, err)
 		}
-		if slot == 3 && captures[0].TargetDate != "2026-09-18" {
+		if slot == 3 && captures[3].TargetDate != "2026-09-18" {
 			t.Fatal("new inventory date was not checked in the same slot")
 		}
 	}
 	mu.Lock()
 	count := len(requests)
 	mu.Unlock()
-	if count != 9 {
-		t.Fatalf("four slots: got %d requests, want 1 bootstrap + 4 inventory + 4 detail", count)
+	if count != 18 {
+		t.Fatalf("four cycles: got %d requests, want 1 bootstrap + 4 inventory + 13 detail", count)
 	}
-	if movieNo != "" {
-		captures, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 4, movieNo)
-		if err != nil || len(captures) != 0 {
-			t.Fatal("unchanged movie inventory triggered an early detail", captures, err)
+	mu.Lock()
+	rounds = 2
+	mu.Unlock()
+	captures = nil
+	if err := adapter.CaptureScheduleWeekdayCycle(t.Context(), theater, weekdays, cycle); err != nil || len(captures) != 4 {
+		t.Fatal("unchanged inventory must still inspect every date", captures, err)
+	}
+	for _, capture := range captures {
+		if len(capture.Showtimes) != 2 {
+			t.Fatal("same-date new round was not delivered with unchanged calendar", capture)
 		}
-		mu.Lock()
-		count = len(requests)
-		mu.Unlock()
-		if count != 10 {
-			t.Fatalf("inventory-only round: got %d requests, want 10 total", count)
-		}
+	}
+	mu.Lock()
+	count = len(requests)
+	mu.Unlock()
+	if count != 23 {
+		t.Fatalf("unchanged inventory: got %d requests, want 23 total", count)
+	}
+	// Publication happens before the next date request. Cancellation during
+	// publication must stop the rest of the cycle, including pacing waits.
+	mu.Lock()
+	requests = nil
+	mu.Unlock()
+	cancelCtx, cancel := context.WithCancel(t.Context())
+	cancelCycle := cycle
+	cancelCycle.Window = 50 * time.Millisecond
+	cancelCycle.Publish = func(capture ScheduleCapture) error { cancel(); return nil }
+	if err := adapter.CaptureScheduleWeekdayCycle(cancelCtx, theater, weekdays, cancelCycle); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled cycle continued", err)
+	}
+	mu.Lock()
+	count = len(requests)
+	mu.Unlock()
+	if count != 2 {
+		t.Fatalf("cancel after first date: %d requests, want calendar + first date", count)
 	}
 	mu.Lock()
 	requests = nil
 	body = `{"statusCode":0,"data":[]}`
 	mu.Unlock()
-	captures, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 5, movieNo)
+	captures = nil
+	err = adapter.CaptureScheduleWeekdayCycle(t.Context(), theater, weekdays, cycle)
 	if err != nil || len(captures) != 0 {
 		t.Fatal(captures, err)
 	}
@@ -186,21 +230,59 @@ func testScheduleInventoryBrowserRequestBudget(t *testing.T, movieNo string) {
 	if count != 1 {
 		t.Fatalf("empty inventory triggered extra requests: %d", count)
 	}
-	if _, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 6, movieNo); !errors.Is(err, ErrProviderThrottled) {
+	// Stop inside details too: a successful first date must be delivered
+	// before the second date's 429, and no remaining dates may be requested.
+	mu.Lock()
+	status = 200
+	body = `{"statusCode":0,"data":[{"scnYmd":"20260911"},{"scnYmd":"20260912"},{"scnYmd":"20260913"}]}`
+	requests = nil
+	mu.Unlock()
+	throttleCycle := cycle
+	published := 0
+	throttleCycle.Publish = func(capture ScheduleCapture) error {
+		published++
+		mu.Lock()
+		detailStatus = 429
+		mu.Unlock()
+		return nil
+	}
+	if err := adapter.CaptureScheduleWeekdayCycle(t.Context(), theater, weekdays, throttleCycle); !errors.Is(err, ErrProviderThrottled) {
+		t.Fatal("detail 429 did not stop cycle", err)
+	}
+	mu.Lock()
+	count = len(requests)
+	status = 429
+	requests = nil
+	mu.Unlock()
+	if published != 1 || count != 3 {
+		t.Fatalf("detail throttle: %d published, %d requests", published, count)
+	}
+	if err := adapter.CaptureScheduleWeekdayCycle(t.Context(), theater, weekdays, cycle); !errors.Is(err, ErrProviderThrottled) {
 		t.Fatalf("429: %v", err)
 	}
 	for range 3 {
-		if _, err := adapter.CaptureScheduleWeekdayShard(t.Context(), theater, weekdays, 7, movieNo); !errors.Is(err, ErrProviderThrottled) {
+		if err := adapter.CaptureScheduleWeekdayCycle(t.Context(), theater, weekdays, cycle); !errors.Is(err, ErrProviderThrottled) {
 			t.Fatalf("cooldown: %v", err)
 		}
 	}
 	mu.Lock()
 	count = len(requests)
 	mu.Unlock()
-	if count != 2 {
+	if count != 0 {
 		t.Fatalf("429 must stop details and later requests, got %d", count)
 	}
-	t.Log("4 scan slots: 4 inventories + 4 details, 0 reloads despite expired DOM age; empty inventory: 1 request; 429 + 3 retries: 1 request total")
+	t.Log("4 cycles: 4 inventories + 13 details; unchanged calendar: added rounds on all 4 dates delivered; detail 429: stops after 1 published date, later attempts send 0 requests")
+}
+
+func cycleScheduleFixture(date string, rounds int) string {
+	rows := ""
+	for round := range rounds {
+		if round > 0 {
+			rows += ","
+		}
+		rows += fmt.Sprintf(`{"siteNo":"0013","siteNm":"용산","movNo":"30001323","movNm":"오디세이","scnsNo":"001","scnsNm":"IMAX관","scnYmd":%q,"scnSseq":%q,"scnsrtTm":%q,"scnendTm":%q,"frSeatCnt":"100","stcnt":"200"}`, date, fmt.Sprint(round+1), fmt.Sprintf("%02d00", 10+round*3), fmt.Sprintf("%02d00", 12+round*3))
+	}
+	return `{"statusCode":0,"data":[` + rows + `]}`
 }
 
 func TestNewInventoryDateWinsSameScanSlot(t *testing.T) {

@@ -20,6 +20,17 @@ func summaryCapture(complete bool) *observationpb.Capture {
 	return observationpb.Capture_builder{Complete: &complete, TargetDate: commonpb.LocalDate_builder{Year: proto.Int32(2026), Month: proto.Int32(9), Day: proto.Int32(11)}.Build()}.Build()
 }
 
+func TestMonitoringSummaryKeepsPublishedDatesAfterThrottle(t *testing.T) {
+	now := time.Now()
+	summary := newMonitoringSummary(now)
+	summary.scanStarted("theater", now)
+	summary.scanFinished("theater", now, now.Add(time.Second), []*observationpb.Capture{summaryCapture(true)}, probe.ErrProviderThrottled, true)
+	s := summary.take(now.Add(time.Minute), false).Theaters["theater"]
+	if s.Throttled != 1 || s.Succeeded != 0 || s.Dates["2026-09-11"].Succeeded != 1 {
+		t.Fatalf("published date and interrupted cycle conflated: %+v", s)
+	}
+}
+
 func TestMonitoringSummaryAttributesOutcomes(t *testing.T) {
 	now := time.Now()
 	summary := newMonitoringSummary(now)
@@ -34,7 +45,7 @@ func TestMonitoringSummaryAttributesOutcomes(t *testing.T) {
 	}
 	for _, c := range cases {
 		summary.scanStarted("theater", now)
-		summary.scanFinished("theater", now, now.Add(time.Second), c.captures, c.err)
+		summary.scanFinished("theater", now, now.Add(time.Second), c.captures, c.err, false)
 	}
 	s := summary.take(now.Add(5*time.Minute), false).Theaters["theater"]
 	if s.Started != 7 || s.Completed != 7 || s.InFlight != 0 || s.Succeeded != 2 || s.Partial != 1 || s.Failed != 2 || s.Canceled != 1 || s.Throttled != 1 || s.NoDetailCapture != 1 || s.UnknownDateFailures != 1 || s.DurationMS != 7000 {
@@ -54,7 +65,7 @@ func TestMonitoringSummaryWindowCarryAndHeartbeat(t *testing.T) {
 	summary.inventory([]string{"monitor"}, now)
 	summary.scanStarted("theater", now)
 	first := summary.take(now.Add(time.Minute), false)
-	summary.scanFinished("theater", now, now.Add(2*time.Minute), nil, nil)
+	summary.scanFinished("theater", now, now.Add(2*time.Minute), nil, nil, false)
 	second := summary.take(now.Add(5*time.Minute), false)
 	if first.Theaters["theater"].InFlight != 1 || second.Theaters["theater"].InFlight != 0 || second.Theaters["theater"].Started != 0 || second.Theaters["theater"].Completed != 1 {
 		t.Fatal("cross-window capture lost")
@@ -90,7 +101,10 @@ func TestMonitoringSummaryConcurrentAggregationAndInfoFlush(t *testing.T) {
 	summary := newMonitoringSummary(now)
 	var wg sync.WaitGroup
 	for range 600 {
-		wg.Go(func() { summary.scanStarted("theater", now); summary.scanFinished("theater", now, now, nil, nil) })
+		wg.Go(func() {
+			summary.scanStarted("theater", now)
+			summary.scanFinished("theater", now, now, nil, nil, false)
+		})
 	}
 	wg.Wait()
 	stop := summary.start(time.Hour)

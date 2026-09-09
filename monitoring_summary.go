@@ -82,8 +82,8 @@ func (summary *monitoringSummary) scanStarted(theaterID string, now time.Time) {
 
 // Results describe completed capture-and-storage work, not HTTP requests.
 // If the scanner returned no target date on error, never invent one from the
-// weekday/shard inputs; retain that failure explicitly as unattributed.
-func (summary *monitoringSummary) scanFinished(theaterID string, started, now time.Time, captures []*observationpb.Capture, err error) {
+// weekday inputs; retain that failure explicitly as unattributed.
+func (summary *monitoringSummary) scanFinished(theaterID string, started, now time.Time, captures []*observationpb.Capture, err error, published bool) {
 	if summary == nil {
 		return
 	}
@@ -94,16 +94,12 @@ func (summary *monitoringSummary) scanFinished(theaterID string, started, now ti
 	current.Completed++
 	current.DurationMS += now.Sub(started).Milliseconds()
 	current.LastCompletedAt = now.Format(time.RFC3339Nano)
-	if errors.Is(err, context.Canceled) {
-		current.Canceled++
-		return
-	}
-	if errors.Is(err, probe.ErrProviderThrottled) {
-		current.Throttled++
-		return
-	}
 	complete, _, _ := scheduleCaptureCounts(captures)
 	switch {
+	case errors.Is(err, context.Canceled):
+		current.Canceled++
+	case errors.Is(err, probe.ErrProviderThrottled):
+		current.Throttled++
 	case err != nil:
 		current.Failed++
 	case complete != len(captures):
@@ -112,11 +108,21 @@ func (summary *monitoringSummary) scanFinished(theaterID string, started, now ti
 		current.Succeeded++
 		current.LastSuccessAt = current.LastCompletedAt
 		if len(captures) == 0 {
-			// This includes unchanged-calendar rounds with no detail due.
-			// It is not evidence that the movie has no matching dates.
+			// No detail observation was produced by this round.
 			current.NoDetailCapture++
 		}
 	}
+	if published && len(captures) > 0 {
+		// Streamed dates have already been stored successfully. A later date's
+		// throttle/cancel must not erase that evidence or relabel it as failure.
+		err = nil
+	} else if errors.Is(err, context.Canceled) || errors.Is(err, probe.ErrProviderThrottled) {
+		return
+	}
+	current.recordDateResults(captures, err)
+}
+
+func (current *theaterScanSummary) recordDateResults(captures []*observationpb.Capture, err error) {
 	knownDates := 0
 	for _, capture := range captures {
 		date := capture.GetTargetDate()
