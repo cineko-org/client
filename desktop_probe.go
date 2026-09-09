@@ -64,7 +64,6 @@ type embeddedProbe struct {
 	scanCancel         context.CancelFunc
 	shutdownOnce       sync.Once
 	shutdownErr        error
-	scheduleCursor     map[string]int
 	catalogRefreshPath string
 	clock              func() time.Time
 	monitorScanMu      sync.Mutex
@@ -98,7 +97,6 @@ func startEmbeddedProbe(
 		summary:    summary,
 		scanner:    scanner, store: store, scheduleChanged: scheduleChanged, cancel: cancel,
 		done: make(chan struct{}), failure: make(chan error, 1),
-		scheduleCursor:     make(map[string]int),
 		catalogRefreshPath: filepath.Join(dataDir, "scanner", catalogRefreshMarker),
 		clock:              time.Now,
 	}
@@ -129,8 +127,8 @@ func (embedded *embeddedProbe) run(ctx context.Context) {
 	}()
 	catalogTimer := time.NewTimer(embedded.initialCatalogDelay(ctx))
 	defer catalogTimer.Stop()
-	scheduleTicker := time.NewTicker(localScheduleInterval)
-	defer scheduleTicker.Stop()
+	scheduleTimer := time.NewTimer(localScheduleInterval)
+	defer scheduleTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -150,14 +148,25 @@ func (embedded *embeddedProbe) run(ctx context.Context) {
 					embedded.bootstrapYongsan(ctx)
 				}
 			}
-		case <-scheduleTicker.C:
+		case <-scheduleTimer.C:
+			started := time.Now()
 			embedded.captureActiveSchedules(ctx)
+			resetTimer(scheduleTimer, nextScheduleCycleDelay(time.Since(started)))
 		case theaterID := <-embedded.store.ScheduleRequests():
 			embedded.captureTheaterSchedules(ctx, theaterID)
 		case auditoriumID := <-embedded.store.SeatMapRequests():
 			embedded.captureSeatMap(ctx, auditoriumID)
 		}
 	}
+}
+
+// Keep the start-to-start target without replaying missed cycles after slow
+// responses, catalog work, machine sleep, or a provider cooldown.
+func nextScheduleCycleDelay(elapsed time.Duration) time.Duration {
+	if elapsed < 0 || elapsed >= localScheduleInterval {
+		return localScheduleInterval
+	}
+	return localScheduleInterval - elapsed
 }
 
 func (embedded *embeddedProbe) initialCatalogDelay(ctx context.Context) time.Duration {
@@ -357,6 +366,7 @@ func (embedded *embeddedProbe) captureActiveSchedules(ctx context.Context) {
 }
 
 func (embedded *embeddedProbe) captureScheduleTargets(ctx context.Context, targets map[string]*scheduleScanTarget) {
+	started := time.Now()
 	theaterIDs := make([]string, 0, len(targets))
 	for theaterID := range targets {
 		theaterIDs = append(theaterIDs, theaterID)
@@ -372,9 +382,13 @@ func (embedded *embeddedProbe) captureScheduleTargets(ctx context.Context, targe
 			weekdays = append(weekdays, weekday)
 		}
 		sort.Slice(weekdays, func(i, j int) bool { return weekdays[i] < weekdays[j] })
-		shard := embedded.scheduleCursor[theaterID]
-		embedded.captureTheaterSchedulesFor(ctx, theaterID, weekdays, &shard, singleScheduleMovie(target.movies))
-		embedded.scheduleCursor[theaterID] = shard + 1
+		cycle := &probe.ScheduleCycle{Window: localScheduleInterval / time.Duration(len(targets)), MovieNo: singleScheduleMovie(target.movies)}
+		embedded.captureTheaterSchedulesFor(ctx, theaterID, weekdays, cycle)
+	}
+	if ctx.Err() == nil && time.Since(started) > localScheduleInterval {
+		logging.WarnUnexpected(ctx, "scanner.schedule.cycle.overdue", "schedule_collection", "capture_schedule_cycle",
+			"all target dates checked within 30 seconds", "cycle exceeded target duration",
+			"duration_ms", time.Since(started).Milliseconds(), "theater_count", len(targets))
 	}
 }
 
@@ -436,21 +450,27 @@ func (embedded *embeddedProbe) captureTheaterSchedules(ctx context.Context, thea
 	embedded.captureTheaterSchedulesFor(ctx, theaterID, nil, nil)
 }
 
-func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, theaterID string, weekdays []int32, shard *int, movieNo ...string) {
+func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, theaterID string, weekdays []int32, cycle *probe.ScheduleCycle) {
 	startedAt := time.Now()
 	embedded.summary.scanStarted(theaterID, startedAt)
 	var captures []*observationpb.Capture
 	theater, err := embedded.store.GetTheater(ctx, theaterID)
-	defer func() { embedded.summary.scanFinished(theaterID, startedAt, time.Now(), captures, err) }()
+	defer func() { embedded.summary.scanFinished(theaterID, startedAt, time.Now(), captures, err, cycle != nil) }()
 	if err != nil {
 		embedded.logFailure(ctx, "schedule-theater", err)
 		return
 	}
 	err = embedded.withScan(ctx, func(scanContext context.Context) error {
+		if cycle != nil {
+			cycle.Publish = func(capture *observationpb.Capture) error {
+				return embedded.publishScheduleCaptures(scanContext, theater, weekdays, []*observationpb.Capture{capture}, startedAt)
+			}
+			var captureErr error
+			captures, captureErr = embedded.scanner.CaptureScheduleWeekdayCycle(scanContext, theater, weekdays, *cycle)
+			return captureErr
+		}
 		var captureErr error
 		switch {
-		case len(weekdays) > 0 && shard != nil:
-			captures, captureErr = embedded.scanner.CaptureScheduleWeekdayShard(scanContext, theater, weekdays, *shard, movieNo...)
 		case len(weekdays) > 0:
 			captures, captureErr = embedded.scanner.CaptureScheduleWeekdays(scanContext, theater, weekdays)
 		default:
@@ -459,37 +479,41 @@ func (embedded *embeddedProbe) captureTheaterSchedulesFor(ctx context.Context, t
 		if captureErr != nil {
 			return captureErr
 		}
-		if len(captures) == 0 {
-			// Inventory-only rounds are not changed schedule observations.
-			return nil
-		}
-		complete, showtimes, auditoriums := scheduleCaptureCounts(captures)
-		dates := make([]string, 0, len(captures))
-		for _, capture := range captures {
-			if date := capture.GetTargetDate(); date != nil {
-				dates = append(dates, fmt.Sprintf("%04d-%02d-%02d", date.GetYear(), date.GetMonth(), date.GetDay()))
-			}
-		}
-		logScheduleCaptureHealth(scanContext, theater.GetId(), len(captures), complete, showtimes, auditoriums, weekdays, shard, dates...)
-		if err := embedded.store.PutScheduleCaptures(scanContext, theater, captures); err != nil {
-			return err
-		}
-		embedded.notifyScheduleChanged()
-		logging.Debug(scanContext, "scanner.schedule.capture.completed",
-			"event", "scanner.schedule.capture.completed", "scenario", "schedule_collection",
-			"operation", "capture_theater_schedule", "outcome", "succeeded",
-			"theater_id", theater.GetId(), "capture_count", len(captures),
-			"complete_count", complete, "showtime_count", showtimes, "auditorium_count", auditoriums,
-			"target_weekdays", weekdays, "target_dates", dates, "duration_ms", time.Since(startedAt).Milliseconds())
-		return nil
+		return embedded.publishScheduleCaptures(scanContext, theater, weekdays, captures, startedAt)
 	})
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, probe.ErrProviderThrottled) {
 		embedded.logFailure(ctx, "schedule", err)
 	}
 }
 
-func logScheduleCaptureHealth(ctx context.Context, theaterID string, count, complete, showtimes, auditoriums int, weekdays []int32, shard *int, dates ...string) {
-	fields := []any{"theater_id", theaterID, "target_weekdays", weekdays, "shard", shard,
+func (embedded *embeddedProbe) publishScheduleCaptures(scanContext context.Context, theater *catalogpb.Theater, weekdays []int32, captures []*observationpb.Capture, startedAt time.Time) error {
+	if len(captures) == 0 {
+		// Inventory-only rounds are not changed schedule observations.
+		return nil
+	}
+	complete, showtimes, auditoriums := scheduleCaptureCounts(captures)
+	dates := make([]string, 0, len(captures))
+	for _, capture := range captures {
+		if date := capture.GetTargetDate(); date != nil {
+			dates = append(dates, fmt.Sprintf("%04d-%02d-%02d", date.GetYear(), date.GetMonth(), date.GetDay()))
+		}
+	}
+	logScheduleCaptureHealth(scanContext, theater.GetId(), len(captures), complete, showtimes, auditoriums, weekdays, dates...)
+	if err := embedded.store.PutScheduleCaptures(scanContext, theater, captures); err != nil {
+		return err
+	}
+	embedded.notifyScheduleChanged()
+	logging.Debug(scanContext, "scanner.schedule.capture.completed",
+		"event", "scanner.schedule.capture.completed", "scenario", "schedule_collection",
+		"operation", "capture_theater_schedule", "outcome", "succeeded",
+		"theater_id", theater.GetId(), "capture_count", len(captures),
+		"complete_count", complete, "showtime_count", showtimes, "auditorium_count", auditoriums,
+		"target_weekdays", weekdays, "target_dates", dates, "duration_ms", time.Since(startedAt).Milliseconds())
+	return nil
+}
+
+func logScheduleCaptureHealth(ctx context.Context, theaterID string, count, complete, showtimes, auditoriums int, weekdays []int32, dates ...string) {
+	fields := []any{"theater_id", theaterID, "target_weekdays", weekdays,
 		"capture_count", count, "complete_count", complete, "target_dates", dates}
 	if complete != count {
 		logging.WarnUnexpected(ctx, "scanner.schedule.partial", "schedule_collection", "capture_theater_schedule",

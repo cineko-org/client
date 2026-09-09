@@ -114,7 +114,6 @@ type Adapter struct {
 	selectedRegion         string
 	selectedTheater        string
 	selectedTheaterAt      time.Time
-	scheduleDates          map[string]*scheduleDateRotation
 	blockedRequests        atomic.Uint64
 	continuedRequests      atomic.Uint64
 	blockResources         bool
