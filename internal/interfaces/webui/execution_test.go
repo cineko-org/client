@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cineko-org/client/internal/application"
 	"github.com/cineko-org/client/internal/domain"
 	"github.com/cineko-org/client/internal/testsupport/memoryrepo"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
@@ -15,6 +16,22 @@ import (
 	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 )
+
+func TestStoppedMonitorCannotOpenBookingBrowser(t *testing.T) {
+	store := memoryrepo.New()
+	monitor := monitorProtoFixture("preset", "movie", "Movie", []string{"2026-09-11"},
+		clientpb.MonitorState_builder{Stopped: clientpb.MonitorStopped_builder{}.Build()}.Build(), "")
+	if err := store.PutMonitor(t.Context(), resourceFromMonitor(monitor)); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{repository: store, factory: func(context.Context, bool, AutomationPurpose, string) (Automation, error) {
+		t.Fatal("stopped monitor opened a booking browser")
+		return nil, nil
+	}}
+	if err := server.ExecuteAvailability(t.Context(), monitor.GetId(), nil, false); !errors.Is(err, application.ErrSeatUnavailable) {
+		t.Fatalf("stopped execution = %v", err)
+	}
+}
 
 type executionAutomation struct {
 	*webPaymentAutomation

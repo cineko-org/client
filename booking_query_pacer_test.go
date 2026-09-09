@@ -5,9 +5,16 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cineko-org/client/internal/adapters/cgv"
 )
+
+func (p *bookingQueryPacer) wait(ctx context.Context) error {
+	return p.run(ctx, func() error { return nil })
+}
 
 func TestConcurrentSeatQueriesShareOneBudget(t *testing.T) {
 	var pacer bookingQueryPacer
@@ -64,5 +71,56 @@ func TestCanceledQueryDoesNotConsumeFutureSlot(t *testing.T) {
 	}
 	if !pacer.next.Equal(deadline) {
 		t.Fatal("canceled query delayed the next tab")
+	}
+}
+
+func TestSharedCinemaFailureStopsOtherShowtimeQueries(t *testing.T) {
+	for _, cause := range []error{cgv.ErrUIContractChanged, cgv.ErrAuthenticationRequired, cgv.ErrCaptchaRequired} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			// Compare query invocations only: the previous gate paced starts
+			// but did not share failures between different showtime tabs.
+			beforeCalls := 0
+			previousQuery := func() error { beforeCalls++; return cause }
+			for range 21 {
+				_ = previousQuery()
+			}
+			var pacer bookingQueryPacer
+			var calls atomic.Int32
+			var group sync.WaitGroup
+			for range 21 {
+				group.Go(func() {
+					err := pacer.run(t.Context(), func() error { calls.Add(1); return cause })
+					if !errors.Is(err, cause) {
+						t.Errorf("query error = %v", err)
+					}
+				})
+			}
+			group.Wait()
+			t.Logf("21 showtimes, same failing query: independent failure handling=%d calls, shared gate=%d calls (query-count comparison, not a timing benchmark)", beforeCalls, calls.Load())
+			if calls.Load() != 1 {
+				t.Fatalf("broken cinema flow repeated %d times", calls.Load())
+			}
+			if pacer.pauseError() == nil {
+				t.Fatal("browser capacity should be paused")
+			}
+			pacer.mu.Lock()
+			pacer.paused.after = time.Now().Add(-time.Second)
+			pacer.mu.Unlock()
+			pacer.next = time.Now().Add(-time.Second)
+			if err := pacer.run(t.Context(), func() error { calls.Add(1); return cause }); !errors.Is(err, cause) {
+				t.Fatal(err)
+			}
+			if calls.Load() != 2 || time.Until(pacer.paused.after) < 59*time.Second {
+				t.Fatal("shared retry did not back off to 60 seconds")
+			}
+			pacer.paused.after = time.Now().Add(-time.Second)
+			pacer.next = time.Now().Add(-time.Second)
+			if err := pacer.run(t.Context(), func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if pacer.pauseError() != nil || pacer.failures != 0 {
+				t.Fatal("successful recovery did not clear the shared failure")
+			}
+		})
 	}
 }

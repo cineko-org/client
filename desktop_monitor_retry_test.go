@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cineko-org/client/internal/adapters/cgv"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 )
@@ -62,5 +63,22 @@ func TestNewScheduleTransientFailureRetainsIntent(t *testing.T) {
 	runtime.handleResult(t.Context(), localMonitorResult{monitorID: target.monitorID, showtimeID: target.showtime.GetId(), signal: target.signal, execution: execution, err: errors.New("temporary provider failure")})
 	if _, pending := worker.newTargets[key]; !pending {
 		t.Fatal("new schedule lost after transient failure")
+	}
+}
+
+func TestSharedQueryPauseRetainsNewScheduleAndUsesSharedDeadline(t *testing.T) {
+	worker := &desktopMonitorWorker{}
+	target := testLocalMonitorTarget("new-round", time.Now().Add(time.Hour))
+	target.signal = localMonitorSignalNewSchedule
+	execution := &localMonitorExecution{target: target, cancel: func() {}}
+	key := localMonitorTargetKey(target)
+	runtime := &localMonitorRuntime{worker: worker, active: map[string]*localMonitorExecution{key: execution}}
+	paused := &bookingQueryPausedError{after: time.Now().Add(time.Minute), cause: cgv.ErrUIContractChanged}
+	runtime.handleResult(t.Context(), localMonitorResult{monitorID: target.monitorID, showtimeID: target.showtime.GetId(), signal: target.signal, execution: execution, err: paused})
+	if _, pending := worker.newTargets[key]; !pending {
+		t.Fatal("shared pause consumed the new schedule")
+	}
+	if !runtime.retries[key].after.Equal(paused.after) || runtime.retries[key].failures != 0 {
+		t.Fatal("queued round created a separate failure/backoff")
 	}
 }

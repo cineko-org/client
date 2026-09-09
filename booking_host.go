@@ -54,13 +54,20 @@ func (host *bookingAutomationHost) Open(ctx context.Context) (webui.Automation, 
 		return nil, errors.New("booking browser host dependencies are incomplete")
 	}
 	return host.probe.OpenBooking(func() (webui.Automation, error) {
+		if err := host.queryPacer.pauseError(); err != nil {
+			return nil, err
+		}
 		parent, err := host.acquireParent(ctx)
 		if err != nil {
 			return nil, err
 		}
 		tab, err := parent.OpenTab(ctx)
 		if err != nil {
-			host.invalidate(parent)
+			// Canceling one queued tab must not recycle the shared browser and
+			// interrupt other watchers (or a tab being handed off for payment).
+			if ctx.Err() == nil {
+				host.invalidate(parent)
+			}
 			return nil, err
 		}
 		automation := &bookingTabAutomation{Adapter: tab, host: host, parent: parent}
@@ -151,7 +158,7 @@ func (host *bookingAutomationHost) CanAccept() bool {
 	unavailable := host.closed || host.winner != nil
 	available := host.parent != nil || host.opening != nil
 	host.mu.Unlock()
-	if unavailable {
+	if unavailable || host.queryPacer.pauseError() != nil {
 		return false
 	}
 	if available {
