@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.9](https://github.com/cineko-org/client/compare/v2.8.8...v2.8.9) (2026-09-09)
+
+
+### Bug Fixes
+
+* check every matching date in each monitoring cycle ([#59](https://github.com/cineko-org/client/issues/59)) ([c464abb](https://github.com/cineko-org/client/commit/c464abbc8bca1db5f0c09815fad0653b2392b770))
+
 ## [2.8.8](https://github.com/cineko-org/client/compare/v2.8.7...v2.8.8) (2026-09-08)
 
 
