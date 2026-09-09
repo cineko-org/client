@@ -92,4 +92,5 @@ behavior-contract-check:
 	bash scripts/verify-behavior-contract.sh
 
 check: lint security coverage test frontend-check workflow-check contract-check behavior-contract-check
+	node --test internal/adapters/cgv/browser_window_control.test.cjs
 	node --check internal/interfaces/webui/assets/app.js

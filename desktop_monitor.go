@@ -149,6 +149,18 @@ func (runtime *localMonitorRuntime) handleResult(ctx context.Context, result loc
 	if errors.Is(result.err, context.Canceled) {
 		logMonitorCancellation(result.execution.target, "execution_context_canceled")
 	} else {
+		var paused *bookingQueryPausedError
+		if errors.As(result.err, &paused) {
+			if runtime.retries == nil {
+				runtime.retries = make(map[string]localMonitorRetry)
+			}
+			runtime.retries[key] = localMonitorRetry{after: paused.after}
+			if result.signal == localMonitorSignalNewSchedule {
+				runtime.worker.ensureTargetState()
+				runtime.worker.newTargets[key] = time.Now()
+			}
+			return // The shared failure is already logged once by the query gate.
+		}
 		logLocalMonitorFailure(ctx, result)
 		if !result.execution.target.watchCancellations &&
 			(errors.Is(result.err, application.ErrSeatUnavailable) || errors.Is(result.err, application.ErrBookingNotOpen)) {

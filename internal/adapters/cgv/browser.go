@@ -113,6 +113,7 @@ type Adapter struct {
 	windowVisibilityMu    sync.Mutex
 	backgroundHide        coalescedWindowWork
 	tabCreation           tabCreationGate
+	windowControl         *bookingWindowControl
 	windowPresentationErr error // protected by root windowVisibilityMu
 	closeHooks            []func()
 	closed                bool
@@ -334,7 +335,7 @@ func newAdapter(
 		cancelContext()
 		return nil, err
 	}
-	page, err := onlyBrowserPage(browserContext)
+	page, err := initialBrowserPage(browserContext, usesWindowControl(config))
 	if err != nil {
 		_ = browserContext.Close()
 		cancelContext()
@@ -390,6 +391,10 @@ func newAdapter(
 		return nil, err
 	}
 	if config.StartMinimized && !config.Headless {
+		if err := adapter.initializeWindowControl(); err != nil {
+			adapter.Close()
+			return nil, err
+		}
 		if err := adapter.minimizeBrowserWindow(); err != nil {
 			adapter.Close()
 			return nil, fmt.Errorf("minimize background booking browser: %w", err)
@@ -407,6 +412,9 @@ func launchBrowserContext(
 	config BrowserConfig,
 	options playwright.BrowserTypeLaunchPersistentContextOptions,
 ) (playwright.BrowserContext, error) {
+	if err := prepareWindowControl(config); err != nil {
+		return nil, fmt.Errorf("prepare booking window controller: %w", err)
+	}
 	browserContext, err := pw.Chromium.LaunchPersistentContext(config.ProfileDir, options)
 	if err != nil {
 		return nil, fmt.Errorf("launch Chrome with Playwright: %w", err)
@@ -419,8 +427,15 @@ func launchBrowserContext(
 }
 
 func onlyBrowserPage(browserContext playwright.BrowserContext) (playwright.Page, error) {
+	return initialBrowserPage(browserContext, false)
+}
+
+func initialBrowserPage(browserContext playwright.BrowserContext, requireExisting bool) (playwright.Page, error) {
 	pages := browserContext.Pages()
 	if len(pages) == 0 {
+		if requireExisting {
+			return nil, errors.New("background booking window did not initialize")
+		}
 		page, err := browserContext.NewPage()
 		if err != nil {
 			return nil, fmt.Errorf("create browser page: %w", err)
@@ -553,7 +568,7 @@ func (adapter *Adapter) OpenTab(parent context.Context) (*Adapter, error) {
 		return nil, errors.New("booking browser is closing")
 	}
 	ctx, cancel := context.WithCancel(parent)
-	page, err := adapter.browserContext.NewPage()
+	page, err := adapter.newBookingPage(ctx)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("create booking tab: %w", err)
@@ -750,9 +765,14 @@ func persistentContextOptions(
 		options.NoViewport = playwright.Bool(true)
 	}
 	if config.StartMinimized && !config.Headless {
-		options.Args = append(options.Args, "--start-minimized")
+		// Do not let Chrome open/restore a foreground startup tab. The owned
+		// extension creates the initial window minimized and without focus.
+		directory := windowControlPath(config)
+		options.Args = append(options.Args, "--start-minimized", "--no-startup-window",
+			"--disable-extensions-except="+directory, "--load-extension="+directory)
+		options.IgnoreDefaultArgs = append(options.IgnoreDefaultArgs, "about:blank", "--disable-extensions")
 	}
-	if config.RestoreSession {
+	if config.RestoreSession && !usesWindowControl(config) {
 		options.Args = append(options.Args, "--restore-last-session")
 		options.IgnoreDefaultArgs = append(options.IgnoreDefaultArgs, "--no-startup-window")
 	}

@@ -149,37 +149,8 @@ func (adapter *Adapter) selectCinemaTheater(region, theater string) error {
 	if err := adapter.navigate(bookingCinemaURL); err != nil {
 		return fmt.Errorf("open CGV cinema booking: %w", err)
 	}
-	clicked, err := adapter.clickButtonPrefix(region + "(")
-	if err != nil {
+	if err := adapter.selectCinemaControls(region, theater); err != nil {
 		return err
-	}
-	if !clicked {
-		opened, openErr := adapter.clickButtonExact("자주가는 CGV 목록 수정")
-		if openErr != nil {
-			return openErr
-		}
-		if opened {
-			if err := adapter.wait(200 * time.Millisecond); err != nil {
-				return err
-			}
-			clicked, err = adapter.clickButtonPrefix(region + "(")
-			if err != nil {
-				return err
-			}
-		}
-	}
-	if !clicked {
-		return fmt.Errorf("%w: region button %q not found", ErrUIContractChanged, region)
-	}
-	if err := adapter.wait(150 * time.Millisecond); err != nil {
-		return err
-	}
-	clicked, err = adapter.clickButtonExact(theater)
-	if err != nil {
-		return err
-	}
-	if !clicked {
-		return fmt.Errorf("%w: theater button %q not found", ErrUIContractChanged, theater)
 	}
 	if err := adapter.wait(200 * time.Millisecond); err != nil {
 		return err
@@ -193,6 +164,46 @@ func (adapter *Adapter) selectCinemaTheater(region, theater string) error {
 	adapter.selectedTheater = theater
 	adapter.selectedRegion = region
 	return nil
+}
+
+func (adapter *Adapter) selectCinemaControls(region, theater string) error {
+	openedFavorites := false
+	if err := adapter.waitForCinemaButton("region "+region, func() (bool, error) {
+		clicked, err := adapter.clickButtonPrefix(region + "(")
+		if clicked || err != nil {
+			return clicked, err
+		}
+		if !openedFavorites {
+			openedFavorites, err = adapter.clickButtonExact("자주가는 CGV 목록 수정")
+		}
+		return false, err
+	}); err != nil {
+		return err
+	}
+	return adapter.waitForCinemaButton("theater "+theater, func() (bool, error) {
+		return adapter.clickButtonExact(theater)
+	})
+}
+
+// DOMContentLoaded does not imply that CGV's SPA has rendered its controls.
+// Retry only local DOM inspection, not navigation or provider requests.
+func (adapter *Adapter) waitForCinemaButton(description string, click func() (bool, error)) error {
+	deadline := time.Now().Add(showtimeRenderTimeout)
+	for {
+		clicked, err := click()
+		if err != nil {
+			return err
+		}
+		if clicked {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w: %s button did not become ready", ErrUIContractChanged, description)
+		}
+		if err := adapter.wait(showtimePollInterval); err != nil {
+			return err
+		}
+	}
 }
 
 func (adapter *Adapter) selectDate(isoDate string) error {

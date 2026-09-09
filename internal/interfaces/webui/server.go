@@ -830,7 +830,7 @@ func (server *Server) ExecuteAvailability(
 }
 
 func monitorExecutionUnavailable(monitor *clientpb.Monitor) bool {
-	return monitor == nil || monitor.GetState().GetTriggered() != nil || monitor.GetState().GetPaymentUnknown() != nil
+	return monitor == nil || (monitor.GetState().GetPending() == nil && monitor.GetState().GetRunning() == nil)
 }
 
 func claimedSeatWatchPolicy(watchCancellations bool) application.ClaimedSeatWatchPolicy {
