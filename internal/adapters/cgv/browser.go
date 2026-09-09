@@ -426,10 +426,6 @@ func launchBrowserContext(
 	return browserContext, nil
 }
 
-func onlyBrowserPage(browserContext playwright.BrowserContext) (playwright.Page, error) {
-	return initialBrowserPage(browserContext, false)
-}
-
 func initialBrowserPage(browserContext playwright.BrowserContext, requireExisting bool) (playwright.Page, error) {
 	pages := browserContext.Pages()
 	if len(pages) == 0 {

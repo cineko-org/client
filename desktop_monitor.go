@@ -149,17 +149,8 @@ func (runtime *localMonitorRuntime) handleResult(ctx context.Context, result loc
 	if errors.Is(result.err, context.Canceled) {
 		logMonitorCancellation(result.execution.target, "execution_context_canceled")
 	} else {
-		var paused *bookingQueryPausedError
-		if errors.As(result.err, &paused) {
-			if runtime.retries == nil {
-				runtime.retries = make(map[string]localMonitorRetry)
-			}
-			runtime.retries[key] = localMonitorRetry{after: paused.after}
-			if result.signal == localMonitorSignalNewSchedule {
-				runtime.worker.ensureTargetState()
-				runtime.worker.newTargets[key] = time.Now()
-			}
-			return // The shared failure is already logged once by the query gate.
+		if runtime.recordSharedQueryPause(key, result) {
+			return
 		}
 		logLocalMonitorFailure(ctx, result)
 		if !result.execution.target.watchCancellations &&
@@ -191,6 +182,22 @@ func (runtime *localMonitorRuntime) handleResult(ctx context.Context, result loc
 			}
 		}
 	}
+}
+
+func (runtime *localMonitorRuntime) recordSharedQueryPause(key string, result localMonitorResult) bool {
+	var paused *bookingQueryPausedError
+	if !errors.As(result.err, &paused) {
+		return false
+	}
+	if runtime.retries == nil {
+		runtime.retries = make(map[string]localMonitorRetry)
+	}
+	runtime.retries[key] = localMonitorRetry{after: paused.after}
+	if result.signal == localMonitorSignalNewSchedule {
+		runtime.worker.ensureTargetState()
+		runtime.worker.newTargets[key] = time.Now()
+	}
+	return true // The shared failure is already logged once by the query gate.
 }
 
 func logLocalMonitorFailure(ctx context.Context, result localMonitorResult) {
