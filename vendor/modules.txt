@@ -176,7 +176,7 @@ github.com/wailsapp/mimetype
 github.com/wailsapp/mimetype/internal/charset
 github.com/wailsapp/mimetype/internal/json
 github.com/wailsapp/mimetype/internal/magic
-# github.com/wailsapp/wails/v2 v2.15.0
+# github.com/wailsapp/wails/v2 v2.16.0
 ## explicit; go 1.25.0
 github.com/wailsapp/wails/v2
 github.com/wailsapp/wails/v2/internal/app
