@@ -86,10 +86,6 @@ func NewFromEnvironmentWithLogger(dataDir string, logger *slog.Logger, captures 
 	if err != nil {
 		return nil, err
 	}
-	return NewWithEgressConfig(dataDir, logger, egressConfig, captures...)
-}
-
-func NewWithEgressConfig(dataDir string, logger *slog.Logger, egressConfig egress.Config, captures ...*networkcapture.Store) (*Factory, error) {
 	egressConfig.Logger = logger
 	if len(captures) > 0 {
 		egressConfig.NetworkCapture = captures[0]
@@ -130,11 +126,6 @@ func (factory *Factory) Preflight(ctx context.Context) error {
 // ConfigureEgress atomically changes the proxy policy used by future browser
 // tasks. Existing tasks keep their original lease for their full lifetime.
 func (factory *Factory) ConfigureEgress(config egress.Config) error {
-	return factory.ConfigureEgressAndCommit(config, nil)
-}
-
-// Commit durable settings before publishing the new manager to future tasks.
-func (factory *Factory) ConfigureEgressAndCommit(config egress.Config, commit func() error) error {
 	if config.Logger == nil {
 		factory.mu.Lock()
 		config.Logger = factory.base.Logger
@@ -148,11 +139,6 @@ func (factory *Factory) ConfigureEgressAndCommit(config egress.Config, commit fu
 	defer factory.mu.Unlock()
 	if factory.closed {
 		return ErrClosed
-	}
-	if commit != nil {
-		if err := commit(); err != nil {
-			return err
-		}
 	}
 	factory.egress = manager
 	return nil
