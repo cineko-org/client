@@ -13,7 +13,6 @@ import (
 	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
-	"github.com/cineko-org/probe/v2/internal/egress"
 	"github.com/cineko-org/probe/v2/internal/provider/cgv"
 	cgvbrowser "github.com/cineko-org/probe/v2/internal/provider/cgv/browser"
 	"github.com/cineko-org/probe/v2/networkcapture"
@@ -22,12 +21,9 @@ import (
 // LocalScanner is the in-process scanner owned by Client. It performs anonymous
 // catalog, schedule, and seat-map reads without any remote coordination.
 type LocalScanner struct {
-	settingsMu     sync.Mutex
-	egressPath     string
-	networkCapture *networkcapture.Store
-	factory        *cgvbrowser.Factory
-	executor       *CGVExecutor
-	logger         *slog.Logger
+	factory  *cgvbrowser.Factory
+	executor *CGVExecutor
+	logger   *slog.Logger
 
 	scheduleContext context.Context
 	cancelSchedule  context.CancelFunc
@@ -42,33 +38,18 @@ type LocalScanner struct {
 var ErrProviderThrottled = cgv.ErrProviderThrottled
 
 type LocalScannerConfig struct {
-	EgressConfigPath string
-	DataDir          string
-	Logger           *slog.Logger
-	NetworkCapture   *networkcapture.Store
+	DataDir        string
+	Logger         *slog.Logger
+	NetworkCapture *networkcapture.Store
 }
 
 func NewLocalScanner(config LocalScannerConfig) (*LocalScanner, error) {
 	if strings.TrimSpace(config.DataDir) == "" {
 		return nil, errors.New("local scanner data directory is required")
 	}
-	egressConfig, err := egress.LocalScanConfig(config.EgressConfigPath)
+	factory, err := cgvbrowser.NewFromEnvironmentWithLogger(filepath.Clean(config.DataDir), config.Logger, config.NetworkCapture)
 	if err != nil {
-		// Keep settings accessible for repair, without allowing direct scanning.
-		if config.Logger != nil {
-			config.Logger.Warn("Scanner settings require repair", "event", "scanner.settings.invalid", "error", err.Error())
-		}
-		egressConfig = egress.Config{RequireProxy: true}
-	}
-	factory, err := cgvbrowser.NewWithEgressConfig(filepath.Clean(config.DataDir), config.Logger, egressConfig, config.NetworkCapture)
-	if err != nil {
-		if config.Logger != nil {
-			config.Logger.Warn("Scanner settings require repair", "event", "scanner.settings.invalid", "error", err.Error())
-		}
-		factory, err = cgvbrowser.NewWithEgressConfig(filepath.Clean(config.DataDir), config.Logger, egress.Config{RequireProxy: true}, config.NetworkCapture)
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 	executor, err := NewCGVExecutor(factory)
 	if err != nil {
@@ -77,7 +58,6 @@ func NewLocalScanner(config LocalScannerConfig) (*LocalScanner, error) {
 	}
 	scheduleContext, cancelSchedule := context.WithCancel(context.Background())
 	return &LocalScanner{
-		egressPath: config.EgressConfigPath, networkCapture: config.NetworkCapture,
 		factory: factory, executor: executor, logger: config.Logger,
 		scheduleContext: scheduleContext, cancelSchedule: cancelSchedule,
 	}, nil
@@ -140,20 +120,20 @@ func (scanner *LocalScanner) CaptureScheduleWeekdays(
 	return scanner.captureSchedules(ctx, theater, weekdays, nil)
 }
 
-func (scanner *LocalScanner) CaptureScheduleWeekdayCycle(
+func (scanner *LocalScanner) CaptureScheduleWeekdayShard(
 	ctx context.Context,
 	theater *catalogpb.Theater,
 	weekdays []int32,
-	cycle ScheduleCycle,
+	shard int,
 ) ([]*observationpb.Capture, error) {
-	return scanner.captureSchedules(ctx, theater, weekdays, &cycle)
+	return scanner.captureSchedules(ctx, theater, weekdays, &shard)
 }
 
 func (scanner *LocalScanner) captureSchedules(
 	ctx context.Context,
 	theater *catalogpb.Theater,
 	weekdays []int32,
-	cycle *ScheduleCycle,
+	shard *int,
 ) ([]*observationpb.Capture, error) {
 	if scanner == nil || scanner.executor == nil {
 		return nil, errors.New("local scanner is closed")
@@ -183,8 +163,8 @@ func (scanner *LocalScanner) captureSchedules(
 		err      error
 	)
 	switch {
-	case cycle != nil:
-		captures, err = scanner.scheduleSession.CaptureWeekdayCycle(ctx, task, weekdays, *cycle)
+	case len(weekdays) > 0 && shard != nil:
+		captures, err = scanner.scheduleSession.CaptureWeekdayShard(ctx, task, weekdays, *shard)
 	case len(weekdays) > 0:
 		captures, err = scanner.scheduleSession.CaptureWeekdays(ctx, task, weekdays)
 	default:
@@ -201,7 +181,7 @@ func (scanner *LocalScanner) captureSchedules(
 			"operation", "capture_theater_schedule",
 			"outcome", outcome,
 			"browser_reused", reused,
-			"full_date_cycle", cycle != nil,
+			"date_sharded", shard != nil,
 			"duration_ms", time.Since(startedAt).Milliseconds(),
 		)
 	}

@@ -47,8 +47,10 @@ const (
 	// PurposeScan is anonymous provider observation.
 	PurposeScan Purpose = "scan"
 
-	// PolicyScanDefault uses the configured static or Soxy proxy. Embedded
-	// scanners set RequireProxy so missing configuration cannot use direct egress.
+	// PolicyScanDefault is the local default policy for an embedded scan. It
+	// prefers the locally configured static or Soxy proxy and otherwise uses
+	// direct egress. Managed deployments that require a proxy enforce that
+	// separately during startup with CINEKO_REQUIRE_PROXY=true.
 	PolicyScanDefault = "scan_default"
 )
 
@@ -67,11 +69,10 @@ type secretFile interface {
 
 // Config contains the local egress inventory and lease timing policy.
 type Config struct {
-	RequireProxy bool
-	SoxyURL      string
-	SoxyToken    string
-	SessionTTL   time.Duration
-	Proxies      []Proxy
+	SoxyURL    string
+	SoxyToken  string
+	SessionTTL time.Duration
+	Proxies    []Proxy
 	// ScanProxies is retained for environment compatibility. New callers use
 	// Proxies, which applies one stable selection to either logical purpose.
 	ScanProxies      []Proxy
@@ -86,7 +87,6 @@ type Config struct {
 
 // Manager resolves egress policy and owns active proxy leases.
 type Manager struct {
-	requireProxy      bool
 	client            *soxyClient
 	sessionTTL        time.Duration
 	proxies           []Proxy
@@ -144,7 +144,6 @@ func New(config Config) (*Manager, error) {
 	}
 
 	manager := &Manager{
-		requireProxy:      config.RequireProxy,
 		sessionTTL:        config.SessionTTL,
 		proxies:           proxies,
 		legacyScanProxies: legacyScanProxies,
@@ -405,9 +404,6 @@ func (manager *Manager) acquire(parent context.Context, purpose Purpose) (*Lease
 		return newLease(parent, manager.legacyScanProxies[index], nil, 0, 0), nil
 	}
 	if manager.client == nil {
-		if manager.requireProxy {
-			return nil, errors.New("scanner proxy is required; direct egress is disabled")
-		}
 		return newLease(parent, Proxy{}, nil, 0, 0), nil
 	}
 
