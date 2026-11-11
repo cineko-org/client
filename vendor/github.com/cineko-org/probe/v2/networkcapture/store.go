@@ -118,28 +118,11 @@ type Result struct {
 }
 
 type Store struct {
-	root       string
-	logger     *slog.Logger
-	debug      bool
-	mu         sync.Mutex
-	clearedAt  time.Time
-	statistics Statistics
-	rateLimit  *RateLimitGate
-}
-
-// RateLimit shares provider cooldowns across all browsers using this local
-// store. Closing a tab, rebuilding Chrome or clearing diagnostic logs must
-// not discard an active provider deadline.
-func (store *Store) RateLimit() *RateLimitGate {
-	if store == nil {
-		return NewRateLimitGate()
-	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if store.rateLimit == nil {
-		store.rateLimit = NewRateLimitGate()
-	}
-	return store.rateLimit
+	root      string
+	logger    *slog.Logger
+	debug     bool
+	mu        sync.Mutex
+	clearedAt time.Time
 }
 
 type Option func(*Store)
@@ -169,11 +152,6 @@ func NewStore(root string, logger *slog.Logger, options ...Option) (*Store, erro
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	store := &Store{root: root, logger: logger}
-	gate, err := newPersistentRateLimitGate(filepath.Join(root, "rate-limit.json"), logger)
-	if err != nil {
-		return nil, err
-	}
-	store.rateLimit = gate
 	for _, option := range options {
 		if option != nil {
 			option(store)
@@ -243,7 +221,6 @@ func (store *Store) Clear() error {
 			return fmt.Errorf("recreate network capture directory %q: %w", directory, err)
 		}
 	}
-	store.statistics = Statistics{}
 	return nil
 }
 
@@ -293,7 +270,6 @@ func (store *Store) Save(ctx context.Context, record Record) (Result, error) {
 		record.Outcome = "succeeded"
 	}
 	record.Version = manifestVersion
-	addSummaryStats(&store.statistics, Summary{URL: record.Request.URL, Outcome: record.Outcome, Status: responseStatus(record.Response)})
 	if !store.shouldPersist(record.Exchange) {
 		return Result{}, nil
 	}
@@ -388,14 +364,6 @@ func (store *Store) Save(ctx context.Context, record Record) (Result, error) {
 		"status", responseStatus(record.Response), "outcome", record.Outcome,
 		"duration_ms", record.DurationMS, "artifact_path", manifestPath)
 	return result, nil
-}
-
-// SessionStatistics counts completions independently of diagnostic retention.
-// It starts at zero for each Store and resets together with Clear.
-func (store *Store) SessionStatistics() Statistics {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	return store.statistics
 }
 
 func (store *Store) shouldPersist(exchange Exchange) bool {

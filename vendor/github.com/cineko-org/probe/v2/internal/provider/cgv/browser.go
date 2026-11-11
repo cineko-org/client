@@ -113,7 +113,6 @@ type Adapter struct {
 	mu                     sync.Mutex
 	selectedRegion         string
 	selectedTheater        string
-	selectedTheaterAt      time.Time
 	blockedRequests        atomic.Uint64
 	continuedRequests      atomic.Uint64
 	blockResources         bool
@@ -362,7 +361,7 @@ func newAdapter(
 		providerFailureHandler: config.ProviderFailureHandler,
 		logger:                 config.Logger,
 		networkCapture:         config.NetworkCapture,
-		rateLimit:              config.NetworkCapture.RateLimit(),
+		rateLimit:              networkcapture.NewRateLimitGate(),
 	}
 	if adapter.networkCapture == nil {
 		adapter.networkCapture, err = networkcapture.NewStore(filepath.Join(config.ArtifactsDir, "network"), config.Logger)

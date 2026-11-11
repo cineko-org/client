@@ -80,95 +80,41 @@ func (adapter *Adapter) CaptureSchedulesForWeekdays(
 	return adapter.captureSchedules(ctx, theater, nil, weekdays)
 }
 
-// ScheduleCycle spreads one inventory and all matching date reads across a
-// window. Publish runs after each date, before waiting for the next request.
-type ScheduleCycle struct {
-	Window  time.Duration
-	MovieNo string
-	Publish func(ScheduleCapture) error
-}
-
-// CaptureScheduleWeekdayCycle discovers dates and publishes every matching
-// full-day snapshot, including dates already present in the previous cycle.
-func (adapter *Adapter) CaptureScheduleWeekdayCycle(
+// CaptureScheduleWeekdayShard refreshes one provider date from the matching
+// set. It keeps new-schedule detection bounded when many weeks share the same
+// target weekdays.
+func (adapter *Adapter) CaptureScheduleWeekdayShard(
 	ctx context.Context,
 	theater ScheduleTheater,
 	weekdays []time.Weekday,
-	cycle ScheduleCycle,
-) error {
+	shard int,
+) ([]ScheduleCapture, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
-	if cycle.Publish == nil || cycle.Window < 0 {
-		return errors.New("invalid schedule cycle")
-	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if err := adapter.providerRateLimitError(bookingCinemaURL); err != nil {
-		return err
+		return nil, err
 	}
-	// API scans do not depend on rendered date buttons or their refresh timer.
-	if adapter.selectedRegion != theater.Region || adapter.selectedTheater != theater.Name || adapter.selectedTheaterAt.IsZero() {
-		if err := adapter.selectCinemaTheater(theater.Region, theater.Name); err != nil {
-			return err
-		}
+	if err := adapter.selectCinemaTheater(theater.Region, theater.Name); err != nil {
+		return nil, err
 	}
-	started := time.Now()
-	dates, err := adapter.requestScheduleDatesFromPage(theater.SourceKey, cycle.MovieNo)
+	dates, err := adapter.availableScheduleDates()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dates, err = filterScheduleDatesByWeekdays(dates, weekdays)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if adapter.logger != nil {
-		adapter.logger.DebugContext(ctx, "CGV schedule scan planned",
-			"event", "cgv.schedule.plan", "scenario", "schedule_collection",
-			"operation", "plan_schedule_detail", "theater_id", theater.ID,
-			"movie_no", cycle.MovieNo, "candidate_date_count", len(dates),
-			"inventory_requests", 1, "planned_detail_requests", len(dates),
-			"cycle_window_ms", cycle.Window.Milliseconds())
+	if len(dates) == 0 {
+		return []ScheduleCapture{}, nil
 	}
-	return adapter.captureScheduleCycleDates(ctx, theater, dates, cycle, started)
-}
-
-func (adapter *Adapter) captureScheduleCycleDates(ctx context.Context, theater ScheduleTheater, dates []string, cycle ScheduleCycle, started time.Time) error {
-	spacing := cycle.Window / time.Duration(len(dates)+1)
-	for _, date := range dates {
-		// Anchor to the previous request start, not a backlog of expired slots.
-		// Slow responses never cause concurrent work or catch-up requests.
-		if err := waitScheduleRequest(ctx, started.Add(spacing)); err != nil {
-			return err
-		}
-		started = time.Now()
-		// Only the inventory is movie-scoped. Complete observations remain
-		// full theater/day snapshots, preserving other movies in storage.
-		captures, err := adapter.captureSelectedSchedules(ctx, theater, []string{date})
-		if err != nil {
-			return err
-		}
-		for _, capture := range captures {
-			if err := cycle.Publish(capture); err != nil {
-				return err
-			}
-		}
+	if shard < 0 {
+		shard = 0
 	}
-	return nil
-}
-
-func waitScheduleRequest(ctx context.Context, due time.Time) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	timer := time.NewTimer(time.Until(due))
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return ctx.Err()
-	}
+	return adapter.captureSelectedSchedules(ctx, theater, []string{dates[shard%len(dates)]})
 }
 
 func (adapter *Adapter) captureSchedules(
@@ -222,9 +168,6 @@ func (adapter *Adapter) captureSelectedSchedules(
 	}
 	result := make([]ScheduleCapture, 0, len(scanDates))
 	for _, targetDate := range scanDates {
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
 		capture := ScheduleCapture{TargetDate: targetDate}
 		canonicalDate, err := canonicalProviderDate(targetDate)
 		if err != nil {
@@ -438,12 +381,10 @@ func (adapter *Adapter) logScheduleCaptureFailure(
 }
 
 func (adapter *Adapter) selectCinemaTheater(region, theaterName string) error {
-	if reusableCinemaSelection(adapter.selectedRegion, adapter.selectedTheater, region, theaterName, adapter.selectedTheaterAt, time.Now()) {
+	if adapter.selectedRegion == region && adapter.selectedTheater == theaterName {
 		adapter.logReusedCinemaTheater(theaterName)
 		return nil
 	}
-	// Do not leave a reusable selection after partial navigation failure.
-	adapter.selectedTheaterAt = time.Time{}
 	if err := adapter.navigate(bookingCinemaURL); err != nil {
 		return fmt.Errorf("open CGV cinema booking: %w", err)
 	}
@@ -471,7 +412,6 @@ func (adapter *Adapter) selectCinemaTheater(region, theaterName string) error {
 	}
 	adapter.selectedTheater = theaterName
 	adapter.selectedRegion = region
-	adapter.selectedTheaterAt = time.Now()
 	return nil
 }
 
