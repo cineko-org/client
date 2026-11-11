@@ -2,7 +2,6 @@ package networkcapture
 
 import (
 	"crypto/rand"
-	"log/slog"
 	"math"
 	"math/big"
 	"net/http"
@@ -35,14 +34,12 @@ type rateLimitState struct {
 // half-open request. Other callers remain blocked until that request succeeds
 // or produces the next 429.
 type RateLimitGate struct {
-	mu        sync.Mutex
-	states    map[string]*rateLimitState
-	now       func() time.Time
-	fallback  time.Duration
-	maximum   time.Duration
-	jitter    func(time.Duration) time.Duration
-	statePath string
-	logger    *slog.Logger
+	mu       sync.Mutex
+	states   map[string]*rateLimitState
+	now      func() time.Time
+	fallback time.Duration
+	maximum  time.Duration
+	jitter   func(time.Duration) time.Duration
 }
 
 func NewRateLimitGate() *RateLimitGate {
@@ -108,7 +105,6 @@ func (gate *RateLimitGate) Observe429(key string, headers []Header) RateLimitDec
 	if now.Before(state.blockedUntil) && !state.halfOpen {
 		if retryAt, source, ok := retryDeadline(now, headers); ok && retryAt.After(state.blockedUntil) {
 			state.blockedUntil = retryAt
-			gate.persistLocked()
 			return decisionFromState(now, state, source)
 		}
 		return decisionFromState(now, state, "active_circuit")
@@ -130,7 +126,6 @@ func (gate *RateLimitGate) Observe429(key string, headers []Header) RateLimitDec
 	}
 	state.blockedUntil = retryAt
 	state.halfOpen = false
-	gate.persistLocked()
 	decision := decisionFromState(now, state, source)
 	return decision
 }
@@ -160,7 +155,6 @@ func (gate *RateLimitGate) ObserveSuccess(key string) bool {
 		return false
 	}
 	delete(gate.states, key)
-	gate.persistLocked()
 	return true
 }
 
@@ -189,7 +183,6 @@ func (gate *RateLimitGate) ObserveFailure(key string) (RateLimitDecision, bool) 
 	}
 	state.blockedUntil = now.Add(delay)
 	state.halfOpen = false
-	gate.persistLocked()
 	return decisionFromState(now, state, "half_open_transport_failure"), true
 }
 
